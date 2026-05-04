@@ -101,6 +101,12 @@ gate_params:
   high_vpin_bypass_threshold: 0.60
   high_vpin_bypass_buckets: [classifier_strong, pegged_classifier]
 
+  # ── Tick confirmation (3 consecutive passing ticks before fire) ──
+  # Mirrors the consecutive_pass_ticks gate used by other LIVE strategies
+  # (v8_champion_lgb_only, v9_ensemble, v10/v12 LGB). Prevents single-tick
+  # flicker entries; counter resets on any gate failure.
+  min_consecutive_pass_ticks: 3
+
 sizing:
   type: custom
   custom_hook: clob_sizing

@@ -22,8 +22,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.registry import StrategyRegistry
+from strategies.configs import v7_15m_sniper as _v7_hook
 
 CONFIGS_DIR = str(Path(__file__).resolve().parents[3] / "strategies" / "configs")
+
+
+@pytest.fixture(autouse=True)
+def _reset_v7_tick_counters():
+    """Clear the shared v7_15m_sniper tick-confirmation state between tests.
+
+    The hook keeps a module-level counter dict keyed by
+    (strategy_id, asset, window_ts); without a reset, count from a
+    previous test bleeds into the next.
+    """
+    _v7_hook._reset_all_tick_counters()
+    yield
+    _v7_hook._reset_all_tick_counters()
 
 
 def _make_surface(**overrides) -> FullDataSurface:
@@ -129,13 +143,18 @@ def test_v7_xrp_yaml_exists_and_correct():
 
 # ── Classifier-only mode (ETH/SOL/XRP — no_model) ──────────────────────────
 def test_classifier_only_up_trade(registry):
-    """ETH window, poly absent, p_classifier=0.92 → TRADE UP."""
+    """ETH window, poly absent, p_classifier=0.92 → TRADE UP after 3 ticks."""
     surface = _make_surface(probability_classifier=0.92)
+    # Tick 1 + 2 should SKIP (entry_confirmation), tick 3 → TRADE.
+    _eval_eth(registry, surface)
+    _eval_eth(registry, surface)
     decision = _eval_eth(registry, surface)
 
     assert decision.action == "TRADE"
     assert decision.direction == "UP"
-    assert decision.strategy_id == "v7_15m_sniper"  # shared hook id
+    # Registry overrides strategy_id to the per-asset config name even
+    # though the shared hook returns ``_STRATEGY_ID = "v7_15m_sniper"``.
+    assert decision.strategy_id == "v7_15m_sniper_eth"
     # Classifier-only mode flag present in metadata
     assert decision.metadata.get("classifier_only_mode") is True
     # Entry cap comes from YAML override (0.80), not poly_max_entry_price
@@ -147,7 +166,7 @@ def test_classifier_only_up_trade(registry):
 
 
 def test_classifier_only_down_trade(registry):
-    """ETH window, poly absent, p_classifier=0.15 → TRADE DOWN (|0.15-0.5|=0.35 ≥ 0.30)."""
+    """ETH window, poly absent, p_classifier=0.15 → TRADE DOWN after 3 ticks."""
     surface = _make_surface(
         probability_classifier=0.15,
         # Flip chainlink/tiingo to DOWN so source_agreement + oracle gates
@@ -156,6 +175,9 @@ def test_classifier_only_down_trade(registry):
         delta_binance=-0.015, delta_tiingo=-0.015, delta_chainlink=-0.015,
         delta_pct=-0.015,
     )
+    # 3 consecutive evals to clear entry_confirmation gate.
+    _eval_eth(registry, surface)
+    _eval_eth(registry, surface)
     decision = _eval_eth(registry, surface)
 
     assert decision.action == "TRADE"
@@ -178,6 +200,10 @@ def test_classifier_only_does_not_skip_on_no_poly_advice(registry):
 
     Before the fix, empty poly block → trade_not_advised skip on every
     non-BTC eval, making the whole shadow track useless.
+
+    Now (with tick gate) the first eval skips on entry_confirmation, but
+    the trade_advised gate must still pass on the classifier_only branch
+    rather than rejecting on no_poly_advice.
     """
     surface = _make_surface(probability_classifier=0.92)
     decision = _eval_eth(registry, surface)
@@ -213,6 +239,9 @@ def test_btc_full_stack_still_trades(registry):
         delta_binance=0.005, delta_tiingo=0.005, delta_chainlink=0.005,
         delta_pct=0.005,
     )
+    # 3 consecutive evals to clear entry_confirmation gate.
+    _eval_btc(registry, surface)
+    _eval_btc(registry, surface)
     decision = _eval_btc(registry, surface)
 
     assert decision.action == "TRADE"
@@ -228,3 +257,109 @@ def test_btc_full_stack_still_trades(registry):
     assert trade_advised_gates
     assert trade_advised_gates[0]["passed"] is True
     assert "classifier_only_mode" not in trade_advised_gates[0]["reason"]
+
+
+# ── Consecutive-tick entry confirmation ────────────────────────────────────
+def test_tick_confirmation_first_tick_skips(registry):
+    """First passing eval must NOT trade — needs 3 consecutive ticks.
+
+    Before this gate the hook fired on the FIRST gate-pass. Now it must
+    skip with `entry_confirmation: 1/3 ticks` until the counter clears.
+    """
+    surface = _make_surface(probability_classifier=0.92)
+    decision = _eval_eth(registry, surface)
+
+    assert decision.action == "SKIP"
+    assert decision.skip_reason is not None
+    assert "entry_confirmation" in decision.skip_reason
+    assert "1/3" in decision.skip_reason
+    # Gate trail records the entry_confirmation failure.
+    ec_gates = [
+        g for g in decision.metadata["gate_results"]
+        if g.get("gate") == "entry_confirmation"
+    ]
+    assert ec_gates
+    assert ec_gates[0]["passed"] is False
+    assert "1/3" in ec_gates[0]["reason"]
+
+
+def test_tick_confirmation_three_consecutive_ticks_trade(registry):
+    """3 consecutive passing evals → TRADE on the third."""
+    surface = _make_surface(probability_classifier=0.92)
+
+    d1 = _eval_eth(registry, surface)
+    assert d1.action == "SKIP"
+    assert "entry_confirmation: 1/3" in (d1.skip_reason or "")
+
+    d2 = _eval_eth(registry, surface)
+    assert d2.action == "SKIP"
+    assert "entry_confirmation: 2/3" in (d2.skip_reason or "")
+
+    d3 = _eval_eth(registry, surface)
+    assert d3.action == "TRADE"
+    assert d3.direction == "UP"
+    # Confirmation gate recorded as passed in metadata.
+    ec_gates = [
+        g for g in d3.metadata["gate_results"]
+        if g.get("gate") == "entry_confirmation"
+    ]
+    assert ec_gates
+    assert ec_gates[0]["passed"] is True
+    assert "confirmed" in ec_gates[0]["reason"]
+    # Counter persisted into metadata.
+    assert d3.metadata.get("entry_confirmation_count") == 3
+    assert d3.metadata.get("entry_confirmation_required") == 3
+
+
+def test_tick_confirmation_resets_on_gate_failure(registry):
+    """2 passes, 1 fail, 2 passes → still SKIP (counter reset by failure).
+
+    Sequence: pass(1) → pass(2) → fail (vpin too low, resets) →
+    pass(1) → pass(2) → still below 3-tick threshold.
+    """
+    pass_surface = _make_surface(probability_classifier=0.92)
+    fail_surface = _make_surface(
+        probability_classifier=0.92,
+        vpin=0.10,  # < 0.45 floor → vpin gate fails
+    )
+
+    d1 = _eval_eth(registry, pass_surface)
+    assert d1.action == "SKIP" and "1/3" in (d1.skip_reason or "")
+
+    d2 = _eval_eth(registry, pass_surface)
+    assert d2.action == "SKIP" and "2/3" in (d2.skip_reason or "")
+
+    # Gate failure — must reset the counter.
+    d_fail = _eval_eth(registry, fail_surface)
+    assert d_fail.action == "SKIP"
+    assert "vpin_too_low" in (d_fail.skip_reason or "")
+
+    # After reset, counts should restart at 1, not resume at 3.
+    d3 = _eval_eth(registry, pass_surface)
+    assert d3.action == "SKIP"
+    assert "entry_confirmation: 1/3" in (d3.skip_reason or "")
+
+    d4 = _eval_eth(registry, pass_surface)
+    assert d4.action == "SKIP"
+    assert "entry_confirmation: 2/3" in (d4.skip_reason or "")
+
+
+def test_tick_confirmation_independent_per_asset(registry):
+    """ETH and SOL tick counters must be independent.
+
+    Bug guard: a single shared counter would let SOL coast in on ETH's
+    accumulated ticks (or vice versa).
+    """
+    eth_surface = _make_surface(asset="ETH", probability_classifier=0.92)
+    sol_surface = _make_surface(asset="SOL", probability_classifier=0.92)
+
+    # Tick ETH twice.
+    _eval_eth(registry, eth_surface)
+    _eval_eth(registry, eth_surface)
+
+    # SOL evaluated for the first time — must be 1/3, not 3/3.
+    sol_decision = registry._evaluate_one(
+        "v7_15m_sniper_sol", registry.configs["v7_15m_sniper_sol"], sol_surface
+    )
+    assert sol_decision.action == "SKIP"
+    assert "entry_confirmation: 1/3" in (sol_decision.skip_reason or "")

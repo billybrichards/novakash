@@ -53,6 +53,19 @@ _STRATEGY_ID = "v7_15m_sniper"
 _VERSION = "7.0.0"
 
 
+# ── Consecutive-tick entry confirmation state ─────────────────────────────
+# Module-level counter keyed by (strategy_id, asset, window_ts). Mirrors the
+# pattern used by v8_champion_lgb_only / v9_ensemble (see PR #480 and audit
+# note 2026-05-04). Each evaluation increments the count when ALL gates pass;
+# any gate failure resets the count to 0 for that key. The hook only emits
+# TRADE once count >= ``min_consecutive_pass_ticks``.
+#
+# The hook is shared across v7_15m_sniper{,_eth,_sol,_xrp} — each child
+# strategy evaluates only its own asset (registry asset filter), so
+# ``(strategy_id, asset, window_ts)`` is unambiguous for our purposes.
+_TICK_COUNTERS: dict[tuple[str, str, int], int] = {}
+
+
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
 def _min_offset_sec() -> int:
     return _gp.get_int("min_offset_sec", "V7_15M_SNIPER_MIN_OFFSET_SEC", 300)
@@ -199,6 +212,20 @@ def _high_vpin_bypass_buckets() -> set[str]:
     )
 
 
+# ── Consecutive-tick entry confirmation knob ────────────────────────────
+def _min_consecutive_pass_ticks() -> int:
+    """Minimum consecutive evaluations with all gates passing before TRADE.
+
+    Default 3 — mirrors v8_champion_lgb_only / v9_ensemble. 0 disables
+    confirmation (fire on first pass, legacy v7 behaviour).
+    """
+    return _gp.get_int(
+        "min_consecutive_pass_ticks",
+        "V7_15M_SNIPER_MIN_TICKS",
+        3,
+    )
+
+
 def _try_bucket_risk_off_override(
     reason: str,
     bucket: str,
@@ -266,6 +293,72 @@ def _skip(reason: str, gates: list[dict], *, extras: Optional[dict] = None) -> S
         skip_reason=reason,
         metadata=meta,
     )
+
+
+# ── Tick-confirmation counter helpers ───────────────────────────────────
+def _tick_key(asset: Optional[str], window_ts: Optional[int]) -> tuple[str, str, int]:
+    """Build the counter key. Falls back to safe defaults so a missing
+    field never raises — worst case is a single shared key that gets
+    pruned on the next window.
+    """
+    return (
+        _STRATEGY_ID,
+        (asset or "UNKNOWN").upper(),
+        int(window_ts or 0),
+    )
+
+
+def _prune_old_tick_counters(current_window_ts: Optional[int]) -> None:
+    """Drop counter entries from previous windows.
+
+    Conservative: only prune entries with a STRICTLY smaller window_ts
+    than the current one. Entries with unknown/zero window_ts are kept
+    until they age out the same way (they will mismatch the live key
+    and never grow).
+    """
+    if not current_window_ts:
+        return
+    cutoff = int(current_window_ts)
+    stale = [k for k in _TICK_COUNTERS if 0 < k[2] < cutoff]
+    for k in stale:
+        _TICK_COUNTERS.pop(k, None)
+
+
+def _reset_tick_counter(key: tuple[str, str, int]) -> None:
+    _TICK_COUNTERS.pop(key, None)
+
+
+def _increment_tick_counter(key: tuple[str, str, int]) -> int:
+    count = _TICK_COUNTERS.get(key, 0) + 1
+    _TICK_COUNTERS[key] = count
+    return count
+
+
+def _get_tick_count(key: tuple[str, str, int]) -> int:
+    """Test/inspection helper — current count for a key (0 if absent)."""
+    return _TICK_COUNTERS.get(key, 0)
+
+
+def _reset_all_tick_counters() -> None:
+    """Test helper — clear all confirmation state."""
+    _TICK_COUNTERS.clear()
+
+
+def _skip_and_reset(
+    reason: str,
+    gates: list[dict],
+    *,
+    extras: Optional[dict] = None,
+    tick_key: Optional[tuple[str, str, int]] = None,
+) -> StrategyDecision:
+    """SKIP wrapper that also resets the tick counter for ``tick_key``.
+
+    Any gate-fail SKIP must reset the counter so the next pass starts
+    from 1, not from where the previous run left off.
+    """
+    if tick_key is not None:
+        _reset_tick_counter(tick_key)
+    return _skip(reason, gates, extras=extras)
 
 
 def _path1_age_s(
@@ -380,6 +473,23 @@ def evaluate_polymarket_15m_sniper(
     ``gates: []`` so None effectively means 'no decision'.
     """
     gates: list[dict] = []
+
+    # ── Tick-confirmation key + cleanup ──────────────────────────────────
+    # Build the per-(strategy, asset, window) counter key once. Every
+    # gate-failure SKIP path below routes through ``_skip`` (rebound here
+    # to the reset-aware wrapper) so the counter is zeroed on any failure;
+    # the final TRADE path increments it and only fires once it reaches
+    # the configured threshold.
+    _surface_window_ts = getattr(surface, "window_ts", None)
+    _surface_asset = getattr(surface, "asset", None)
+    tick_key = _tick_key(_surface_asset, _surface_window_ts)
+    _prune_old_tick_counters(_surface_window_ts)
+
+    # Locally rebind ``_skip`` so every existing ``return _skip(...)`` in
+    # this function automatically resets the tick counter on gate failure.
+    # This keeps the patch minimal and avoids touching every skip site.
+    def _skip(reason, gates, *, extras=None):  # type: ignore[no-redef]
+        return _skip_and_reset(reason, gates, extras=extras, tick_key=tick_key)
 
     # ── Source staleness (chainlink + tiingo present) ────────────────────
     if _skip_stale_sources():
@@ -741,6 +851,41 @@ def evaluate_polymarket_15m_sniper(
     if v4_regime:
         gates.append(_gate("regime", True, f"regime={v4_regime} tradeable"))
 
+    # ── Consecutive-tick entry confirmation ─────────────────────────────
+    # All gates passed. Increment the counter and only emit TRADE once
+    # we have ``min_consecutive_pass_ticks`` consecutive passing evals
+    # for this (strategy, asset, window) key. Mirrors the
+    # ``consecutive_pass_ticks`` gate used by other LIVE strategies
+    # (v8_champion_lgb_only, v9_ensemble, v10/v12 LGB, etc).
+    required = _min_consecutive_pass_ticks()
+    count = _increment_tick_counter(tick_key)
+    if required > 0 and count < required:
+        gates.append(
+            _gate(
+                "entry_confirmation",
+                False,
+                f"{count}/{required} consecutive pass ticks",
+            )
+        )
+        # NOTE: don't reset — we WANT the counter to grow across ticks.
+        # Use the raw module-level _skip so the local reset wrapper above
+        # doesn't zero our progress.
+        return _skip_and_reset(
+            f"entry_confirmation: {count}/{required} ticks",
+            gates,
+            extras=bucket_extras,
+            tick_key=None,  # explicit: do NOT reset
+        )
+    gates.append(
+        _gate(
+            "entry_confirmation",
+            True,
+            f"{count}/{required} consecutive pass ticks — confirmed"
+            if required > 0
+            else "tick confirmation disabled",
+        )
+    )
+
     # ── TRADE ───────────────────────────────────────────────────────────
     _cap_override = _entry_cap_override()
     _entry_cap = _cap_override if _cap_override is not None else surface.poly_max_entry_price
@@ -775,5 +920,7 @@ def evaluate_polymarket_15m_sniper(
             "timescale": "15m",
             "entry_cap_override": _cap_override,
             "classifier_only_mode": classifier_only_mode,
+            "entry_confirmation_count": count,
+            "entry_confirmation_required": required,
         },
     )
