@@ -33,6 +33,57 @@ _GAMMA_BASE = "https://gamma-api.polymarket.com"
 _SLUG_PREFIX = "btc-updown-5m-"
 
 
+def _coerce_direction(row: Any) -> Optional[str]:
+    """Resolve a window_snapshots row to a canonical 'UP'/'DOWN' label.
+
+    Fallback order — first non-empty wins (audit #350):
+
+        1. actual_direction  (labeler-stamped)
+        2. oracle_outcome    (Polymarket Gamma)
+        3. outcome           (legacy live-resolve writer)
+        4. open_price/close_price  (derived from the snapshot row's
+           Chainlink/Tiingo close vs window-open)
+
+    Returns ``None`` when the row has no oracle evidence at all — the
+    caller MUST treat ``None`` as "skip / retry next pass" and never
+    invent synthetic prices to break the tie. This is the structural
+    fix for the 2026-05-04 21:47 UTC misclassification bug where the
+    resolver fell back to ``$100,000 → $100,001`` placeholders that
+    mathematically guarantee an UP outcome.
+    """
+    if row is None:
+        return None
+    for col in ("actual_direction", "oracle_outcome", "outcome"):
+        try:
+            val = row[col]
+        except (KeyError, TypeError):
+            val = None
+        if val is None:
+            continue
+        v = str(val).strip().upper()
+        if v in ("UP", "DOWN"):
+            return v
+    try:
+        op = row["open_price"]
+        cp = row["close_price"]
+    except (KeyError, TypeError):
+        return None
+    if op is None or cp is None:
+        return None
+    try:
+        op_f = float(op)
+        cp_f = float(cp)
+    except (TypeError, ValueError):
+        return None
+    if op_f <= 0 or cp_f <= 0:
+        return None
+    if cp_f > op_f:
+        return "UP"
+    if cp_f < op_f:
+        return "DOWN"
+    return None  # exactly equal → undecidable, do not guess
+
+
 class PgWindowRepository(WindowStateRepository):
     """asyncpg-backed window snapshot repository.
 
@@ -1671,27 +1722,91 @@ class PgWindowRepository(WindowStateRepository):
             return set()
 
     async def get_actual_direction(self, key: WindowKey) -> Optional[str]:
-        """Return actual_direction from window_snapshots, or None.
+        """Return canonical UP/DOWN for a resolved window, or None.
 
         Implements WindowStateRepository.get_actual_direction.
+
+        Resolves through a fallback chain so the paper-trade resolver
+        never silently skips a window that DOES have an oracle signal
+        (audit #350, hub note #334 — synthetic-price bug):
+
+          1. ``actual_direction``  (labeler-stamped, preferred)
+          2. ``oracle_outcome``    (Polymarket Gamma, gold standard)
+          3. ``outcome``           (legacy column, populated by
+             :meth:`update_window_outcome` after a live trade resolves)
+          4. derived from ``open_price`` / ``close_price`` (Chainlink/
+             Tiingo close vs window open from the snapshot row)
+
+        Returns ``None`` only when the window genuinely has no oracle
+        evidence — never falls back to synthetic placeholders.
         """
         if not self._pool:
             return None
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    """SELECT actual_direction
+                    """SELECT actual_direction,
+                              oracle_outcome,
+                              outcome,
+                              open_price,
+                              close_price
                        FROM window_snapshots
                        WHERE window_ts = $1 AND asset = $2
-                         AND actual_direction IS NOT NULL
+                       ORDER BY created_at DESC NULLS LAST
                        LIMIT 1""",
                     key.window_ts,
                     key.asset,
                 )
-                return row["actual_direction"] if row else None
+                if row is None:
+                    return None
+                return _coerce_direction(row)
         except Exception as exc:
             log.warning(
                 "pg_window_repo.get_actual_direction_failed",
+                error=str(exc)[:100],
+            )
+            return None
+
+    async def get_window_outcome_prices(
+        self, key: WindowKey
+    ) -> Optional[tuple[float, float]]:
+        """Return (open_price, close_price) for a resolved window, or None.
+
+        Used by the telegram per-trade resolved-card emitter so it can
+        display ACTUAL BTC prices instead of the historical synthetic
+        ``$100,000 → $100,001`` placeholders (audit #350). Returns
+        ``None`` when either price is missing — the caller MUST treat
+        that as "skip the card" rather than fabricate values.
+        """
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT open_price, close_price
+                       FROM window_snapshots
+                       WHERE window_ts = $1 AND asset = $2
+                       ORDER BY created_at DESC NULLS LAST
+                       LIMIT 1""",
+                    key.window_ts,
+                    key.asset,
+                )
+                if row is None:
+                    return None
+                op, cp = row["open_price"], row["close_price"]
+                if op is None or cp is None:
+                    return None
+                try:
+                    op_f = float(op)
+                    cp_f = float(cp)
+                except (TypeError, ValueError):
+                    return None
+                if op_f <= 0 or cp_f <= 0:
+                    return None
+                return op_f, cp_f
+        except Exception as exc:
+            log.warning(
+                "pg_window_repo.get_window_outcome_prices_failed",
                 error=str(exc)[:100],
             )
             return None

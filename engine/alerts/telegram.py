@@ -512,6 +512,8 @@ class TelegramAlerter:
         asset: str = "BTC",
         trade_id: Optional[str] = None,
         condition_id: Optional[str] = None,
+        actual_open_usd: Optional[float] = None,
+        actual_close_usd: Optional[float] = None,
     ) -> None:
         """Emit a rich individual v2 resolved card for a single trade.
 
@@ -569,9 +571,50 @@ class TelegramAlerter:
         else:
             actual = "DOWN" if predicted == "UP" else "UP"
 
-        # Synthetic BTC prices that produce correct actual_direction
-        open_price = 100_000.0
-        close_price = 100_001.0 if actual == "UP" else 99_999.0
+        # Real BTC open/close — NEVER synthesize (audit #350 / note #334).
+        #
+        # The previous fallback used ``open=$100,000`` and
+        # ``close=$100,001`` (UP) / ``$99,999`` (DOWN). Those placeholders
+        # were downstream-display only, but they masked upstream resolver
+        # bugs because the rendered numbers always agreed with the
+        # (potentially wrong) outcome. Now we use:
+        #
+        #   1. Caller-provided ``actual_open_usd`` / ``actual_close_usd``
+        #      when both are present and positive (preferred — the
+        #      reconciler can pass the prices it just used to resolve).
+        #   2. ``window_snapshots.open_price`` / ``close_price`` from the
+        #      canonical row.
+        #   3. Skip the card with a warning — never fabricate.
+        open_price: Optional[float] = None
+        close_price: Optional[float] = None
+        if (
+            actual_open_usd is not None
+            and actual_close_usd is not None
+            and float(actual_open_usd) > 0
+            and float(actual_close_usd) > 0
+        ):
+            open_price = float(actual_open_usd)
+            close_price = float(actual_close_usd)
+        else:
+            prices = await self._fetch_window_outcome_prices(
+                asset=asset, window_ts=int(window_ts or 0)
+            )
+            if prices is not None:
+                open_price, close_price = prices
+
+        if open_price is None or close_price is None:
+            self._log.warning(
+                "telegram.per_trade_resolved_v2.skipped_no_prices",
+                trade_id=trade_id,
+                window_ts=window_ts,
+                strategy=strategy,
+                outcome=outcome,
+                reason=(
+                    "no caller-provided prices and "
+                    "window_snapshots open_price/close_price unavailable"
+                ),
+            )
+            return
 
         duration = 300 if timeframe == "5m" else 900
 
@@ -2563,6 +2606,49 @@ class TelegramAlerter:
     def set_db_client(self, db) -> None:
         """Inject DB client for notification logging."""
         self._db_client = db
+
+    async def _fetch_window_outcome_prices(
+        self, *, asset: str, window_ts: int
+    ) -> Optional[tuple[float, float]]:
+        """Return real (open_price, close_price) for a resolved window.
+
+        Source of truth: ``window_snapshots`` (Chainlink/Tiingo close).
+        Returns ``None`` when the window has no usable open/close — the
+        caller MUST treat ``None`` as "skip the card", never fall back
+        to synthetic placeholders (audit #350).
+        """
+        if not self._db_client or not getattr(self._db_client, "_pool", None):
+            return None
+        if not window_ts or window_ts <= 0:
+            return None
+        try:
+            async with self._db_client._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT open_price, close_price
+                       FROM window_snapshots
+                       WHERE window_ts = $1 AND asset = $2
+                       ORDER BY created_at DESC NULLS LAST
+                       LIMIT 1""",
+                    int(window_ts),
+                    str(asset or "BTC"),
+                )
+            if row is None:
+                return None
+            op, cp = row["open_price"], row["close_price"]
+            if op is None or cp is None:
+                return None
+            op_f = float(op)
+            cp_f = float(cp)
+            if op_f <= 0 or cp_f <= 0:
+                return None
+            return op_f, cp_f
+        except Exception as exc:
+            self._log.debug(
+                "telegram.fetch_window_outcome_prices_failed",
+                error=str(exc)[:120],
+                window_ts=window_ts,
+            )
+            return None
 
     def _footer(self, window_id: Optional[str] = None) -> str:
         parts = [f"📍 {self._location}", self._engine_version, self._mode_tag()]

@@ -132,6 +132,8 @@ class TestPerTradeResolvedV2:
     @pytest.mark.asyncio
     async def test_win_up_emits_correct_win(self):
         alerter, cap = _wire_alerter()
+        # Audit #350: caller must pass real open/close prices — the
+        # synthetic ``$100,000 → $100,001`` fallback was removed.
         await alerter.emit_per_trade_resolved_v2(
             direction="YES",  # predicted UP
             outcome="WIN",
@@ -140,6 +142,8 @@ class TestPerTradeResolvedV2:
             cost=5.00,
             window_ts=1_712_345_678,
             strategy="v4_fusion",
+            actual_open_usd=80_267.93,
+            actual_close_usd=80_300.50,  # close > open → UP, matches WIN
         )
         assert len(cap.sent) == 1
         msg = cap.sent[0]
@@ -157,6 +161,8 @@ class TestPerTradeResolvedV2:
             cost=4.29,
             window_ts=1_712_345_678,
             strategy="v4_fusion",
+            actual_open_usd=80_267.93,
+            actual_close_usd=80_300.50,  # actual UP, predicted DOWN → WRONG
         )
         assert len(cap.sent) == 1
         msg = cap.sent[0]

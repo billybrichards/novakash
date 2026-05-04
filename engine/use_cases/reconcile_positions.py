@@ -194,7 +194,25 @@ class ReconcilePositionsUseCase:
                 actual_direction = await self._window_state.get_actual_direction(key)
 
                 if actual_direction is None:
+                    # Audit #350: explicit warn so operators can spot
+                    # windows that resolved without any oracle signal —
+                    # these used to fall through to synthetic-price
+                    # placeholder paths and silently misclassify trades.
                     skipped += 1
+                    logger.warning(
+                        "reconciler.paper_skip_no_oracle",
+                        extra={
+                            "trade_id": trade.get("id"),
+                            "window_ts": int(raw_ts),
+                            "asset": asset,
+                            "direction": direction,
+                            "reason": (
+                                "window_snapshots has no actual_direction / "
+                                "oracle_outcome / outcome / open+close — "
+                                "retry next pass, do NOT synthesize"
+                            ),
+                        },
+                    )
                     continue
 
                 # direction is "NO" (bet DOWN) or "YES" (bet UP) from Polymarket
