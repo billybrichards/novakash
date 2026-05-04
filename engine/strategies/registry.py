@@ -64,6 +64,13 @@ def _register_gates() -> None:
     from strategies.gates.multi_model_consensus import MultiModelConsensusGate
     from strategies.gates.model_disagreement_veto import ModelDisagreementVetoGate
     from strategies.gates.confidence_band_skip import ConfidenceBandSkipGate
+    # 2026-05-04 — close strict-gate-list safety gap surfaced by the
+    # 10:55 UTC regime flip (chainlink/tiingo direction disagreement +
+    # CLOB asks outside historical PnL band). Mirrors the v9_ensemble
+    # ``skip_on_oracle_disagree`` and ``fill_band_*`` checks but as
+    # standalone gate-list-style gates.
+    from strategies.gates.oracle_direction import OracleDirectionGate
+    from strategies.gates.fill_band import FillBandGate
 
     _GATE_REGISTRY.update(
         {
@@ -92,6 +99,9 @@ def _register_gates() -> None:
             "multi_model_consensus": MultiModelConsensusGate,
             "model_disagreement_veto": ModelDisagreementVetoGate,
             "confidence_band_skip": ConfidenceBandSkipGate,
+            # 2026-05-04 — strict-gate-list safety gates
+            "oracle_direction": OracleDirectionGate,
+            "fill_band": FillBandGate,
         }
     )
 

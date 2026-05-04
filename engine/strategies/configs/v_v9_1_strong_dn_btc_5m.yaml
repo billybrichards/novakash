@@ -21,6 +21,15 @@ gates:
     params: { allow: [volatile_trend, chop, risk_off] }
   - type: model_disagreement_veto
     params: { primary: v9_1, secondary: v12, max_abs_diff: 0.20 }
+  # Safety gates added 2026-05-04 (PR: feat/add-safety-gates-strict-strategies)
+  # — this strategy fired through the 10:55 UTC oracle flip and lost real
+  # money. Mirrors v9_ensemble's safety net.
+  - type: oracle_direction
+    params: { direction: DOWN }
+  - type: vpin_gate
+    params: { min: 0.40, block_cascade: true }
+  - type: fill_band
+    params: { direction: DOWN, min_fill_price: 0.15, max_fill_price: 0.82 }
   - type: consecutive_pass_ticks
     params: { min_ticks: 10 }
 

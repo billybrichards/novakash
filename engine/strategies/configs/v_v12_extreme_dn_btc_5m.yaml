@@ -21,6 +21,16 @@ gates:
       vote_threshold_dn: 0.30
   - type: regime_v4
     params: { allow: [volatile_trend, chop, risk_off] }
+  # Safety gates added 2026-05-04 (PR: feat/add-safety-gates-strict-strategies)
+  # to close the gap that fired this strategy through the 10:55 UTC oracle
+  # disagreement (-$60.90 wallet impact in 2h post-flip). Mirrors
+  # v9_ensemble's skip_on_oracle_disagree + vpin floor + fill_band guards.
+  - type: oracle_direction
+    params: { direction: DOWN }
+  - type: vpin_gate
+    params: { min: 0.40, block_cascade: true }
+  - type: fill_band
+    params: { direction: DOWN, min_fill_price: 0.15, max_fill_price: 0.82 }
   - type: consecutive_pass_ticks
     params: { min_ticks: 10 }
 
