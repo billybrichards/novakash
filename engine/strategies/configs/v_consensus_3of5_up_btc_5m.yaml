@@ -26,6 +26,14 @@ gates:
     params: { allow: [volatile_trend, chop, risk_off] }
   - type: model_disagreement_veto
     params: { primary: v9, secondary: v12, max_abs_diff: 0.20 }
+  # Safety gates added 2026-05-04 (PR: feat/add-safety-gates-strict-strategies)
+  # to close the strict-gate-list oracle/fill_band/vpin safety gap.
+  - type: oracle_direction
+    params: { direction: UP }
+  - type: vpin_gate
+    params: { min: 0.40, block_cascade: true }
+  - type: fill_band
+    params: { direction: UP, min_fill_price: 0.20, max_fill_price: 0.82 }
   - type: consecutive_pass_ticks
     params: { min_ticks: 10 }
 
