@@ -72,11 +72,18 @@ class ReconcilePositionsUseCase:
         window_state: WindowStateRepository,
         alerts: AlerterPort,
         clock: Clock,
+        canonical_resolver: Any = None,
     ) -> None:
         self._trade_repo = trade_repo
         self._window_state = window_state
         self._alerts = alerts
         self._clock = clock
+        # Audit #350 follow-up: verifies position.outcome (data-api curPrice
+        # derived) against the canonical Polymarket chain (HTML →
+        # window_snapshots → on-chain CTF). When canonical disagrees the
+        # use case flips the outcome before writing. None disables
+        # verification (legacy behaviour).
+        self._canonical_resolver = canonical_resolver
         self._haiku = HaikuSummarizer()
         # Pending per-resolution alert payloads, flushed as one batched
         # Telegram summary at the end of each execute() call. Replaces
@@ -193,6 +200,39 @@ class ReconcilePositionsUseCase:
                 key = WindowKey(asset=asset, window_ts=int(raw_ts))
                 actual_direction = await self._window_state.get_actual_direction(key)
 
+                # Audit #350: prefer canonical resolver (HTML scrape) when
+                # window_snapshots hasn't been backfilled yet, OR cross-check
+                # if both are available. window_snapshots is canonical when
+                # populated, but HTML is faster (no engine writer dependency)
+                # so it covers the gap when the writer is behind.
+                tf_str = (trade.get("timeframe") or "5m")
+                if self._canonical_resolver is not None and actual_direction is None:
+                    try:
+                        canon = await self._canonical_resolver.resolve_window_outcome_canonical(
+                            asset=asset,
+                            timeframe=tf_str,
+                            window_ts=int(raw_ts),
+                            # Paper trades have no condition_id; on-chain tier skipped.
+                            condition_id=None,
+                            fallback_curprice_outcome=None,
+                        )
+                        if canon is not None:
+                            actual_direction = canon.direction
+                            logger.info(
+                                "reconciler.paper_canonical_fill",
+                                extra={
+                                    "trade_id": trade.get("id"),
+                                    "window_ts": int(raw_ts),
+                                    "canonical_direction": canon.direction,
+                                    "canonical_source": canon.source,
+                                },
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "reconciler.paper_canonical_error",
+                            extra={"trade_id": trade.get("id"), "error": str(exc)[:120]},
+                        )
+
                 if actual_direction is None:
                     skipped += 1
                     continue
@@ -298,6 +338,69 @@ class ReconcilePositionsUseCase:
                 is_backfill=is_backfill,
             )
             return None
+
+        # ── Audit #350: verify position.outcome via canonical chain ────────
+        # ``position.outcome`` was derived upstream from data-api ``curPrice``
+        # (LivePolymarketClient.get_position_outcomes — curPrice <= 0.01 →
+        # LOSS, >= 0.99 → WIN). When the position has been redeemed on-chain
+        # OR data-api lags, that flag can be wrong. We re-derive the
+        # canonical UP/DOWN direction from the trade's window_ts via the
+        # priority chain (HTML > window_snapshots > on-chain CTF > curPrice).
+        if self._canonical_resolver is not None:
+            try:
+                _ts = match.get("window_ts")
+                _asset = match.get("asset") or "BTC"
+                _tf = match.get("timeframe") or "5m"
+                _trade_dir = (match.get("direction") or "").upper()
+                _curprice_dir = None
+                if _trade_dir in ("UP", "YES"):
+                    _curprice_dir = "UP" if outcome == "WIN" else "DOWN"
+                elif _trade_dir in ("DOWN", "NO"):
+                    _curprice_dir = "DOWN" if outcome == "WIN" else "UP"
+                if _ts and _trade_dir:
+                    canon = await self._canonical_resolver.resolve_window_outcome_canonical(
+                        asset=_asset,
+                        timeframe=_tf,
+                        window_ts=int(_ts),
+                        condition_id=position.condition_id,
+                        fallback_curprice_outcome=_curprice_dir,
+                    )
+                    if canon is not None:
+                        # Recompute outcome from canonical direction.
+                        if _trade_dir in ("UP", "YES"):
+                            canonical_outcome = (
+                                "WIN" if canon.direction == "UP" else "LOSS"
+                            )
+                        else:
+                            canonical_outcome = (
+                                "WIN" if canon.direction == "DOWN" else "LOSS"
+                            )
+                        if canonical_outcome != outcome:
+                            logger.warning(
+                                "reconciler.curprice_canonical_disagree",
+                                extra={
+                                    "trade_id": match.get("id"),
+                                    "condition_id": position.condition_id[:20],
+                                    "direction": _trade_dir,
+                                    "curprice_outcome": outcome,
+                                    "canonical_outcome": canonical_outcome,
+                                    "canonical_direction": canon.direction,
+                                    "canonical_source": canon.source,
+                                    "note": "canonical wins; data-api curPrice was misleading",
+                                },
+                            )
+                            outcome = canonical_outcome
+                            status = (
+                                "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
+                            )
+            except Exception as exc:
+                logger.warning(
+                    "reconciler.canonical_verify_error",
+                    extra={
+                        "trade_id": match.get("id"),
+                        "error": str(exc)[:200],
+                    },
+                )
 
         # Compute PnL from per-trade data (not Polymarket aggregate)
         trade_id = match["id"]
@@ -419,6 +522,8 @@ class ReconcilePositionsUseCase:
             match_method=match_method,
             strategy=match.get("strategy"),
             is_backfill=is_backfill,
+            asset=(match.get("asset") or "BTC"),
+            timeframe=(match.get("timeframe") or "5m"),
         )
 
         return ResolutionResult(
@@ -523,6 +628,8 @@ class ReconcilePositionsUseCase:
         match_method: Optional[str] = None,
         strategy: Optional[str] = None,
         is_backfill: bool = False,
+        asset: str = "BTC",
+        timeframe: str = "5m",
     ) -> None:
         """Queue a live position resolution for the batched end-of-pass summary.
 
@@ -560,6 +667,31 @@ class ReconcilePositionsUseCase:
             and alert_dict["matched"]
             and hasattr(self._alerts, "emit_per_trade_resolved_v2")
         ):
+            # Audit #350: pull canonical prices (Polymarket HTML scrape)
+            # for the resolution card. The HTML fetcher has a permanent
+            # positive cache, so the verification step earlier in
+            # resolve_one() already paid the network cost — this is a
+            # zero-cost cache hit. If unavailable, the alerter SKIPS the
+            # card rather than fabricating $100K placeholders.
+            actual_open_usd = None
+            actual_close_usd = None
+            if (
+                self._canonical_resolver is not None
+                and getattr(self._canonical_resolver, "_html_fetcher", None) is not None
+                and window_ts
+            ):
+                try:
+                    rw = await self._canonical_resolver._html_fetcher.fetch_resolution(
+                        asset=asset,
+                        timeframe=timeframe,
+                        window_ts=int(window_ts),
+                    )
+                    if rw is not None:
+                        actual_open_usd = float(rw.price_to_beat)
+                        actual_close_usd = float(rw.close_price)
+                except Exception:
+                    pass
+
             try:
                 await self._alerts.emit_per_trade_resolved_v2(
                     direction=alert_dict["direction"] or "UP",
@@ -571,6 +703,8 @@ class ReconcilePositionsUseCase:
                     strategy=strategy or "unknown",
                     trade_id=str(matched_trade_id) if matched_trade_id else None,
                     condition_id=position.condition_id,
+                    actual_open_usd=actual_open_usd,
+                    actual_close_usd=actual_close_usd,
                 )
             except Exception as exc:
                 logger.warning(

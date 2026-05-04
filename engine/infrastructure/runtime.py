@@ -163,6 +163,15 @@ class EngineRuntime:
         # instance survives across the snapshot loop and caches LKG.
         self._wallet_rpc_reader: WalletRPCReader = WalletRPCReader()
 
+        # Canonical Polymarket window-outcome resolver — audit #350 follow-up.
+        # Single instance shared across the OrderManager + ReconcilePositions
+        # use case + CLOBReconciler so HTML / window_snapshots / on-chain
+        # caches are unified. The resolver wraps an HTML fetcher (anonymous
+        # HTTP scrape) plus optional callbacks for window_snapshots lookup
+        # and on-chain CTF.payoutNumerators. Wired below once the DB pool
+        # and PgWindowRepository are live.
+        self._canonical_resolver = None
+
         # Inject the on-chain reader into the heartbeat tick use case so
         # sync_bankroll receives total effective balance (USDC + pUSD),
         # preventing false drawdown kills when USDC moves into pUSD
@@ -428,11 +437,60 @@ class EngineRuntime:
 
             self._window_state_repo = PgWindowRepository(self._db._pool)
             self._trade_repo_adapter = PgTradeRepository(self._db._pool)
+
+            # ── Canonical resolver — audit #350 follow-up ─────────────────
+            # Built here so it can be threaded into every downstream writer
+            # (ReconcilePositionsUseCase below, OrderManager via setter,
+            # CLOBReconciler at all three construction sites). Free of any
+            # direct repo dependency — uses callables.
+            try:
+                from reconciliation.canonical_resolver import (
+                    CanonicalResolver,
+                    onchain_ctf_payout_lookup,
+                )
+                from data.feeds.polymarket_html_resolution import (
+                    PolymarketHTMLResolutionFetcher,
+                )
+                from domain.value_objects import WindowKey
+
+                _wsr = self._window_state_repo
+
+                async def _ws_lookup(asset: str, window_ts: int) -> Optional[str]:
+                    try:
+                        return await _wsr.get_actual_direction(
+                            WindowKey(asset=asset, window_ts=int(window_ts))
+                        )
+                    except Exception:
+                        return None
+
+                self._canonical_resolver = CanonicalResolver(
+                    html_fetcher=PolymarketHTMLResolutionFetcher(),
+                    window_snapshots_lookup=_ws_lookup,
+                    onchain_ctf_lookup=onchain_ctf_payout_lookup,
+                )
+                # Inject into the OrderManager so its
+                # _resolve_from_polymarket() uses the chain too.
+                if self._order_manager is not None:
+                    try:
+                        self._order_manager._canonical_resolver = (
+                            self._canonical_resolver
+                        )
+                    except Exception:
+                        pass
+                log.info("orchestrator.canonical_resolver_wired")
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.canonical_resolver_failed",
+                    error=str(exc)[:200],
+                )
+                self._canonical_resolver = None
+
             self._reconcile_uc = ReconcilePositionsUseCase(
                 trade_repo=self._trade_repo_adapter,
                 window_state=self._window_state_repo,
                 alerts=self._alerter,
                 clock=SystemClock(),
+                canonical_resolver=self._canonical_resolver,
             )
             log.info("orchestrator.reconcile_uc_wired")
         except Exception as exc:
@@ -1042,6 +1100,9 @@ class EngineRuntime:
                         # instance shared with the snapshot loop so LKG
                         # is unified.
                         wallet_rpc_reader=self._wallet_rpc_reader,
+                        # Audit #350: canonical resolver for outcome
+                        # verification on backfill + orphan resolution.
+                        canonical_resolver=self._canonical_resolver,
                     )
                     await self._reconciler.start()
                     log.info(
@@ -2800,6 +2861,9 @@ class EngineRuntime:
                                             shutdown_event=self._shutdown_event,
                                             # See first-boot site for rationale.
                                             wallet_rpc_reader=self._wallet_rpc_reader,
+                                            # Audit #350: canonical resolver
+                                            # for outcome verification.
+                                            canonical_resolver=self._canonical_resolver,
                                         )
                                         await self._reconciler.start()
                                         log.info(
@@ -4715,6 +4779,9 @@ class EngineRuntime:
                     db_pool=self._db._pool if self._db else None,
                     alerter=self._alerter,
                     shutdown_event=self._shutdown_event,
+                    # Audit #350: canonical resolver for outcome verification
+                    # in the SOT-only paper-mode reconciler too.
+                    canonical_resolver=self._canonical_resolver,
                 )
             except Exception as exc:
                 log.error("sot_reconciler_loop.init_failed", error=str(exc))
