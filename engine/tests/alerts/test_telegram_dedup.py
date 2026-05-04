@@ -48,6 +48,13 @@ def _wire() -> tuple[TelegramAlerter, _CapturingAlerter]:
     return alerter, cap
 
 
+# Audit #350: every emit_per_trade_resolved_v2 call now requires canonical
+# actual_open_usd / actual_close_usd. The synthetic $100K placeholder was
+# removed because it masked the audit-#350 misclassification. Tests pass
+# realistic Polymarket priceToBeat / closePrice numbers (BTC ~$78K).
+_CANONICAL_PRICES = {"actual_open_usd": 78675.76, "actual_close_usd": 78690.20}
+
+
 @pytest.mark.asyncio
 async def test_same_trade_id_and_condition_dedup():
     alerter, cap = _wire()
@@ -61,6 +68,7 @@ async def test_same_trade_id_and_condition_dedup():
         strategy="v4_fusion",
         trade_id="trade-007",
         condition_id="0xcid007",
+        **_CANONICAL_PRICES,
     )
     await alerter.emit_per_trade_resolved_v2(**kwargs)
     await alerter.emit_per_trade_resolved_v2(**kwargs)
@@ -79,6 +87,7 @@ async def test_different_condition_not_deduped():
         window_ts=1_712_345_678,
         strategy="v4_fusion",
         trade_id="trade-007",
+        **_CANONICAL_PRICES,
     )
     await alerter.emit_per_trade_resolved_v2(**base, condition_id="0xcidA")
     await alerter.emit_per_trade_resolved_v2(**base, condition_id="0xcidB")
@@ -98,6 +107,7 @@ async def test_window_ts_fallback_when_no_trade_id():
         window_ts=1_712_345_678,
         strategy="v4_fusion",
         condition_id="0xsame",
+        **_CANONICAL_PRICES,
     )
     await alerter.emit_per_trade_resolved_v2(**base)
     await alerter.emit_per_trade_resolved_v2(**base)
@@ -117,6 +127,7 @@ async def test_dedup_cap_trims_oldest():
         cost=1.0,
         window_ts=100,
         strategy="v4_fusion",
+        **_CANONICAL_PRICES,
     )
     for i in range(5):
         await alerter.emit_per_trade_resolved_v2(

@@ -140,6 +140,9 @@ class TestPerTradeResolvedV2:
             cost=5.00,
             window_ts=1_712_345_678,
             strategy="v4_fusion",
+            # Audit #350: canonical Polymarket prices required.
+            actual_open_usd=78675.76,
+            actual_close_usd=78690.20,
         )
         assert len(cap.sent) == 1
         msg = cap.sent[0]
@@ -157,6 +160,8 @@ class TestPerTradeResolvedV2:
             cost=4.29,
             window_ts=1_712_345_678,
             strategy="v4_fusion",
+            actual_open_usd=78675.76,
+            actual_close_usd=78690.20,
         )
         assert len(cap.sent) == 1
         msg = cap.sent[0]
@@ -174,8 +179,26 @@ class TestPerTradeResolvedV2:
             cost=2.00,
             window_ts=1_712_345_678,
             strategy="v4_fusion",
+            actual_open_usd=78675.76,
+            actual_close_usd=78690.20,
         )
         assert len(cap.sent) == 0
+
+    @pytest.mark.asyncio
+    async def test_skips_when_no_canonical_prices(self):
+        """Audit #350: NEVER fabricate prices. Skip card if caller didn't pass canonical."""
+        alerter, cap = _wire_alerter()
+        await alerter.emit_per_trade_resolved_v2(
+            direction="YES",
+            outcome="WIN",
+            pnl=2.10,
+            entry_price=0.52,
+            cost=5.00,
+            window_ts=1_712_345_678,
+            strategy="v4_fusion",
+            # NO actual_open_usd / actual_close_usd → must skip
+        )
+        assert len(cap.sent) == 0, "card must skip without canonical prices"
 
 
 # ---------------------------------------------------------------------------

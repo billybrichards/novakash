@@ -50,12 +50,17 @@ class OrderManager:
         paper_mode: bool = True,
         on_resolution: Optional[callable] = None,
         poly_client: object = None,
+        canonical_resolver: object = None,
     ) -> None:
         self._db = db
         self._bankroll = bankroll
         self._paper_mode = paper_mode
         self._on_resolution = on_resolution
         self._poly_client = poly_client
+        # Audit #350 follow-up: canonical resolver verifies gamma-API winner
+        # against Polymarket HTML / window_snapshots / on-chain CTF before
+        # writing WIN/LOSS. None disables verification (legacy behaviour).
+        self._canonical_resolver = canonical_resolver
         self._orders: Dict[str, Order] = {}
         self._order_id_aliases: Dict[str, str] = {}  # retry_id → original_order_id
         self._lock = asyncio.Lock()
@@ -576,14 +581,28 @@ class OrderManager:
                     self._log.error("order_manager.resolution_callback_error", error=str(exc))
 
     async def _resolve_from_polymarket(self, order: Order) -> tuple[str, float] | None:
-        """Query Polymarket Gamma API for actual market resolution.
-        
+        """Resolve a Polymarket order via the canonical priority chain.
+
         Returns (outcome, payout) if market is resolved, None if not yet resolved.
+
+        Audit #350 follow-up: replaces the single-source gamma-API ``winner``
+        decision with a multi-tier canonical chain (HTML scrape →
+        window_snapshots → on-chain CTF → gamma-API). The legacy gamma-API
+        path is now the LAST tier (logged at WARN whenever it fires).
+
+        If ``self._canonical_resolver`` is None, the helper falls back to the
+        legacy gamma-API-only path for backward compatibility — but production
+        wiring (composition.py) always passes one.
         """
         market_slug = (order.metadata or {}).get("market_slug")
         if not market_slug:
             return None
-        
+
+        # ── Step 1: gamma-API "winner" is now only the legacy fallback ────
+        # We still fetch it because (a) it tells us the market is RESOLVED
+        # (closed=true) and (b) it gives us a curPrice-derived ``winner``
+        # string we can pass into the canonical resolver as Tier 4.
+        gamma_winner: Optional[str] = None  # "Up" / "Down" / None
         try:
             import aiohttp
             async with aiohttp.ClientSession() as session:
@@ -592,79 +611,150 @@ class OrderManager:
                     if resp.status != 200:
                         return None
                     data = await resp.json()
-            
+
             if not data or not isinstance(data, list) or not data[0].get("closed"):
                 return None
-            
+
             market = data[0]
             outcome_prices = market.get("outcomePrices", [])
             outcomes = market.get("outcomes", [])
-            
+
             if isinstance(outcome_prices, str):
                 import json as _json
                 outcome_prices = _json.loads(outcome_prices)
             if isinstance(outcomes, str):
                 import json as _json
                 outcomes = _json.loads(outcomes)
-            
-            # Find the winning outcome (price >= 0.99)
-            winner = None
+
             for i, price in enumerate(outcome_prices):
                 if float(price) >= 0.99:
-                    winner = outcomes[i] if i < len(outcomes) else None
+                    gamma_winner = outcomes[i] if i < len(outcomes) else None
                     break
-            
-            if winner is None:
-                return None
-            
-            # Map: YES bet = Up, NO bet = Down
-            if order.direction == "YES":
-                won = winner == "Up"
-            else:
-                won = winner == "Down"
-            
-            if won:
-                try:
-                    # Prefer the realised volume-weighted avg fill price
-                    # (``order.fill_price``) over the submission/limit price
-                    # (``order.price``). For FAK ladder strategies (v9_lgb,
-                    # v10_lgb, v15m_fusion etc.) ``order.price`` is only the
-                    # FIRST rung — using it here inflates payout by the same
-                    # ratio as fill_price/limit_price. Falls back to
-                    # ``order.price`` for paper / single-fill orders that
-                    # never recorded an explicit fill (audit-task #331).
-                    fill_price = float(
-                        order.fill_price
-                        if order.fill_price is not None
-                        else order.price
-                    )
-                    shares = order.stake_usd / fill_price if fill_price > 0 else 0
-                    payout = shares * 1.0
-                except (ValueError, ZeroDivisionError, TypeError):
-                    payout = order.stake_usd * 1.9
 
-                self._log.info(
-                    "polymarket_resolution.win",
-                    order_id=order.order_id[:20] + "...",
-                    direction=order.direction,
-                    poly_winner=winner,
-                    payout=f"{payout:.2f}",
-                    market=market_slug,
-                )
-                return "WIN", payout
-            else:
-                self._log.info(
-                    "polymarket_resolution.loss",
-                    order_id=order.order_id[:20] + "...",
-                    direction=order.direction,
-                    poly_winner=winner,
-                    market=market_slug,
-                )
-                return "LOSS", 0.0
-        
+            if gamma_winner is None:
+                # Market closed but no clear winner yet (in-flight settlement);
+                # don't write outcome, retry next poll cycle.
+                return None
         except Exception as exc:
-            self._log.debug("polymarket_resolution.failed", error=str(exc))
+            self._log.debug("polymarket_resolution.gamma_failed", error=str(exc))
+            # Don't bail yet — canonical resolver may still succeed via HTML.
+            gamma_winner = None
+
+        # ── Step 2: canonical resolver — HTML > snapshots > CTF > gamma ──
+        canonical_direction: Optional[str] = None
+        canonical_source: Optional[str] = None
+        if self._canonical_resolver is not None:
+            meta = order.metadata or {}
+            window_ts = meta.get("window_ts")
+            asset = (
+                (meta.get("market_slug", "").split("-")[0] or "BTC").upper()
+            )
+            timeframe = meta.get("timeframe", "5m")
+            condition_id = meta.get("condition_id") or meta.get("conditionId")
+            curprice_outcome = (
+                "UP" if gamma_winner == "Up"
+                else ("DOWN" if gamma_winner == "Down" else None)
+            )
+            try:
+                canon = await self._canonical_resolver.resolve_window_outcome_canonical(
+                    asset=asset,
+                    timeframe=timeframe,
+                    window_ts=int(window_ts) if window_ts else 0,
+                    condition_id=condition_id,
+                    fallback_curprice_outcome=curprice_outcome,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "polymarket_resolution.canonical_resolver_error",
+                    order_id=order.order_id[:20] + "...",
+                    error=str(exc)[:200],
+                )
+                canon = None
+            if canon is not None:
+                canonical_direction = canon.direction
+                canonical_source = canon.source
+        elif gamma_winner is not None:
+            # Legacy path — no resolver wired.
+            canonical_direction = "UP" if gamma_winner == "Up" else "DOWN"
+            canonical_source = "data_api_curprice_legacy"
+
+        if canonical_direction not in ("UP", "DOWN"):
+            # No canonical source produced an answer — refuse to write the
+            # outcome. Better to wait one more poll cycle than to misclassify.
+            self._log.debug(
+                "polymarket_resolution.no_canonical_outcome",
+                order_id=order.order_id[:20] + "...",
+                gamma_winner=gamma_winner,
+                market=market_slug,
+            )
             return None
+
+        # ── Step 3: derive WIN/LOSS from canonical direction + bet side ──
+        if order.direction in ("YES", "UP"):
+            won = canonical_direction == "UP"
+        else:
+            won = canonical_direction == "DOWN"
+
+        # If canonical disagrees with gamma — log loud (audit #350 evidence).
+        if (
+            gamma_winner is not None
+            and canonical_source != "data_api_curprice"
+            and canonical_source != "data_api_curprice_legacy"
+        ):
+            gamma_dir = "UP" if gamma_winner == "Up" else "DOWN"
+            if gamma_dir != canonical_direction:
+                self._log.warning(
+                    "polymarket_resolution.gamma_canonical_disagree",
+                    order_id=order.order_id[:20] + "...",
+                    gamma_direction=gamma_dir,
+                    canonical_direction=canonical_direction,
+                    canonical_source=canonical_source,
+                    market=market_slug,
+                    note="canonical wins; gamma-API curPrice was misleading",
+                )
+
+        if won:
+            try:
+                # Prefer the realised volume-weighted avg fill price
+                # (``order.fill_price``) over the submission/limit price
+                # (``order.price``). For FAK ladder strategies (v9_lgb,
+                # v10_lgb, v15m_fusion etc.) ``order.price`` is only the
+                # FIRST rung — using it here inflates payout by the same
+                # ratio as fill_price/limit_price. Falls back to
+                # ``order.price`` for paper / single-fill orders that
+                # never recorded an explicit fill (audit-task #331).
+                fill_price = float(
+                    order.fill_price
+                    if order.fill_price is not None
+                    else order.price
+                )
+                shares = order.stake_usd / fill_price if fill_price > 0 else 0
+                payout = shares * 1.0
+            except (ValueError, ZeroDivisionError, TypeError):
+                payout = order.stake_usd * 1.9
+
+            self._log.info(
+                "polymarket_resolution.win",
+                order_id=order.order_id[:20] + "...",
+                direction=order.direction,
+                canonical_direction=canonical_direction,
+                canonical_source=canonical_source,
+                gamma_winner=gamma_winner,
+                payout=f"{payout:.2f}",
+                market=market_slug,
+            )
+            return "WIN", payout
+        else:
+            self._log.info(
+                "polymarket_resolution.loss",
+                order_id=order.order_id[:20] + "...",
+                direction=order.direction,
+                canonical_direction=canonical_direction,
+                canonical_source=canonical_source,
+                gamma_winner=gamma_winner,
+                market=market_slug,
+            )
+            return "LOSS", 0.0
 
     async def _determine_paper_outcome(
         self, order: Order, current_btc_price: float

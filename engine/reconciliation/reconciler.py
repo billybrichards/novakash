@@ -85,9 +85,15 @@ class CLOBReconciler:
         report_interval: float = 300.0,
         sot_price_tolerance_pct: float = 0.5,
         wallet_rpc_reader: Optional[object] = None,
+        canonical_resolver: Optional[object] = None,
     ) -> None:
         self._poly = poly_client
         self._pool = db_pool
+        # Audit #350 follow-up: canonical resolver verifies the
+        # ``get_position_outcomes()`` curPrice-derived WIN/LOSS against the
+        # Polymarket HTML / window_snapshots / on-chain CTF chain before any
+        # trade row is updated. None disables verification (legacy path).
+        self._canonical_resolver = canonical_resolver
         self._alerter = alerter
         self._shutdown = shutdown_event
         self._poll_interval = poll_interval
@@ -383,11 +389,18 @@ class CLOBReconciler:
                         )
 
                         # Step 1: find all unresolved rows under this token_id.
+                        # Audit #350 follow-up: select direction + window_ts +
+                        # asset + timeframe so we can re-verify each row's
+                        # outcome via the canonical resolver before write.
                         unresolved = await conn.fetch(
                             """SELECT id,
                                       stake_usd::float AS stake_usd,
                                       fill_size::float AS fill_size,
-                                      fill_price::float AS fill_price
+                                      fill_price::float AS fill_price,
+                                      direction,
+                                      asset,
+                                      timeframe,
+                                      (metadata->>'window_ts')::bigint AS window_ts
                                FROM trades
                                WHERE outcome IS NULL
                                  AND is_live = true
@@ -409,7 +422,65 @@ class CLOBReconciler:
                                 row_fill = float(r["fill_size"] or 0)
                                 row_price = float(r["fill_price"] or 0)
 
-                                if outcome == "WIN":
+                                # Audit #350: per-row canonical verification.
+                                # The token-level outcome (WIN / LOSS) was
+                                # derived from data-api curPrice which can be
+                                # wrong; re-derive from canonical sources
+                                # using this row's window_ts + direction.
+                                row_outcome = outcome
+                                row_status = status
+                                row_canonical_source: Optional[str] = None
+                                if (
+                                    self._canonical_resolver is not None
+                                    and r.get("window_ts")
+                                    and r.get("direction")
+                                ):
+                                    try:
+                                        _trade_dir = (r["direction"] or "").upper()
+                                        _curprice_dir = (
+                                            "UP" if (
+                                                (outcome == "WIN" and _trade_dir in ("UP", "YES"))
+                                                or (outcome == "LOSS" and _trade_dir in ("DOWN", "NO"))
+                                            ) else "DOWN"
+                                        )
+                                        canon = await self._canonical_resolver.resolve_window_outcome_canonical(
+                                            asset=(r.get("asset") or "BTC").upper(),
+                                            timeframe=r.get("timeframe") or "5m",
+                                            window_ts=int(r["window_ts"]),
+                                            condition_id=cid,
+                                            fallback_curprice_outcome=_curprice_dir,
+                                        )
+                                        if canon is not None:
+                                            if _trade_dir in ("UP", "YES"):
+                                                row_outcome = (
+                                                    "WIN" if canon.direction == "UP" else "LOSS"
+                                                )
+                                            else:
+                                                row_outcome = (
+                                                    "WIN" if canon.direction == "DOWN" else "LOSS"
+                                                )
+                                            row_status = (
+                                                "RESOLVED_WIN" if row_outcome == "WIN"
+                                                else "RESOLVED_LOSS"
+                                            )
+                                            row_canonical_source = canon.source
+                                            if row_outcome != outcome:
+                                                self._log.warning(
+                                                    "reconciler.backfill.canonical_flip",
+                                                    trade_id=r["id"],
+                                                    direction=_trade_dir,
+                                                    curprice_outcome=outcome,
+                                                    canonical_outcome=row_outcome,
+                                                    canonical_source=canon.source,
+                                                )
+                                    except Exception as _exc:
+                                        self._log.warning(
+                                            "reconciler.backfill.canonical_error",
+                                            trade_id=r["id"],
+                                            error=str(_exc)[:120],
+                                        )
+
+                                if row_outcome == "WIN":
                                     if (
                                         len(unresolved) >= 2
                                         and position_payout > 0
@@ -436,7 +507,7 @@ class CLOBReconciler:
                                     row_pnl = round(-row_stake, 4)
 
                                 # Sanity floor: WIN must not be negative.
-                                if outcome == "WIN" and row_pnl < 0:
+                                if row_outcome == "WIN" and row_pnl < 0:
                                     row_pnl = 0.0
 
                                 await conn.execute(
@@ -446,9 +517,9 @@ class CLOBReconciler:
                                            resolved_at = NOW(),
                                            status = $3
                                        WHERE id = $4 AND outcome IS NULL""",
-                                    outcome,
+                                    row_outcome,
                                     row_pnl,
-                                    status,
+                                    row_status,
                                     r["id"],
                                 )
                                 row_count += 1
@@ -719,6 +790,9 @@ class CLOBReconciler:
         # 1. Find orphaned trades in DB
         try:
             async with self._pool.acquire() as conn:
+                # Audit #350: pull direction + window_ts + asset + timeframe
+                # so the canonical resolver can verify each orphan's outcome
+                # before write.
                 orphans = await conn.fetch(
                     """SELECT id, order_id, direction,
                               metadata->>'token_id' as token_id,
@@ -726,7 +800,10 @@ class CLOBReconciler:
                               metadata->>'shares_filled' as shares_filled,
                               metadata->>'entry_reason' as entry_reason,
                               stake_usd,
-                              fill_size
+                              fill_size,
+                              asset,
+                              timeframe,
+                              (metadata->>'window_ts')::bigint AS window_ts
                        FROM trades
                        WHERE status IN ('EXPIRED', 'OPEN', 'FILLED')
                          AND (metadata->>'clob_status' IN ('MATCHED', 'RESTING')
@@ -842,6 +919,58 @@ class CLOBReconciler:
 
             # Position outcome is already WIN/LOSS from get_position_outcomes()
             # WIN means curPrice >= 0.99 (token pays $1), LOSS means curPrice <= 0.01
+            #
+            # Audit #350 follow-up: re-verify pos_outcome against the canonical
+            # priority chain (HTML > window_snapshots > on-chain CTF > curPrice).
+            # If canonical says the other side won, flip pos_outcome before
+            # we compute pnl / write to trades. The trade row carries
+            # everything the resolver needs.
+            if (
+                self._canonical_resolver is not None
+                and orphan.get("direction")
+                and orphan.get("window_ts")
+            ):
+                try:
+                    _trade_dir = (orphan["direction"] or "").upper()
+                    _curprice_dir = (
+                        "UP" if (
+                            (pos_outcome == "WIN" and _trade_dir in ("UP", "YES"))
+                            or (pos_outcome == "LOSS" and _trade_dir in ("DOWN", "NO"))
+                        ) else "DOWN"
+                    )
+                    canon = await self._canonical_resolver.resolve_window_outcome_canonical(
+                        asset=(orphan.get("asset") or "BTC").upper(),
+                        timeframe=orphan.get("timeframe") or "5m",
+                        window_ts=int(orphan["window_ts"]),
+                        condition_id=None,  # orphans don't always carry cid
+                        fallback_curprice_outcome=_curprice_dir,
+                    )
+                    if canon is not None:
+                        if _trade_dir in ("UP", "YES"):
+                            new_outcome = (
+                                "WIN" if canon.direction == "UP" else "LOSS"
+                            )
+                        else:
+                            new_outcome = (
+                                "WIN" if canon.direction == "DOWN" else "LOSS"
+                            )
+                        if new_outcome != pos_outcome:
+                            self._log.warning(
+                                "reconciler.orphan.canonical_flip",
+                                trade_id=orphan["id"],
+                                direction=_trade_dir,
+                                curprice_outcome=pos_outcome,
+                                canonical_outcome=new_outcome,
+                                canonical_source=canon.source,
+                            )
+                            pos_outcome = new_outcome
+                except Exception as _exc:
+                    self._log.warning(
+                        "reconciler.orphan.canonical_error",
+                        trade_id=orphan["id"],
+                        error=str(_exc)[:120],
+                    )
+
             is_win = pos_outcome == "WIN"
 
             # ── Per-trade PnL: use the ACTUAL fill price, not a hardcoded cap. ──

@@ -512,6 +512,8 @@ class TelegramAlerter:
         asset: str = "BTC",
         trade_id: Optional[str] = None,
         condition_id: Optional[str] = None,
+        actual_open_usd: Optional[float] = None,
+        actual_close_usd: Optional[float] = None,
     ) -> None:
         """Emit a rich individual v2 resolved card for a single trade.
 
@@ -520,7 +522,15 @@ class TelegramAlerter:
         the batched reconcile-pass summary).
 
         Derives actual_direction from (predicted + outcome) since the
-        reconciler doesn't have BTC open/close prices.
+        reconciler doesn't have BTC open/close prices itself — but the
+        ``actual_open_usd`` / ``actual_close_usd`` kwargs let callers feed
+        canonical Polymarket HTML / window_snapshots prices so the card
+        shows real numbers.
+
+        Audit #350 follow-up: when canonical prices are NOT available we
+        SKIP the card entirely rather than fabricate the $100,000 / $100,001
+        synthetic placeholder this method previously used. The batched
+        summary still fires unaffected.
 
         Dedup: key on ``(trade_id or window_ts, condition_id)`` — the
         same resolved trade re-seen on a subsequent reconciler pass
@@ -569,9 +579,25 @@ class TelegramAlerter:
         else:
             actual = "DOWN" if predicted == "UP" else "UP"
 
-        # Synthetic BTC prices that produce correct actual_direction
-        open_price = 100_000.0
-        close_price = 100_001.0 if actual == "UP" else 99_999.0
+        # Audit #350: NEVER fabricate prices. If the caller didn't pass
+        # canonical actual_open/close, skip this card. The batched summary
+        # downstream still fires.
+        if (
+            actual_open_usd is None
+            or actual_close_usd is None
+            or actual_open_usd <= 0
+            or actual_close_usd <= 0
+        ):
+            self._log.warning(
+                "telegram.per_trade_resolved_v2.skipped_no_canonical_prices",
+                trade_id=trade_id,
+                window_ts=window_ts,
+                outcome=outcome,
+                note="no canonical actual_open/close from resolver; skipping price line",
+            )
+            return
+        open_price = float(actual_open_usd)
+        close_price = float(actual_close_usd)
 
         duration = 300 if timeframe == "5m" else 900
 
