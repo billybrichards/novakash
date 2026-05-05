@@ -165,11 +165,17 @@ class PolymarketHTMLPriceToBeatFeed:
         # Single-flight: key -> in-flight Future.
         self._inflight: dict[tuple[str, str, int], asyncio.Future] = {}
 
-        # Last-known-good cache per (asset, tf) — used as soft fallback when the
-        # current fetch fails (Polymarket maintenance, transient 5xx). Stores
-        # (window_ts, price_to_beat, monotonic_at_capture). Only honoured when
-        # the entry is younger than LAST_GOOD_CACHE_TTL_SECS. Audit #351.
-        self._last_good: dict[tuple[str, str], tuple[int, float, float]] = {}
+        # Last-known-good cache per (asset, tf, window_ts) — used as soft
+        # fallback when the current fetch fails (Polymarket maintenance,
+        # transient 5xx). Stores (price_to_beat, monotonic_at_capture).
+        # Only honoured when the entry is younger than
+        # LAST_GOOD_CACHE_TTL_SECS. Audit #352: window_ts MUST be in the key.
+        # priceToBeat is window-specific (Polymarket sets a new strike every
+        # 5m / 15m), so a (asset, tf)-only key would serve a previous
+        # window's strike for the current window — silent direction-flip
+        # bug. The key now guarantees the cache can only ever return a value
+        # captured for the SAME window.
+        self._last_good: dict[tuple[str, str, int], tuple[float, float]] = {}
 
         self._log = log.bind(component="PolymarketHTMLPriceToBeatFeed")
         self._started = False
@@ -271,9 +277,11 @@ class PolymarketHTMLPriceToBeatFeed:
 
         if ptb is not None:
             self._store_positive(key, ptb)
-            # Track last-known-good per (asset, tf) for soft-fallback during
-            # future Polymarket maintenance windows (audit #351).
-            self._last_good[(asset_u, tf)] = (window_ts, ptb, time.monotonic())
+            # Track last-known-good per (asset, tf, window_ts) for
+            # soft-fallback during future Polymarket maintenance windows
+            # (audit #351, #352). Keyed on window_ts so the cache cannot
+            # leak a previous window's priceToBeat into the current window.
+            self._last_good[(asset_u, tf, window_ts)] = (ptb, time.monotonic())
         else:
             self._neg_cache[key] = time.monotonic() + NEGATIVE_CACHE_TTL_SECS
         return ptb
@@ -319,6 +327,14 @@ class PolymarketHTMLPriceToBeatFeed:
         if cached is not None:
             return cached
 
+        # Audit #352: evict expired last-known-good entries to bound memory.
+        # With (asset, tf, window_ts) keys we add a new entry per window,
+        # so without eviction the dict would grow unboundedly. Keep entries
+        # only while they could plausibly serve a fallback (4× the TTL —
+        # generous safety margin in case retries on a later window need a
+        # neighbour value still considered "fresh").
+        self._evict_stale_last_good()
+
         delays = [0.0, 1.0, 2.0, 4.0, 8.0]
         loop_start = time.monotonic()
 
@@ -360,9 +376,10 @@ class PolymarketHTMLPriceToBeatFeed:
                     price_to_beat=ptb,
                 )
                 # Record last-known-good for soft-fallback during future
-                # Polymarket maintenance windows (audit #351).
-                self._last_good[(asset_u, tf)] = (
-                    window_ts, ptb, time.monotonic()
+                # Polymarket maintenance windows (audit #351, #352).
+                # Key is (asset, tf, window_ts) — see __init__ comment.
+                self._last_good[(asset_u, tf, window_ts)] = (
+                    ptb, time.monotonic()
                 )
                 return ptb
 
@@ -378,10 +395,15 @@ class PolymarketHTMLPriceToBeatFeed:
             attempts=len(delays),
         )
 
-        # ── Fallback 1: last-known-good cache (audit #351) ─────────────────
-        cached = self._last_good.get((asset_u, tf))
+        # ── Fallback 1: last-known-good cache (audit #351, #352) ───────────
+        # Key is (asset, tf, window_ts): we will ONLY ever return a cached
+        # value that was originally captured for THIS exact window. A prior
+        # window's priceToBeat is structurally inadmissible — Polymarket
+        # sets a new strike every window, so cross-window reuse silently
+        # inverts trade direction.
+        cached = self._last_good.get((asset_u, tf, window_ts))
         if cached is not None:
-            cached_window_ts, cached_ptb, cached_at = cached
+            cached_ptb, cached_at = cached
             cache_age_s = time.monotonic() - cached_at
             if cache_age_s <= LAST_GOOD_CACHE_TTL_SECS:
                 self._log.warning(
@@ -389,7 +411,6 @@ class PolymarketHTMLPriceToBeatFeed:
                     asset=asset_u,
                     timeframe=tf,
                     window_ts=window_ts,
-                    cached_window_ts=cached_window_ts,
                     cache_age_s=round(cache_age_s, 2),
                     price_to_beat=cached_ptb,
                     reason="html_budget_exhausted",
@@ -419,8 +440,9 @@ class PolymarketHTMLPriceToBeatFeed:
                 reason="html_budget_exhausted",
             )
             self._store_positive((asset_u, tf, window_ts), data_api_ptb)
-            self._last_good[(asset_u, tf)] = (
-                window_ts, data_api_ptb, time.monotonic()
+            # Audit #352: keyed on window_ts.
+            self._last_good[(asset_u, tf, window_ts)] = (
+                data_api_ptb, time.monotonic()
             )
             return data_api_ptb
 
@@ -683,3 +705,23 @@ class PolymarketHTMLPriceToBeatFeed:
         if len(self._cache_order) > MAX_POSITIVE_CACHE_ENTRIES:
             old = self._cache_order.pop(0)
             self._cache.pop(old, None)
+
+    def _evict_stale_last_good(self) -> None:
+        """Drop ``_last_good`` entries older than ``LAST_GOOD_CACHE_TTL_SECS * 4``.
+
+        Audit #352. With a (asset, tf, window_ts) key we add a new entry per
+        successful fetch per window, so memory grows linearly with uptime
+        unless we trim. The fallback only honours entries younger than
+        ``LAST_GOOD_CACHE_TTL_SECS`` (60 s ≈ one 5 m window), so anything
+        older than 4× that (240 s) cannot possibly serve and is pure ballast.
+        """
+        if not self._last_good:
+            return
+        now = time.monotonic()
+        cutoff = LAST_GOOD_CACHE_TTL_SECS * 4.0
+        stale = [
+            k for k, (_ptb, captured_at) in self._last_good.items()
+            if (now - captured_at) > cutoff
+        ]
+        for k in stale:
+            self._last_good.pop(k, None)

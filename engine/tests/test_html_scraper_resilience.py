@@ -65,12 +65,19 @@ def test_retry_default_budget_is_30s():
 @pytest.mark.asyncio
 async def test_cache_fallback_serves_stale_value_when_current_fetch_fails(caplog):
     """When all 5 retry attempts return None (Polymarket maintenance), but the
-    feed has a recent last-known-good for (asset, tf), serve the cached value
-    and log `polymarket_html.cache_used`."""
+    feed has a recent last-known-good for THIS exact window, serve the cached
+    value and log `polymarket_html.cache_used`.
+
+    Audit #352: cache key is (asset, tf, window_ts) — only the SAME window's
+    captured value is admissible.
+    """
     feed = PolymarketHTMLPriceToBeatFeed()
 
-    # Seed last-known-good for ("BTC", "5m") at time=now
-    feed._last_good[("BTC", "5m")] = (1777824000, 70123.45, time.monotonic())
+    # Seed last-known-good for the EXACT window under test.
+    target_window_ts = 1777824300
+    feed._last_good[("BTC", "5m", target_window_ts)] = (
+        70123.45, time.monotonic()
+    )
 
     # Make the underlying single-shot always return None (HTML fails / 5xx).
     feed.get_price_to_beat = AsyncMock(return_value=None)
@@ -79,7 +86,8 @@ async def test_cache_fallback_serves_stale_value_when_current_fetch_fails(caplog
     with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
         with caplog.at_level("WARNING"):
             ptb = await feed.get_price_to_beat_with_retry(
-                asset="BTC", timeframe="5m", window_ts=1777824300, total_budget_s=30.0
+                asset="BTC", timeframe="5m",
+                window_ts=target_window_ts, total_budget_s=30.0,
             )
 
     assert ptb == 70123.45
@@ -100,9 +108,11 @@ async def test_cache_expired_does_not_serve_stale_value():
     serve it — a stale priceToBeat from >1 window ago could be wildly off."""
     feed = PolymarketHTMLPriceToBeatFeed()
 
-    # Seed last-known-good with a timestamp older than TTL (61s ago).
+    # Seed last-known-good for the SAME window with a timestamp older than
+    # TTL (61s ago). Audit #352: key is (asset, tf, window_ts).
+    target_window_ts = 1777824300
     expired_at = time.monotonic() - (LAST_GOOD_CACHE_TTL_SECS + 1.0)
-    feed._last_good[("BTC", "5m")] = (1777823700, 70000.0, expired_at)
+    feed._last_good[("BTC", "5m", target_window_ts)] = (70000.0, expired_at)
 
     # HTML fetches all return None.
     feed.get_price_to_beat = AsyncMock(return_value=None)
@@ -111,7 +121,8 @@ async def test_cache_expired_does_not_serve_stale_value():
 
     with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
         ptb = await feed.get_price_to_beat_with_retry(
-            asset="BTC", timeframe="5m", window_ts=1777824300, total_budget_s=30.0
+            asset="BTC", timeframe="5m",
+            window_ts=target_window_ts, total_budget_s=30.0,
         )
 
     assert ptb is None  # cache too old → not used → fully_failed
@@ -157,8 +168,8 @@ async def test_data_api_fallback_caches_for_subsequent_calls():
 
     # Permanent cache populated under the canonical key.
     assert feed._cache[("BTC", "5m", 1777824300)] == 98765.43
-    # Last-known-good per (asset, tf) updated too.
-    assert feed._last_good[("BTC", "5m")][1] == 98765.43
+    # Last-known-good keyed on (asset, tf, window_ts) — audit #352.
+    assert feed._last_good[("BTC", "5m", 1777824300)][0] == 98765.43
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,8 +215,8 @@ async def test_successful_fetch_records_last_known_good():
         )
 
     assert ptb == 70000.0
-    cached_window_ts, cached_ptb, cached_at = feed._last_good[("BTC", "5m")]
-    assert cached_window_ts == 1777824300
+    # Audit #352: key is (asset, tf, window_ts), value is (ptb, captured_at).
+    cached_ptb, cached_at = feed._last_good[("BTC", "5m", 1777824300)]
     assert cached_ptb == 70000.0
     # Captured time is recent (within last 5s).
     assert (time.monotonic() - cached_at) < 5.0
@@ -221,8 +232,8 @@ async def test_single_shot_get_also_records_last_known_good():
     ptb = await feed.get_price_to_beat("BTC", "5m", 1777824300)
 
     assert ptb == 71234.0
-    cached_window_ts, cached_ptb, _ = feed._last_good[("BTC", "5m")]
-    assert cached_window_ts == 1777824300
+    # Audit #352: key is (asset, tf, window_ts), value is (ptb, captured_at).
+    cached_ptb, _ = feed._last_good[("BTC", "5m", 1777824300)]
     assert cached_ptb == 71234.0
 
 
@@ -348,3 +359,179 @@ async def test_retries_proceed_through_all_5_attempts_when_html_keeps_failing():
 
     # 30s budget covers all 5 backoff slots (cumulative 0+1+2+4+8 = 15s sleep).
     assert feed.get_price_to_beat.await_count == 5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Audit #352 — cache key MUST include window_ts.
+# Polymarket sets a NEW priceToBeat strike for every 5m / 15m window, so a
+# (asset, tf)-only key would silently leak window A's value into window B —
+# inverting trade direction whenever HTML+data-api both fail in window B
+# while window A has a fresh entry. These tests pin the structural fix.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cache_key_includes_window_ts_only_serves_same_window():
+    """Audit #352 core assertion: a cache hit for window_ts=A returns ptb_A
+    when retrieving window_ts=A — same-window lookup works."""
+    feed = PolymarketHTMLPriceToBeatFeed()
+
+    window_a = 1777824300
+    feed._last_good[("BTC", "5m", window_a)] = (70123.45, time.monotonic())
+
+    feed.get_price_to_beat = AsyncMock(return_value=None)
+    feed._fetch_price_to_beat_data_api = AsyncMock(return_value=None)
+
+    with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+        ptb = await feed.get_price_to_beat_with_retry(
+            asset="BTC", timeframe="5m", window_ts=window_a, total_budget_s=30.0
+        )
+
+    # Same-window lookup hits the cache → returns the captured ptb.
+    assert ptb == 70123.45
+    # Data-api was NOT consulted because cache fallback fired first.
+    feed._fetch_price_to_beat_data_api.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cache_does_not_leak_across_windows():
+    """Audit #352 critical regression test: window A's cached priceToBeat
+    must NOT be served for window B, even when window A's entry is fresh
+    and window B has nothing.
+
+    PR #485 had a (asset, tf)-only key that DID leak window A → window B.
+    With the (asset, tf, window_ts) key, window B sees an empty cache,
+    falls through to data-api, and on data-api failure logs fully_failed."""
+    feed = PolymarketHTMLPriceToBeatFeed()
+
+    window_a = 1777824000
+    window_b = 1777824300  # next 5m window (300 s later)
+
+    # Window A has a fresh cached priceToBeat.
+    feed._last_good[("BTC", "5m", window_a)] = (70123.45, time.monotonic())
+
+    # All HTML retries return None, data-api returns None.
+    feed.get_price_to_beat = AsyncMock(return_value=None)
+    feed._fetch_price_to_beat_data_api = AsyncMock(return_value=None)
+
+    with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+        ptb = await feed.get_price_to_beat_with_retry(
+            asset="BTC", timeframe="5m", window_ts=window_b, total_budget_s=30.0
+        )
+
+    # CRITICAL: window B must NOT receive window A's priceToBeat.
+    assert ptb is None, (
+        "Cache leaked window A's priceToBeat into window B — the very bug "
+        "audit #352 fixes. Cache key MUST include window_ts."
+    )
+    # Confirm we did try the data-api fallback (proves cache fallback was
+    # bypassed because the key didn't match).
+    feed._fetch_price_to_beat_data_api.assert_awaited_once()
+    # Window A's entry must still be present (fix must not delete it).
+    assert ("BTC", "5m", window_a) in feed._last_good
+
+
+@pytest.mark.asyncio
+async def test_cache_does_not_leak_across_assets_or_timeframes():
+    """The other two key dimensions still hold: BTC 5m cache must not serve
+    ETH 5m, and BTC 5m cache must not serve BTC 15m."""
+    feed = PolymarketHTMLPriceToBeatFeed()
+
+    window_ts = 1777824300
+    feed._last_good[("BTC", "5m", window_ts)] = (70000.0, time.monotonic())
+
+    feed.get_price_to_beat = AsyncMock(return_value=None)
+    feed._fetch_price_to_beat_data_api = AsyncMock(return_value=None)
+
+    # ETH 5m, same window — should NOT serve BTC's value.
+    with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+        ptb_eth = await feed.get_price_to_beat_with_retry(
+            asset="ETH", timeframe="5m", window_ts=window_ts, total_budget_s=30.0
+        )
+    assert ptb_eth is None
+
+    # BTC 15m, same window — should NOT serve BTC 5m's value.
+    with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+        ptb_15m = await feed.get_price_to_beat_with_retry(
+            asset="BTC", timeframe="15m", window_ts=window_ts, total_budget_s=30.0
+        )
+    assert ptb_15m is None
+
+
+@pytest.mark.asyncio
+async def test_same_window_cache_serves_repeated_calls_within_ttl():
+    """Early-fire + retry scenario: the same window may be queried multiple
+    times in quick succession (early fire at T-25s, then again at T-10s).
+    Both calls must hit the cache and return the same value as long as
+    cache_age_s <= LAST_GOOD_CACHE_TTL_SECS."""
+    feed = PolymarketHTMLPriceToBeatFeed()
+
+    window_ts = 1777824300
+    feed._last_good[("BTC", "5m", window_ts)] = (70123.45, time.monotonic())
+
+    feed.get_price_to_beat = AsyncMock(return_value=None)
+    feed._fetch_price_to_beat_data_api = AsyncMock(return_value=None)
+
+    with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+        ptb_first = await feed.get_price_to_beat_with_retry(
+            asset="BTC", timeframe="5m", window_ts=window_ts, total_budget_s=30.0
+        )
+        ptb_second = await feed.get_price_to_beat_with_retry(
+            asset="BTC", timeframe="5m", window_ts=window_ts, total_budget_s=30.0
+        )
+
+    assert ptb_first == 70123.45
+    assert ptb_second == 70123.45
+    # Cache fallback fired both times — data-api never consulted.
+    feed._fetch_price_to_beat_data_api.assert_not_awaited()
+
+
+def test_evict_stale_last_good_drops_entries_older_than_4x_ttl():
+    """`_evict_stale_last_good` is called at the top of every retry. It must
+    drop entries older than ``LAST_GOOD_CACHE_TTL_SECS * 4`` (≥ 240 s) since
+    such entries can never satisfy the 60-s fallback TTL anyway. Recent
+    entries (younger than the cutoff) survive."""
+    feed = PolymarketHTMLPriceToBeatFeed()
+
+    now = time.monotonic()
+    cutoff = LAST_GOOD_CACHE_TTL_SECS * 4.0
+
+    # Fresh entry: well within cutoff.
+    feed._last_good[("BTC", "5m", 1777824300)] = (70000.0, now - 5.0)
+    # Boundary-fresh: just under the cutoff.
+    feed._last_good[("BTC", "5m", 1777824000)] = (69500.0, now - (cutoff - 1.0))
+    # Stale entry: just past the cutoff.
+    feed._last_good[("BTC", "5m", 1777823700)] = (69000.0, now - (cutoff + 1.0))
+    # Very stale entry: way past the cutoff.
+    feed._last_good[("BTC", "5m", 1777823400)] = (68000.0, now - (cutoff + 600.0))
+
+    feed._evict_stale_last_good()
+
+    # Fresh entries kept; stale entries dropped.
+    assert ("BTC", "5m", 1777824300) in feed._last_good
+    assert ("BTC", "5m", 1777824000) in feed._last_good
+    assert ("BTC", "5m", 1777823700) not in feed._last_good
+    assert ("BTC", "5m", 1777823400) not in feed._last_good
+
+
+@pytest.mark.asyncio
+async def test_evict_stale_last_good_invoked_during_retry_path():
+    """Eviction runs at the start of `get_price_to_beat_with_retry` so memory
+    can't grow unboundedly across many windows. Verify by seeding a stale
+    entry and calling the retry path — the stale entry should be gone."""
+    feed = PolymarketHTMLPriceToBeatFeed()
+
+    cutoff = LAST_GOOD_CACHE_TTL_SECS * 4.0
+    stale_at = time.monotonic() - (cutoff + 60.0)
+    feed._last_good[("BTC", "5m", 1777820000)] = (50000.0, stale_at)
+
+    feed.get_price_to_beat = AsyncMock(return_value=None)
+    feed._fetch_price_to_beat_data_api = AsyncMock(return_value=None)
+
+    with patch("asyncio.sleep", new=AsyncMock(return_value=None)):
+        await feed.get_price_to_beat_with_retry(
+            asset="BTC", timeframe="5m", window_ts=1777824300, total_budget_s=30.0
+        )
+
+    # The stale entry from the long-past window has been evicted.
+    assert ("BTC", "5m", 1777820000) not in feed._last_good
