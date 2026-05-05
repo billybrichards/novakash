@@ -76,8 +76,10 @@ DEFAULT_USER_AGENT = (
     "Gecko/20100101 Firefox/120.0"
 )
 
-# Per-request HTTP timeout. The page is ~2 MB; 8 s is generous on a healthy link.
-DEFAULT_FETCH_TIMEOUT_SECS = 8.0
+# Per-request HTTP timeout. The page is ~2 MB; 15 s tolerates Polymarket
+# maintenance windows where backend latency spikes (audit #351, 2026-05-04).
+# Was 8.0 — too tight; one slow request consumed the entire retry budget.
+DEFAULT_FETCH_TIMEOUT_SECS = 15.0
 
 # How long a "None" result stays cached before we retry (e.g. for a window whose
 # page is published a few seconds late). Successful results cache permanently.
@@ -85,6 +87,17 @@ NEGATIVE_CACHE_TTL_SECS = 5.0
 
 # Cap memory by retaining at most this many positive results (FIFO eviction).
 MAX_POSITIVE_CACHE_ENTRIES = 256
+
+# Last-known-good cache TTL per (asset, timeframe). When a current fetch fails
+# AND the most recent successful fetch was within this window (one 5m window),
+# return the stale value with `cache_age_s` metadata. Bridges transient
+# Polymarket maintenance / 5xx spikes without forcing strategies to skip.
+LAST_GOOD_CACHE_TTL_SECS = 60.0
+
+# Polymarket data-api (Gamma) fallback — independent failure mode from the
+# anonymous HTML scrape. When HTML fully fails we try this endpoint.
+DATA_API_BASE = "https://gamma-api.polymarket.com"
+DATA_API_FETCH_TIMEOUT_SECS = 10.0
 
 # Pre-compiled __NEXT_DATA__ extractor.
 _NEXT_DATA_RE = re.compile(
@@ -151,6 +164,12 @@ class PolymarketHTMLPriceToBeatFeed:
 
         # Single-flight: key -> in-flight Future.
         self._inflight: dict[tuple[str, str, int], asyncio.Future] = {}
+
+        # Last-known-good cache per (asset, tf) — used as soft fallback when the
+        # current fetch fails (Polymarket maintenance, transient 5xx). Stores
+        # (window_ts, price_to_beat, monotonic_at_capture). Only honoured when
+        # the entry is younger than LAST_GOOD_CACHE_TTL_SECS. Audit #351.
+        self._last_good: dict[tuple[str, str], tuple[int, float, float]] = {}
 
         self._log = log.bind(component="PolymarketHTMLPriceToBeatFeed")
         self._started = False
@@ -252,6 +271,9 @@ class PolymarketHTMLPriceToBeatFeed:
 
         if ptb is not None:
             self._store_positive(key, ptb)
+            # Track last-known-good per (asset, tf) for soft-fallback during
+            # future Polymarket maintenance windows (audit #351).
+            self._last_good[(asset_u, tf)] = (window_ts, ptb, time.monotonic())
         else:
             self._neg_cache[key] = time.monotonic() + NEGATIVE_CACHE_TTL_SECS
         return ptb
@@ -261,14 +283,23 @@ class PolymarketHTMLPriceToBeatFeed:
         asset: str,
         timeframe: str,
         window_ts: int,
-        total_budget_s: float = 10.0,
+        total_budget_s: float = 30.0,
     ) -> Optional[float]:
         """Fetch priceToBeat with bounded retry budget for early-fire at window
         birth. Polymarket's HTML page typically populates priceToBeat within
         1-5s of window open; this method retries at 0s, 1s, 2s, 4s, 8s
-        (cumulative cap at total_budget_s, default 10s).
+        (cumulative cap at total_budget_s, default 30s — bumped from 10s
+        in audit #351 to survive Polymarket maintenance windows).
 
-        Returns the FIRST non-None result. Returns None if budget exhausts.
+        Returns the FIRST non-None result. If the HTML scraper fully exhausts
+        its retry budget, falls back to:
+
+        1. Last-known-good cache for (asset, timeframe) within
+           ``LAST_GOOD_CACHE_TTL_SECS`` (logs ``polymarket_html.cache_used``).
+        2. Polymarket Gamma data-api (logs ``polymarket_html.data_api_used``).
+
+        If all three sources fail, logs ``polymarket_html.fully_failed`` at
+        ERROR and returns None.
 
         Bypasses the negative cache between attempts (the cache exists to
         prevent rapid retry storms, but in a controlled retry loop we WANT
@@ -328,9 +359,14 @@ class PolymarketHTMLPriceToBeatFeed:
                     attempts=attempt_idx + 1,
                     price_to_beat=ptb,
                 )
+                # Record last-known-good for soft-fallback during future
+                # Polymarket maintenance windows (audit #351).
+                self._last_good[(asset_u, tf)] = (
+                    window_ts, ptb, time.monotonic()
+                )
                 return ptb
 
-        # Budget exhausted without success.
+        # Budget exhausted without success — try fallbacks.
         total_elapsed_ms = int((time.monotonic() - loop_start) * 1000)
         self._log.warning(
             "polymarket_html.budget_exhausted",
@@ -340,6 +376,62 @@ class PolymarketHTMLPriceToBeatFeed:
             budget_s=total_budget_s,
             elapsed_ms=total_elapsed_ms,
             attempts=len(delays),
+        )
+
+        # ── Fallback 1: last-known-good cache (audit #351) ─────────────────
+        cached = self._last_good.get((asset_u, tf))
+        if cached is not None:
+            cached_window_ts, cached_ptb, cached_at = cached
+            cache_age_s = time.monotonic() - cached_at
+            if cache_age_s <= LAST_GOOD_CACHE_TTL_SECS:
+                self._log.warning(
+                    "polymarket_html.cache_used",
+                    asset=asset_u,
+                    timeframe=tf,
+                    window_ts=window_ts,
+                    cached_window_ts=cached_window_ts,
+                    cache_age_s=round(cache_age_s, 2),
+                    price_to_beat=cached_ptb,
+                    reason="html_budget_exhausted",
+                )
+                return cached_ptb
+
+        # ── Fallback 2: Polymarket Gamma data-api ──────────────────────────
+        try:
+            data_api_ptb = await self._fetch_price_to_beat_data_api(
+                asset_u, tf, window_ts
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive
+            self._log.warning(
+                "polymarket_html.data_api_unexpected_error",
+                asset=asset_u, timeframe=tf, window_ts=window_ts,
+                error=str(exc)[:200],
+            )
+            data_api_ptb = None
+
+        if data_api_ptb is not None and data_api_ptb > 0:
+            self._log.warning(
+                "polymarket_html.data_api_used",
+                asset=asset_u,
+                timeframe=tf,
+                window_ts=window_ts,
+                price_to_beat=data_api_ptb,
+                reason="html_budget_exhausted",
+            )
+            self._store_positive((asset_u, tf, window_ts), data_api_ptb)
+            self._last_good[(asset_u, tf)] = (
+                window_ts, data_api_ptb, time.monotonic()
+            )
+            return data_api_ptb
+
+        # ── All sources failed ─────────────────────────────────────────────
+        self._log.error(
+            "polymarket_html.fully_failed",
+            asset=asset_u,
+            timeframe=tf,
+            window_ts=window_ts,
+            reason="html+cache+data_api all unavailable",
+            elapsed_ms=int((time.monotonic() - loop_start) * 1000),
         )
         return None
 
@@ -414,6 +506,73 @@ class PolymarketHTMLPriceToBeatFeed:
             slug=slug,
         )
         return ptb
+
+    async def _fetch_price_to_beat_data_api(
+        self,
+        asset: str,
+        timeframe: str,
+        window_ts: int,
+    ) -> Optional[float]:
+        """Fallback path: Polymarket Gamma data-api (audit #351).
+
+        Hits ``https://gamma-api.polymarket.com/events?slug=<event_slug>`` and
+        extracts ``eventMetadata.priceToBeat``. This is a different server +
+        code path from the HTML scrape (anonymous public storefront), so it
+        has independent failure modes — when polymarket.com SPA HTML is slow
+        or 5xx-ing during maintenance, the JSON Gamma API often still serves.
+
+        ``eventMetadata.priceToBeat`` is populated for windows whose 5m period
+        has already closed (resolved) AND for the brief grace window after
+        Polymarket's backend caches the metadata. For an actively-trading
+        window where the priceToBeat hasn't yet been published, returns None
+        and the caller falls through to ``fully_failed``.
+
+        Defensive: any exception → returns None (never raises).
+        """
+        slug = f"{asset.lower()}-updown-{timeframe}-{window_ts}"
+        url = f"{DATA_API_BASE}/events"
+        try:
+            client = await self._ensure_client()
+            resp = await client.get(
+                url,
+                params={"slug": slug},
+                headers={"User-Agent": self._user_agent},
+                timeout=DATA_API_FETCH_TIMEOUT_SECS,
+            )
+            if resp.status_code != 200:
+                self._log.debug(
+                    "polymarket_html.data_api_non_200",
+                    asset=asset, timeframe=timeframe, window_ts=window_ts,
+                    status=resp.status_code,
+                )
+                return None
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001 — defensive
+            self._log.warning(
+                "polymarket_html.data_api_fetch_failed",
+                asset=asset, timeframe=timeframe, window_ts=window_ts,
+                url=url, error=str(exc)[:200],
+            )
+            return None
+
+        if not isinstance(data, list) or not data:
+            return None
+        event = data[0]
+        if not isinstance(event, dict):
+            return None
+        em = event.get("eventMetadata")
+        if not isinstance(em, dict):
+            return None
+        ptb_raw = em.get("priceToBeat")
+        if ptb_raw is None:
+            return None
+        try:
+            f = float(ptb_raw)
+        except (TypeError, ValueError):
+            return None
+        if f <= 0:
+            return None
+        return f
 
     @staticmethod
     def _parse_price_to_beat_from_html(
