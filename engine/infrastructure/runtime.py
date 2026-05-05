@@ -446,6 +446,7 @@ class EngineRuntime:
             try:
                 from reconciliation.canonical_resolver import (
                     CanonicalResolver,
+                    WindowSnapshotResolution,
                     onchain_ctf_payout_lookup,
                 )
                 from data.feeds.polymarket_html_resolution import (
@@ -455,13 +456,28 @@ class EngineRuntime:
 
                 _wsr = self._window_state_repo
 
-                async def _ws_lookup(asset: str, window_ts: int) -> Optional[str]:
+                async def _ws_lookup(
+                    asset: str, window_ts: int
+                ) -> Optional[WindowSnapshotResolution]:
+                    """Return both oracle_outcome and actual_direction so the
+                    canonical resolver can apply Tier 2a/2b sub-priority.
+
+                    Falls back gracefully if the repo only exposes the legacy
+                    ``get_actual_direction`` method (default port impl handles
+                    that and returns oracle_outcome=None).
+                    """
                     try:
-                        return await _wsr.get_actual_direction(
+                        oracle, actual = await _wsr.get_window_resolution(
                             WindowKey(asset=asset, window_ts=int(window_ts))
                         )
                     except Exception:
                         return None
+                    if oracle is None and actual is None:
+                        return None
+                    return WindowSnapshotResolution(
+                        oracle_outcome=oracle,
+                        actual_direction=actual,
+                    )
 
                 self._canonical_resolver = CanonicalResolver(
                     html_fetcher=PolymarketHTMLResolutionFetcher(),

@@ -24,6 +24,8 @@ def fake_window_repository() -> AsyncMock:
     """Return an AsyncMock conforming to IWindowRepository."""
     mock = AsyncMock()
     mock.get_actual_direction.return_value = None
+    # PR #483 follow-up: canonical resolver Tier 2 reads both columns.
+    mock.get_window_resolution.return_value = (None, None)
     mock.save_window_state.return_value = None
     return mock
 

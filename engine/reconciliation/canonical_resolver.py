@@ -20,9 +20,21 @@ Priority chain (first non-None wins):
      the SAME data the public Polymarket UI displays and the same Chainlink
      sample the on-chain CTF used.
 
-  2. **window_snapshots.actual_direction** from the engine's own DB.
-     Populated by the market-data writer at window close from Chainlink
-     open/close — already canonical when present.
+  2. **window_snapshots row** from the engine's own DB. Within Tier 2 the
+     resolver applies a sub-priority chain because two related fields can
+     disagree near window boundaries:
+
+       - 2a. ``window_snapshots.oracle_outcome`` — Polymarket's on-chain
+         oracle resolution (mirrors what wallet_truth.py uses, populated by
+         ``populate_oracle_outcomes`` from Polymarket Gamma). This is the
+         canonical Polymarket truth for what wins/loses on-chain.
+       - 2b. ``window_snapshots.actual_direction`` — engine-internal sample
+         from Chainlink/Binance close prices. May disagree with
+         ``oracle_outcome`` due to sampling jitter at the window boundary.
+
+     When BOTH are populated and they disagree, the resolver logs
+     ``canonical_resolver.snapshot_field_disagree`` at WARN and uses
+     ``oracle_outcome`` (the on-chain truth).
 
   3. **On-chain ``CTF.payoutNumerators(conditionId, index)``**.
      Absolute truth: the conditional-token framework holds the post-resolution
@@ -49,7 +61,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Tuple, Union
 
 import structlog
 
@@ -67,6 +79,10 @@ SOURCE_WINDOW_SNAPSHOTS = "window_snapshots"
 SOURCE_ONCHAIN_CTF = "onchain_ctf"
 SOURCE_DATA_API_CURPRICE = "data_api_curprice"
 
+# Sub-source identifiers for window_snapshots Tier 2 (which column won).
+SUBSOURCE_ORACLE_OUTCOME = "oracle_outcome"
+SUBSOURCE_ACTUAL_DIRECTION = "actual_direction"
+
 
 @dataclass(frozen=True)
 class CanonicalOutcome:
@@ -77,18 +93,44 @@ class CanonicalOutcome:
         source: Which tier produced this — one of ``SOURCE_*`` constants.
         price_to_beat: Optional priceToBeat (only set when source=HTML).
         close_price: Optional Chainlink closePrice (only set when source=HTML).
+        sub_source: For ``source=SOURCE_WINDOW_SNAPSHOTS`` only, indicates
+            which column won within Tier 2:
+            ``SUBSOURCE_ORACLE_OUTCOME`` (Polymarket on-chain truth) or
+            ``SUBSOURCE_ACTUAL_DIRECTION`` (engine-internal Chainlink sample).
     """
 
     direction: str
     source: str
     price_to_beat: Optional[float] = None
     close_price: Optional[float] = None
+    sub_source: Optional[str] = None
+
+
+# Window-snapshot row used by the canonical resolver Tier 2.  Both fields
+# can be ``None`` independently. ``oracle_outcome`` is preferred when both
+# are populated (Polymarket on-chain truth).  ``actual_direction`` is the
+# engine-internal Chainlink/Binance sample at window close — used as a
+# fallback only when ``oracle_outcome`` is missing.
+@dataclass(frozen=True)
+class WindowSnapshotResolution:
+    oracle_outcome: Optional[str] = None
+    actual_direction: Optional[str] = None
 
 
 # Type alias for the async function the helper uses to hit window_snapshots.
-# Keeps the helper decoupled from any specific repo implementation. The
-# function should return ``"UP"`` / ``"DOWN"`` / ``None``.
-WindowSnapshotsLookup = Callable[[str, int], Awaitable[Optional[str]]]
+# Keeps the helper decoupled from any specific repo implementation.
+#
+# Two return shapes are supported (the helper handles both):
+#
+#   * Legacy: returns a bare ``"UP"`` / ``"DOWN"`` / ``None`` — treated as
+#     ``actual_direction`` only (sub_source=actual_direction). Kept for
+#     backward compatibility with existing callers/tests.
+#
+#   * Preferred: returns a ``WindowSnapshotResolution`` exposing both
+#     ``oracle_outcome`` and ``actual_direction``. Lets the helper apply
+#     the Tier 2a/2b sub-priority + disagreement WARN log.
+WindowSnapshotsLookupResult = Optional[Union[str, WindowSnapshotResolution]]
+WindowSnapshotsLookup = Callable[[str, int], Awaitable[WindowSnapshotsLookupResult]]
 
 # Type alias for the on-chain CTF payoutNumerators lookup. The function
 # accepts the position's condition_id (hex) and returns the winning slot
@@ -177,10 +219,20 @@ class CanonicalResolver:
                 close_price=rw.close_price,
             )
 
-        # ── Tier 2: window_snapshots.actual_direction ─────────────────────
+        # ── Tier 2: window_snapshots (oracle_outcome > actual_direction) ──
+        #
+        # Tier 2a: ``oracle_outcome`` (Polymarket on-chain truth — same source
+        #          wallet_truth.py and on-chain CTF agree with).
+        # Tier 2b: ``actual_direction`` (engine-internal Chainlink/Binance
+        #          sample at window close — fallback only).
+        #
+        # When the lookup returns both columns and they disagree we log
+        # ``snapshot_field_disagree`` at WARN so operators can monitor how
+        # often the bug-pattern (audit follow-up to PR #483) fires; the
+        # canonical answer is always ``oracle_outcome``.
         if self._window_snapshots_lookup is not None:
             try:
-                direction = await self._window_snapshots_lookup(
+                lookup_raw = await self._window_snapshots_lookup(
                     asset_u, int(window_ts)
                 )
             except Exception as exc:  # noqa: BLE001
@@ -188,15 +240,56 @@ class CanonicalResolver:
                     "canonical_resolver.window_snapshots_error",
                     asset=asset_u, window_ts=window_ts, error=str(exc)[:200],
                 )
-                direction = None
-            if direction in ("UP", "DOWN"):
+                lookup_raw = None
+
+            # Normalize both lookup return shapes (str OR WindowSnapshotResolution)
+            # into a single (oracle_outcome, actual_direction) tuple.
+            if isinstance(lookup_raw, WindowSnapshotResolution):
+                oracle = lookup_raw.oracle_outcome
+                actual = lookup_raw.actual_direction
+            elif isinstance(lookup_raw, str):
+                oracle = None
+                actual = lookup_raw
+            else:
+                oracle = None
+                actual = None
+
+            # Tier 2a: oracle_outcome wins when populated.
+            if oracle in ("UP", "DOWN"):
+                if (
+                    actual in ("UP", "DOWN")
+                    and actual != oracle
+                ):
+                    self._log.warning(
+                        "canonical_resolver.snapshot_field_disagree",
+                        asset=asset_u,
+                        window_ts=window_ts,
+                        actual_direction=actual,
+                        oracle_outcome=oracle,
+                        using=SUBSOURCE_ORACLE_OUTCOME,
+                    )
                 self._log.info(
                     "canonical_resolver.window_snapshots_hit",
-                    asset=asset_u, window_ts=window_ts, direction=direction,
+                    asset=asset_u, window_ts=window_ts, direction=oracle,
+                    sub_source=SUBSOURCE_ORACLE_OUTCOME,
                 )
                 return CanonicalOutcome(
-                    direction=direction,
+                    direction=oracle,
                     source=SOURCE_WINDOW_SNAPSHOTS,
+                    sub_source=SUBSOURCE_ORACLE_OUTCOME,
+                )
+
+            # Tier 2b: actual_direction fallback (oracle_outcome NULL).
+            if actual in ("UP", "DOWN"):
+                self._log.info(
+                    "canonical_resolver.window_snapshots_hit",
+                    asset=asset_u, window_ts=window_ts, direction=actual,
+                    sub_source=SUBSOURCE_ACTUAL_DIRECTION,
+                )
+                return CanonicalOutcome(
+                    direction=actual,
+                    source=SOURCE_WINDOW_SNAPSHOTS,
+                    sub_source=SUBSOURCE_ACTUAL_DIRECTION,
                 )
 
         # ── Tier 3: on-chain CTF.payoutNumerators ─────────────────────────
