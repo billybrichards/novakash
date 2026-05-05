@@ -353,23 +353,44 @@ class ReconcilePositionsUseCase:
         # OR data-api lags, that flag can be wrong. We re-derive the
         # canonical UP/DOWN direction from the trade's window_ts via the
         # priority chain (HTML > window_snapshots > on-chain CTF > curPrice).
+        #
+        # Audit #353 (trade 7392, 2026-05-05): the cost_fallback match path
+        # is uniquely vulnerable to NegRisk auto-redeem races. When YES
+        # tokens are auto-redeemed within seconds of resolution, the local
+        # data-api ``curPrice`` reads ~0 → ``position.outcome="LOSS"`` →
+        # the YES-trade match looks like a LOSS even though Polymarket
+        # actually resolved YES side won. If HTML/window_snapshots/on-chain
+        # tiers all miss (typical 30-60s lag), the resolver's Tier-4 curPrice
+        # fallback would just echo the wrong signal back, confirming LOSS.
+        # For ``cost_fallback`` matches we therefore (a) refuse to pass
+        # ``fallback_curprice_outcome`` so Tier 4 cannot confirm a poisoned
+        # signal, and (b) DEFER (don't write outcome — return None) when
+        # Tiers 1-3 all miss, letting the next reconciler pass retry once
+        # canonical sources populate. This is safe because the trade is
+        # still ``outcome IS NULL`` in DB so the next pass will pick it up.
+        is_cost_fallback = match_method == "cost_fallback"
+        canonical_unavailable_for_cost_fallback = False
         if self._canonical_resolver is not None:
             try:
                 _ts = match.get("window_ts")
                 _asset = match.get("asset") or "BTC"
                 _tf = match.get("timeframe") or "5m"
                 _trade_dir = (match.get("direction") or "").upper()
-                _curprice_dir = None
-                if _trade_dir in ("UP", "YES"):
-                    _curprice_dir = "UP" if outcome == "WIN" else "DOWN"
-                elif _trade_dir in ("DOWN", "NO"):
-                    _curprice_dir = "DOWN" if outcome == "WIN" else "UP"
+                _curprice_dir: Optional[str] = None
+                if not is_cost_fallback:
+                    if _trade_dir in ("UP", "YES"):
+                        _curprice_dir = "UP" if outcome == "WIN" else "DOWN"
+                    elif _trade_dir in ("DOWN", "NO"):
+                        _curprice_dir = "DOWN" if outcome == "WIN" else "UP"
                 if _ts and _trade_dir:
                     canon = await self._canonical_resolver.resolve_window_outcome_canonical(
                         asset=_asset,
                         timeframe=_tf,
                         window_ts=int(_ts),
                         condition_id=position.condition_id,
+                        # Audit #353: cost_fallback path passes None to refuse
+                        # Tier-4 echo of the (potentially poisoned) curprice
+                        # signal. Other match methods keep legacy behaviour.
                         fallback_curprice_outcome=_curprice_dir,
                     )
                     if canon is not None:
@@ -383,8 +404,13 @@ class ReconcilePositionsUseCase:
                                 "WIN" if canon.direction == "DOWN" else "LOSS"
                             )
                         if canonical_outcome != outcome:
+                            log_event = (
+                                "reconciler.cost_fallback_canonical_override"
+                                if is_cost_fallback
+                                else "reconciler.curprice_canonical_disagree"
+                            )
                             logger.warning(
-                                "reconciler.curprice_canonical_disagree",
+                                log_event,
                                 extra={
                                     "trade_id": match.get("id"),
                                     "condition_id": position.condition_id[:20],
@@ -393,6 +419,7 @@ class ReconcilePositionsUseCase:
                                     "canonical_outcome": canonical_outcome,
                                     "canonical_direction": canon.direction,
                                     "canonical_source": canon.source,
+                                    "match_method": match_method,
                                     "note": "canonical wins; data-api curPrice was misleading",
                                 },
                             )
@@ -400,14 +427,43 @@ class ReconcilePositionsUseCase:
                             status = (
                                 "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
                             )
+                    elif is_cost_fallback:
+                        # Audit #353: defer when all canonical tiers miss for
+                        # a cost_fallback match. The position likely just
+                        # resolved on-chain (NegRisk auto-redeem) and HTML /
+                        # window_snapshots haven't caught up. Writing LOSS
+                        # now from the curPrice signal would misclassify if
+                        # the trade actually won. Returning None here leaves
+                        # the trade unresolved so the next reconciler pass
+                        # retries with canonical sources populated.
+                        canonical_unavailable_for_cost_fallback = True
             except Exception as exc:
                 logger.warning(
                     "reconciler.canonical_verify_error",
                     extra={
                         "trade_id": match.get("id"),
                         "error": str(exc)[:200],
+                        "match_method": match_method,
                     },
                 )
+
+        if canonical_unavailable_for_cost_fallback:
+            logger.warning(
+                "reconciler.cost_fallback_deferred",
+                extra={
+                    "trade_id": match.get("id"),
+                    "condition_id": position.condition_id[:20],
+                    "cost": f"${position.cost:.2f}",
+                    "curprice_outcome": outcome,
+                    "note": (
+                        "cost_fallback match + all canonical tiers missed; "
+                        "deferring outcome write to avoid NegRisk auto-redeem "
+                        "race misclassification (audit #353). Will retry on "
+                        "next reconciler pass."
+                    ),
+                },
+            )
+            return None
 
         # Compute PnL from per-trade data (not Polymarket aggregate)
         trade_id = match["id"]
