@@ -1790,6 +1790,44 @@ class PgWindowRepository(WindowStateRepository):
             )
             return None
 
+    async def get_window_resolution(
+        self, key: WindowKey
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Return ``(oracle_outcome, actual_direction)`` from ``window_snapshots``.
+
+        ``oracle_outcome`` is Polymarket's on-chain resolution (canonical
+        truth, mirrors what wallet_truth uses). ``actual_direction`` is the
+        engine-internal Chainlink/Binance sample at window close. They can
+        disagree near window boundaries due to sampling jitter; the canonical
+        resolver prefers ``oracle_outcome`` and logs WARN on disagreement.
+
+        Either or both can be ``None`` when not populated yet. Returns
+        ``(None, None)`` on DB error or missing row.
+        """
+        if not self._pool:
+            return (None, None)
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT oracle_outcome, actual_direction
+                       FROM window_snapshots
+                       WHERE window_ts = $1 AND asset = $2
+                       ORDER BY (oracle_outcome IS NOT NULL) DESC,
+                                (actual_direction IS NOT NULL) DESC
+                       LIMIT 1""",
+                    key.window_ts,
+                    key.asset,
+                )
+                if row is None:
+                    return (None, None)
+                return (row["oracle_outcome"], row["actual_direction"])
+        except Exception as exc:
+            log.warning(
+                "pg_window_repo.get_window_resolution_failed",
+                error=str(exc)[:100],
+            )
+            return (None, None)
+
     async def populate_oracle_outcomes(
         self, lookback_seconds: int = 900, min_age_seconds: int = 360
     ) -> int:

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import abc
 from collections.abc import AsyncIterator
-from typing import Optional
+from typing import Optional, Tuple
 
 from domain.alert_values import (
     CumulativeTally,
@@ -430,6 +430,23 @@ class WindowStateRepository(abc.ABC):
         Returns ``None`` if the window hasn't resolved yet or is not in the DB.
         """
         ...
+
+    async def get_window_resolution(
+        self, key: WindowKey
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Return ``(oracle_outcome, actual_direction)`` from ``window_snapshots``.
+
+        Both fields can independently be ``None`` if not yet populated.
+        ``oracle_outcome`` is the Polymarket on-chain truth (preferred);
+        ``actual_direction`` is the engine-internal Chainlink/Binance sample
+        and may disagree with ``oracle_outcome`` near window boundaries.
+
+        Default implementation falls back to :py:meth:`get_actual_direction`
+        for adapters that do not yet expose ``oracle_outcome``; subclasses
+        that can read both columns should override.
+        """
+        actual = await self.get_actual_direction(key)
+        return (None, actual)
 
     @abc.abstractmethod
     async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:

@@ -558,6 +558,70 @@ class TestGetActualDirection:
 
 
 # ---------------------------------------------------------------------------
+# PgWindowRepository.get_window_resolution
+# ---------------------------------------------------------------------------
+
+class TestGetWindowResolution:
+    """Verifies the new repo method returns ``(oracle_outcome, actual_direction)``
+    for the canonical_resolver Tier 2a/2b sub-priority chain (PR #483 follow-up).
+    """
+
+    def _make_repo_with_pool(self, fetchrow_result):
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=fetchrow_result)
+        pool = AsyncMock()
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+        from adapters.persistence.pg_window_repo import PgWindowRepository
+        repo = PgWindowRepository(pool=pool)
+        return repo, conn
+
+    @pytest.mark.asyncio
+    async def test_returns_both_when_present(self):
+        # Trade 7386 production case: oracle=UP, actual=DOWN.
+        row = {"oracle_outcome": "UP", "actual_direction": "DOWN"}
+        repo, conn = self._make_repo_with_pool(row)
+        key = WindowKey(asset="BTC", window_ts=1777938300)
+        oracle, actual = await repo.get_window_resolution(key)
+        assert oracle == "UP"
+        assert actual == "DOWN"
+        # SQL must select BOTH columns.
+        sql = conn.fetchrow.call_args.args[0]
+        assert "oracle_outcome" in sql
+        assert "actual_direction" in sql
+
+    @pytest.mark.asyncio
+    async def test_returns_none_oracle_when_only_actual_set(self):
+        row = {"oracle_outcome": None, "actual_direction": "UP"}
+        repo, _ = self._make_repo_with_pool(row)
+        key = WindowKey(asset="BTC", window_ts=1776109200)
+        oracle, actual = await repo.get_window_resolution(key)
+        assert oracle is None
+        assert actual == "UP"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_tuple_when_no_row(self):
+        repo, _ = self._make_repo_with_pool(None)
+        key = WindowKey(asset="BTC", window_ts=1776109200)
+        oracle, actual = await repo.get_window_resolution(key)
+        assert oracle is None
+        assert actual is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_tuple_when_pool_is_none(self):
+        from adapters.persistence.pg_window_repo import PgWindowRepository
+        repo = PgWindowRepository(pool=None)
+        key = WindowKey(asset="BTC", window_ts=1776109200)
+        oracle, actual = await repo.get_window_resolution(key)
+        assert oracle is None
+        assert actual is None
+
+
+# ---------------------------------------------------------------------------
 # PgTradeRepository.find_unresolved_paper_trades
 # ---------------------------------------------------------------------------
 
@@ -624,9 +688,15 @@ def _make_trade_repo(paper_trades=None):
     return repo
 
 
-def _make_window_repo(actual_direction=None):
+def _make_window_repo(actual_direction=None, oracle_outcome=None):
     repo = AsyncMock()
     repo.get_actual_direction = AsyncMock(return_value=actual_direction)
+    # PR #483 follow-up: paper resolver now reads both columns. The default
+    # (oracle=None, actual=actual_direction) preserves the legacy semantics
+    # of existing tests that only set ``actual_direction``.
+    repo.get_window_resolution = AsyncMock(
+        return_value=(oracle_outcome, actual_direction)
+    )
     repo.mark_resolved = AsyncMock(return_value=None)
     return repo
 
@@ -649,10 +719,13 @@ def _make_clock():
 
 class TestResolvePaperBatch:
 
-    def _make_uc(self, paper_trades=None, actual_direction=None):
+    def _make_uc(self, paper_trades=None, actual_direction=None, oracle_outcome=None):
         from use_cases.reconcile_positions import ReconcilePositionsUseCase
         trade_repo = _make_trade_repo(paper_trades=paper_trades)
-        window_repo = _make_window_repo(actual_direction=actual_direction)
+        window_repo = _make_window_repo(
+            actual_direction=actual_direction,
+            oracle_outcome=oracle_outcome,
+        )
         return (
             ReconcilePositionsUseCase(
                 trade_repo=trade_repo,
@@ -747,6 +820,62 @@ class TestResolvePaperBatch:
         asyncio.run(uc._resolve_paper_batch())
         call_kwargs = trade_repo.resolve_trade.call_args.kwargs
         assert call_kwargs["pnl_usd"] == round(-10.0, 4)
+
+    def test_oracle_outcome_overrides_actual_direction_trade_7386(self):
+        """Reproduces trade 7386 (BTC 5m window 1777938300):
+
+            window_snapshots.actual_direction = DOWN  (engine sample, wrong)
+            window_snapshots.oracle_outcome   = UP    (Polymarket on-chain truth)
+
+        Trade 7386 was YES @ 0.66 (= bet UP).  Before PR #483 follow-up the
+        paper-batch resolver read ``actual_direction`` only and marked this
+        trade LOSS even though Polymarket resolved UP and the trade actually
+        WON on-chain.  After the fix the resolver prefers ``oracle_outcome``
+        and the trade resolves WIN.
+        """
+        trade = self._paper_trade(
+            direction="UP",  # YES bet
+            stake=10.0,
+            entry=0.66,
+            window_ts="1777938300",
+        )
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade],
+            actual_direction="DOWN",   # the engine's wrong sample
+            oracle_outcome="UP",       # the canonical Polymarket truth
+        )
+
+        resolved, skipped, errors = asyncio.run(uc._resolve_paper_batch())
+
+        assert resolved == 1
+        assert skipped == 0
+        assert errors == 0
+        trade_repo.resolve_trade.assert_awaited_once()
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        assert call_kwargs["outcome"] == "WIN", (
+            "Trade 7386 must resolve WIN — oracle_outcome=UP is canonical "
+            "Polymarket truth even though actual_direction=DOWN"
+        )
+        assert call_kwargs["status"] == "RESOLVED_WIN"
+        # PnL: stake=$10 @ entry=0.66 → shares=15.15..., pnl=shares-stake≈$5.15
+        expected_pnl = round((10.0 / 0.66) - 10.0, 4)
+        assert call_kwargs["pnl_usd"] == expected_pnl
+
+    def test_oracle_null_falls_back_to_actual_direction(self):
+        """When ``oracle_outcome`` hasn't been polled yet (NULL), fall back
+        to ``actual_direction`` — preserves legacy behavior for the common
+        case where the engine sample is the only available signal.
+        """
+        trade = self._paper_trade(direction="UP")
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade],
+            actual_direction="UP",
+            oracle_outcome=None,
+        )
+        resolved, _, _ = asyncio.run(uc._resolve_paper_batch())
+        assert resolved == 1
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        assert call_kwargs["outcome"] == "WIN"
 
 
 # ---------------------------------------------------------------------------

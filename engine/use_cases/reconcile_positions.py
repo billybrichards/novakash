@@ -198,7 +198,14 @@ class ReconcilePositionsUseCase:
                     continue
 
                 key = WindowKey(asset=asset, window_ts=int(raw_ts))
-                actual_direction = await self._window_state.get_actual_direction(key)
+                # PR #483 follow-up: read both oracle_outcome and
+                # actual_direction so the canonical priority chain (Tier 2a >
+                # Tier 2b) applies to paper-trade resolution. Reading
+                # actual_direction alone caused the trade-7386 mis-resolution
+                # (oracle_outcome=UP, actual_direction=DOWN; trade marked LOSS
+                # instead of WIN).
+                oracle_outcome, ws_actual_dir = await self._window_state.get_window_resolution(key)
+                actual_direction = oracle_outcome or ws_actual_dir
 
                 # Audit #350: prefer canonical resolver (HTML scrape) when
                 # window_snapshots hasn't been backfilled yet, OR cross-check
