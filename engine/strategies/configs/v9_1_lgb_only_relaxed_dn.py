@@ -2,33 +2,42 @@
 
 Same Python evaluation as ``v9_1_lgb_only`` (delegates to
 ``evaluate_v9_1_lgb_only`` so the v9.1 booster + v9 ensemble gate stack are
-identical). The ONLY behavioural difference is the YAML ``gate_params``:
+identical). Two YAML differences + one CARVE-OUT enforced in this wrapper.
 
-  - ``lgb_dist_min_down`` lowered from production runtime override (0.25)
-    to 0.15 — opens the 0.15-0.25 DOWN dist sub-buckets that historical
-    data (3d, n=57) shows ~85-86% WR with Wilson 95% lower ≈ 67-74% (vs.
-    breakeven ~32-34% at avg fill 0.32) — see Hub note #342.
-  - ``lgb_dist_min_up`` kept at production strict floor (0.20).
+YAML differences (gate_params)
+------------------------------
+1. ``lgb_dist_min_down`` lowered from production runtime override (0.25)
+   to 0.15 — opens the 0.15-0.25 DOWN dist sub-buckets.
+2. ``lgb_dist_min_up`` kept at production strict floor (0.20). UP
+   relaxation rejected per Wilson analysis (Hub note #342) — relaxed UP
+   Wilson lower 54.8% < breakeven 68.2%.
 
-Mode: GHOST. Soaks 24-48h to verify the historical Wilson edge holds under
-current regime and current production gates. Promote to LIVE at half-stake
-(fraction=0.125 = half of v9_1_lgb_only LIVE 0.25) only after manual review
-per CLAUDE.md "yes do it" rule.
+CARVE-OUT enforced in this wrapper hook
+---------------------------------------
+The 0.20-0.25 DOWN dist sub-bucket is the WEAKEST in the entire DOWN
+ladder (65.5% WR, n=29). User explicitly asked it be EXCLUDED from the
+soak — we want clean evidence on the empirically-strong 0.15-0.20 zones,
+not contaminated data from the bad mid-band.
 
-Why a wrapper hook rather than reusing ``evaluate_v9_1_lgb_only`` directly:
+The wrapper delegates to evaluate_v9_1_lgb_only first (so all gate
+evaluation, oracle checks, regime gates, etc. run unchanged). Then if
+the parent returned TRADE on DOWN with dist in the bad band [0.20, 0.25),
+the wrapper overrides to SKIP with a dedicated reason for soak analysis.
 
-The v9_1_lgb_only hook hard-codes ``strategy_id="v9_1_lgb_only"`` into the
-returned StrategyDecision (engine/strategies/configs/v9_1_lgb_only.py:33).
-The registry already stamps the *correct* strategy_id on the persisted
-decision row (registry.py uses the YAML name as the dict key), so DB rows
-are fine. But anywhere downstream that reads ``decision.strategy_id``
-directly (TG cards, log lines, alerts) would see the wrong id.
+Net effect — variant fires for:
+  - DOWN: dist in [0.15, 0.20) — relaxed-good zones (currently blocked by prod)
+  - DOWN: dist >= 0.25 — overlaps with production v9_1_lgb_only LIVE
+                          (gives co-fire baseline for soak comparison)
+  - UP:   dist >= 0.20 — matches production strict floor
+  - UP:   dist <  0.20 — SKIP via parent floor
 
-This wrapper relabels the value-object identity to match the YAML name,
-matching the v9_1_lgb_only → v9_ensemble pattern.
+The 0.20-0.25 DOWN zone is excluded ENTIRELY (carve-out).
+
+If you want to also exclude the >= 0.25 high-conviction overlap with
+production (cleaner isolation but loses co-fire baseline), change the
+carve-out below from ``0.20 <= d < 0.25`` to ``d >= 0.20``.
 
 Hub note #342 — full conviction analysis + Wilson math + half-stake design.
-docs/v9_1_PROVENANCE.md — v9.1 lineage.
 """
 from __future__ import annotations
 
@@ -43,22 +52,69 @@ from strategies.configs.v9_1_lgb_only import evaluate_v9_1_lgb_only as _evaluate
 _STRATEGY_ID = "v9_1_lgb_only_relaxed_dn"
 _VERSION = "9.1.0-relaxed-dn"
 
+# Carve-out band: DOWN dist sub-bucket [0.20, 0.25) is the weakest in the
+# entire DOWN ladder (65.5% WR n=29) — explicitly excluded from soak.
+# Half-open interval [lo, hi) so dist == 0.25 falls into the production-strict
+# zone (NOT carved out — produces co-fire baseline with v9_1_lgb_only LIVE).
+_CARVE_OUT_DN_DIST_LO = 0.20
+_CARVE_OUT_DN_DIST_HI = 0.25
+_CARVE_OUT_SKIP_REASON = "carve_out_dn_dist_band_0.20_0.25"
+
+
+def _down_dist(p_v9_1: float | None) -> float | None:
+    """Distance-below-coinflip when probability indicates DOWN, else None.
+
+    Returns None if probability is None or >= 0.50 (probability indicates
+    UP — carve-out doesn't apply).
+    """
+    if p_v9_1 is None:
+        return None
+    if p_v9_1 >= 0.5:
+        return None
+    return 0.5 - p_v9_1
+
 
 def evaluate_v9_1_lgb_only_relaxed_dn(
     surface: "FullDataSurface",
 ) -> StrategyDecision:
-    """Relabel-only wrapper around evaluate_v9_1_lgb_only.
+    """Wrapper around evaluate_v9_1_lgb_only with DOWN-mid-band carve-out.
 
-    Gate stack, model source, ensemble logic are all identical. The only
-    difference is the YAML's ``lgb_dist_min_down`` (0.25 → 0.15), which is
-    applied via the contextvar gate_params lookup inside the underlying
-    v9_ensemble → v8_champion_lgb_only chain (see gate_params.py).
+    Step 1: Delegate to evaluate_v9_1_lgb_only — runs full gate stack
+            with the relaxed YAML floor (0.15) plumbed via gate_params.
+    Step 2: If parent returned TRADE on DOWN with dist in the carve-out
+            band, override to SKIP. Otherwise relabel identity and pass.
     """
     decision = _evaluate_v9_1(surface)
 
-    # Relabel identity. Keep all other fields (action, direction, gates,
-    # metadata, etc.) exactly as v9_1_lgb_only computed them so downstream
-    # observability is identical to v9_1_lgb_only with one strategy_id swap.
+    # Carve-out enforcement: only applies to TRADE-DOWN decisions
+    if decision.action == "TRADE" and decision.direction == "DOWN":
+        p_v9_1 = getattr(surface, "probability_lgb_v9_1", None)
+        dist = _down_dist(p_v9_1)
+        if dist is not None and _CARVE_OUT_DN_DIST_LO <= dist < _CARVE_OUT_DN_DIST_HI:
+            # Bad sub-bucket — override TRADE to SKIP
+            meta = dict(decision.metadata or {})
+            meta["carve_out_applied"] = True
+            meta["carve_out_band"] = (
+                f"[{_CARVE_OUT_DN_DIST_LO}, {_CARVE_OUT_DN_DIST_HI})"
+            )
+            meta["carve_out_dist"] = dist
+            meta["parent_action"] = "TRADE"
+            meta["parent_entry_reason"] = decision.entry_reason
+            return StrategyDecision(
+                action="SKIP",
+                direction=None,
+                confidence=None,
+                confidence_score=0.0,
+                entry_cap=0.0,
+                collateral_pct=0.0,
+                strategy_id=_STRATEGY_ID,
+                strategy_version=_VERSION,
+                entry_reason="",
+                skip_reason=_CARVE_OUT_SKIP_REASON,
+                metadata=meta,
+            )
+
+    # No carve-out triggered — relabel identity to variant and pass through.
     return StrategyDecision(
         action=decision.action,
         direction=decision.direction,
