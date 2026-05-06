@@ -38,12 +38,19 @@ gates:
   # The v12_lgb_combo hook delegates to v9_ensemble for the inline gate
   # stack; these additional gates run AFTER the hook returns TRADE as
   # post-filters. They will SKIP an otherwise-fired trade when (a) the
-  # Chainlink oracle is stale, (b) the cell is auto-paused by the
-  # rolling-WR monitor, or (c) the 3+ price/flow sources don't agree.
+  # Chainlink oracle is stale or (b) the cell is auto-paused by the
+  # rolling-WR monitor.
+  #
+  # C2 (audit #373): SourceAgreementGate removed from YAML wiring.
+  # v9_ensemble's inline _skip_on_oracle_disagree() is the canonical
+  # source-agreement check — it has more battle-testing, a VHC bypass path,
+  # and is now fixed (B1) to fail-closed on missing sources. Stacking BOTH
+  # would apply two agreement checks with different thresholds and a
+  # direction-blind bug in the YAML gate. The SourceAgreementGate class
+  # remains available for future use where the inline gate is absent.
   - type: chainlink_freshness
-    params: { max_age_seconds: 30 }
-  - type: source_agreement
-    params: { min_sources: 3, spot_only: false }
+    # B2 (audit #374): default is now 60s (heartbeat + ~30s grace). Explicit
+    # override removed — rely on the class default.
   - type: cell_pause
     params: { strategy_id: v12_lgb_combo }
 

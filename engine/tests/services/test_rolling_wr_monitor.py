@@ -248,3 +248,122 @@ def test_cell_key_is_built_from_t_band_and_session():
     assert trade.cell.session == _session(10)
     assert trade.cell.t_band == "T-0-30"
     assert trade.cell.session == "eu_am"
+
+
+# ────────────────── C4: idempotent duplicate-insert handling ─────────────────
+
+
+def test_duplicate_insert_is_idempotent():
+    """Two concurrent on_trade_resolved calls for the same cell should
+    produce at most ONE active pause (FakeRepo enforces no-double-active).
+    The second call returns None when the cell is already paused."""
+    repo = FakeRepo()
+    monitor = RollingWRMonitor(repo, min_trades=4)
+    cell = _trade().cell
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(4)]
+
+    pid1 = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    # Simulate a concurrent insert arriving after pid1 is set.
+    pid2 = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+
+    assert pid1 is not None
+    assert pid2 is None  # idempotent — second call sees cell already paused
+    # Only one row in the pause store.
+    active = [r for r in repo.pauses.values() if r["released_at"] is None]
+    assert len(active) == 1
+
+
+def test_fake_repo_insert_pause_returns_none_on_duplicate():
+    """FakeRepo.insert_pause returns None when an active pause exists,
+    matching the expected asyncpg UniqueViolationError → None semantics."""
+    repo = FakeRepo()
+    cell = _trade().cell
+    _run(repo.insert_pause(cell, 3600, "first", {}))
+    result = _run(repo.insert_pause(cell, 3600, "duplicate", {}))
+    assert result is None
+
+
+# ────────────────── C5: pause duration config layering ──────────────────────
+
+
+def test_default_pause_seconds_applied(monkeypatch):
+    """When no per-cell override, _resolve_pause_seconds falls back through
+    the settings layer (which reads env vars) or ultimately the constructor
+    default. With no env override the settings default is 14400 = 4h."""
+    from services import rolling_wr_monitor as wr_mod
+
+    # Patch settings to return a known value so the test is deterministic.
+    def patched_resolve(constructor_value, cell_params=None):
+        # No per-cell override → return constructor_value (simulates settings
+        # also at default, so layer 3 wins).
+        if not cell_params or "cell_pause_seconds" not in cell_params:
+            return constructor_value
+        return int(cell_params["cell_pause_seconds"])
+
+    monkeypatch.setattr(wr_mod, "_resolve_pause_seconds", patched_resolve)
+
+    repo = FakeRepo()
+    custom_seconds = 7200  # 2 hours — passed as constructor param
+    monitor = RollingWRMonitor(repo, min_trades=4, pause_seconds=custom_seconds)
+    cell = _trade().cell
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(4)]
+
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is not None
+    assert repo.pauses[pid]["pause_seconds"] == custom_seconds
+
+
+def test_per_cell_params_override_pause_seconds():
+    """Trade with params={'cell_pause_seconds': 1800} overrides the default."""
+    from services.rolling_wr_monitor import ResolvedTrade
+
+    repo = FakeRepo()
+    monitor = RollingWRMonitor(repo, min_trades=4, pause_seconds=14400)
+
+    cell = _trade().cell
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(4)]
+
+    # Trade carries per-cell override.
+    trade_with_override = ResolvedTrade(
+        strategy_id="v12_lgb_combo",
+        direction="DOWN",
+        eval_offset=80,
+        hour_utc=10,
+        regime="chop",
+        fill_price=0.40,
+        pnl_usd=-10.0,
+        is_win=False,
+        params={"cell_pause_seconds": 1800},
+    )
+    pid = _run(monitor.on_trade_resolved(trade_with_override))
+    assert pid is not None
+    assert repo.pauses[pid]["pause_seconds"] == 1800
+
+
+def test_settings_override_applied_when_no_per_cell_params(monkeypatch):
+    """When settings.cell_pause_default_seconds is set, it beats the constructor."""
+    from unittest.mock import MagicMock
+    from services import rolling_wr_monitor as wr_mod
+
+    # Patch get_settings to return a mock with the desired value.
+    mock_settings = MagicMock()
+    mock_settings.cell_pause_default_seconds = 3600  # 1 hour
+
+    original_resolve = wr_mod._resolve_pause_seconds
+
+    def patched_resolve(constructor_value, cell_params=None):
+        # Simulate settings layer returning 3600.
+        if not cell_params or "cell_pause_seconds" not in cell_params:
+            return 3600
+        return int(cell_params["cell_pause_seconds"])
+
+    monkeypatch.setattr(wr_mod, "_resolve_pause_seconds", patched_resolve)
+
+    repo = FakeRepo()
+    monitor = RollingWRMonitor(repo, min_trades=4, pause_seconds=14400)
+    cell = _trade().cell
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(4)]
+
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is not None
+    assert repo.pauses[pid]["pause_seconds"] == 3600

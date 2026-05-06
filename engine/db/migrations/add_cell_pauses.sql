@@ -8,8 +8,13 @@
 -- (`released_at IS NULL AND pause_until > NOW()`) and SKIPs the strategy
 -- when a match exists for the current evaluation context.
 --
--- Cells are keyed by paused_at (microsecond resolution unique constraint
--- prevents duplicate rows from a single trigger event firing twice).
+-- C4 fix (audit #379): original design keyed on (strategy_id, direction,
+-- t_band, regime, session, paused_at) with microsecond precision, which
+-- allowed two concurrent inserts at different microseconds to both succeed,
+-- producing duplicate active pauses. Replaced with a PARTIAL UNIQUE INDEX
+-- on `released_at IS NULL` to enforce at most one active pause per cell.
+-- Race-condition handling: one insert wins, the concurrent one receives a
+-- UniqueViolationError that callers treat as "already paused" (idempotent).
 
 CREATE TABLE IF NOT EXISTS cell_pauses (
     id                 BIGSERIAL    PRIMARY KEY,
@@ -23,9 +28,21 @@ CREATE TABLE IF NOT EXISTS cell_pauses (
     reason             TEXT         NOT NULL,
     trigger_metric     JSONB,
     released_at        TIMESTAMPTZ,
-    released_by        TEXT,
-    UNIQUE (strategy_id, direction, t_band, regime, session, paused_at)
+    released_by        TEXT
+    -- NOTE: no inline UNIQUE constraint here; enforced by partial index below.
 );
+
+-- C4 fix: partial unique index — only one ACTIVE pause per cell at a time.
+-- COALESCE handles nullable regime/session (NULL != NULL in unique indexes).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cell_pauses_one_active
+    ON cell_pauses (
+        strategy_id,
+        direction,
+        t_band,
+        COALESCE(regime, ''),
+        COALESCE(session, '')
+    )
+    WHERE released_at IS NULL;
 
 -- Hot-path lookup: active pauses (no `released_at`) for a given cell.
 CREATE INDEX IF NOT EXISTS idx_cell_pauses_active
@@ -39,4 +56,5 @@ CREATE INDEX IF NOT EXISTS idx_cell_pauses_paused_at
 -- Reverse migration:
 -- DROP INDEX IF EXISTS idx_cell_pauses_paused_at;
 -- DROP INDEX IF EXISTS idx_cell_pauses_active;
+-- DROP UNIQUE INDEX IF EXISTS idx_cell_pauses_one_active;
 -- DROP TABLE IF EXISTS cell_pauses;

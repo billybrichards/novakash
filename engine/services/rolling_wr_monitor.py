@@ -39,7 +39,48 @@ log = logging.getLogger(__name__)
 
 # Auto-pause duration (sec) when a trigger fires. 4 hours = enough to
 # bridge a regime shift; ops can manually release earlier via release().
+# C5 fix (audit #379): use settings.cell_pause_default_seconds so this is
+# runtime-overridable without a redeploy. This module-level constant is
+# kept as a fallback for contexts where settings are unavailable (tests).
 _DEFAULT_PAUSE_SECONDS = 4 * 60 * 60
+
+
+def _resolve_pause_seconds(
+    constructor_value: int,
+    cell_params: Optional[dict[str, Any]] = None,
+) -> int:
+    """Resolve pause duration following the 3-layer config pattern.
+
+    Layer priority (highest wins):
+    1. Per-cell override: ``cell_params["cell_pause_seconds"]`` (from
+       strategy_runtime_overrides.params JSON field).
+    2. Settings value: ``settings.cell_pause_default_seconds`` (env var).
+    3. Constructor default: ``constructor_value`` (14400 = 4h hard-coded).
+
+    The per-cell override allows ops to shorten or lengthen pauses for
+    individual strategies without touching code or env vars.
+    """
+    # Layer 1: per-cell runtime override.
+    if cell_params:
+        per_cell = cell_params.get("cell_pause_seconds")
+        if per_cell is not None:
+            try:
+                return int(per_cell)
+            except (TypeError, ValueError):
+                log.warning(
+                    "rolling_wr_monitor.invalid_cell_pause_seconds",
+                    extra={"value": per_cell},
+                )
+
+    # Layer 2: settings.
+    try:
+        from config.settings import get_settings
+        return int(get_settings().cell_pause_default_seconds)
+    except Exception:
+        pass
+
+    # Layer 3: constructor default.
+    return constructor_value
 
 # Lookback for rolling-WR window.
 _DEFAULT_LOOKBACK_SECONDS = 60 * 60
@@ -84,6 +125,10 @@ class ResolvedTrade:
     pnl_usd: float
     is_win: bool
     resolved_at: float = field(default_factory=time.time)
+    # C5: optional per-trade params dict. When set, ``cell_pause_seconds``
+    # inside this dict overrides the default pause duration for this trade's
+    # cell (mirrors strategy_runtime_overrides.params JSON field pattern).
+    params: Optional[dict[str, Any]] = field(default=None)
 
     @property
     def cell(self) -> CellKey:
@@ -273,15 +318,22 @@ class RollingWRMonitor:
             "lookback_seconds": self._lookback,
         }
 
+        # C5 fix: resolve pause duration at trigger time, respecting the
+        # 3-layer config hierarchy (per-cell params > settings > constructor).
+        cell_params = getattr(trade, "params", None)
+        effective_pause_seconds = _resolve_pause_seconds(
+            self._pause_seconds, cell_params
+        )
+
         pause_id = await self._repo.insert_pause(
             cell,
-            self._pause_seconds,
+            effective_pause_seconds,
             reason,
             trigger_metric,
         )
 
         if pause_id is not None:
-            await self._alert(cell, reason, trigger_metric)
+            await self._alert(cell, reason, trigger_metric, effective_pause_seconds)
             log.warning(
                 "rolling_wr_monitor.cell_paused",
                 extra={
@@ -306,11 +358,13 @@ class RollingWRMonitor:
         cell: CellKey,
         reason: str,
         trigger_metric: dict[str, Any],
+        pause_seconds: Optional[int] = None,
     ) -> None:
         if self._alerter is None:
             return
+        effective = pause_seconds if pause_seconds is not None else self._pause_seconds
         until = datetime.now(timezone.utc) + timedelta(
-            seconds=self._pause_seconds
+            seconds=effective
         )
         msg = (
             "[CELL PAUSED]\n"

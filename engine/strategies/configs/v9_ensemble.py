@@ -1175,26 +1175,25 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         cl_dir = per_source_dir.get("chainlink", "UP")
         ti_dir = per_source_dir.get("tiingo", "UP")
 
-        # Backward compat: when fewer than 3 sources are available, fall back
-        # to the legacy unanimous chainlink+tiingo check (`disagree` fires
-        # when EITHER cl or ti differs from direction). When 3+ sources are
-        # available, use the configurable N-source agreement threshold.
+        # B1 fix (audit #373): fail closed when a required source is missing.
+        # Legacy code used `cl_delta or 0.0` which coerced None → 0.0 (DOWN),
+        # blocking UP fires on missing chainlink. New code preserves that
+        # intent: when either cl or ti is absent we cannot confirm agreement,
+        # so we skip rather than passing through (fail closed = safer).
+        # When 3+ sources are present we use the configurable N-source
+        # agreement threshold instead.
         min_sources = max(2, _oracle_agreement_min_sources())
         if len(per_source_dir) < 3 or min_sources <= 2:
-            agree_count = sum(
-                1 for d in (cl_dir, ti_dir) if d == direction
-            )
-            disagree = agree_count < 2 and (
-                surface.delta_chainlink is not None
-                or surface.delta_tiingo is not None
-            )
-            # Mirror legacy: missing source treated as disagreement only when
-            # both are None — otherwise legacy logic of "either disagrees" wins.
-            disagree = (
-                surface.delta_chainlink is not None
-                and surface.delta_tiingo is not None
-                and (direction != cl_dir or direction != ti_dir)
-            )
+            # Require BOTH cl and ti to be present; if either is missing,
+            # treat as disagreement (fail closed).
+            if cl_delta is None or ti_delta is None:
+                agree_count = 0
+                disagree = True
+            else:
+                agree_count = sum(
+                    1 for d in (cl_dir, ti_dir) if d == direction
+                )
+                disagree = direction != cl_dir or direction != ti_dir
         else:
             agree_count = sum(
                 1 for d in per_source_dir.values() if d == direction
@@ -1221,9 +1220,22 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 )
                 vhc_bypasses.append("oracle_direction")
             else:
-                _src_summary = " ".join(
-                    f"{name}={d}" for name, d in per_source_dir.items()
-                ) or f"cl={cl_dir} ti={ti_dir}"
+                # B1 fix: when a source is missing, include it explicitly in
+                # the skip reason so ops can distinguish "sources disagree" from
+                # "source absent" in logs.
+                _missing = [
+                    f"cl={cl_delta}" if cl_delta is None else None,
+                    f"ti={ti_delta}" if ti_delta is None else None,
+                ]
+                _missing_str = " ".join(m for m in _missing if m)
+                if _missing_str:
+                    _src_summary = (
+                        f"oracle_disagree: missing_source {_missing_str}"
+                    )
+                else:
+                    _src_summary = " ".join(
+                        f"{name}={d}" for name, d in per_source_dir.items()
+                    ) or f"cl={cl_dir} ti={ti_dir}"
                 gates.append(
                     _gate(
                         "oracle_direction",
@@ -1235,7 +1247,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 )
                 reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
                 return _skip_v9(
-                    f"oracle_direction: disagree {_src_summary} "
+                    f"oracle_direction: {_src_summary} "
                     f"vs {direction}",
                     gates,
                     direction=direction,

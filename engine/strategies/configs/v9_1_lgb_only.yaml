@@ -55,10 +55,12 @@ gates:
   # Audit #374 / #377 — declarative post-hook veto layer (2026-05-06).
   # The v9_1_lgb_only hook delegates to v9_ensemble for the inline gate
   # stack; these run AFTER the hook returns TRADE as post-filters.
+  #
+  # C2 (audit #373): SourceAgreementGate removed — v9_ensemble's inline
+  # _skip_on_oracle_disagree() is canonical. See v12_lgb_combo.yaml comment.
   - type: chainlink_freshness
-    params: { max_age_seconds: 30 }
-  - type: source_agreement
-    params: { min_sources: 3, spot_only: false }
+    # B2 (audit #374): default is now 60s (heartbeat + ~30s grace). Explicit
+    # override removed — rely on the class default.
   - type: cell_pause
     params: { strategy_id: v9_1_lgb_only }
 

@@ -155,6 +155,17 @@ class Settings(BaseSettings):
         description="Price source for window delta: chainlink (default/oracle), binance (legacy), tiingo, or consensus (all must agree)",
     )
 
+    # Rolling-WR monitor auto-pause duration (C5 fix, audit #379).
+    # Default 14400s (4h) = enough to bridge a regime shift; ops can release
+    # earlier via RollingWRMonitor.release() or by updating the DB row directly.
+    # Override via CELL_PAUSE_DEFAULT_SECONDS env var without redeploying code.
+    cell_pause_default_seconds: int = Field(
+        default=14400,
+        description=(
+            "Default auto-pause duration in seconds for the rolling-WR monitor "
+            "(audit #379). 14400 = 4 hours. Override via env or runtime config."
+        ),
+    )
 
 
 

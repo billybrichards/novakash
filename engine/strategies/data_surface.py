@@ -1062,6 +1062,18 @@ class DataSurfaceManager:
         # +1 = net taker BUY pressure (UP); -1 = net SELL (DOWN). Normalised
         # to [-1, 1]. None when CG snapshot is missing — SourceAgreementGate
         # then degrades to 3-source (chainlink + tiingo + binance) cleanly.
+        #
+        # WARNING (C3 / audit #373): delta_coinglass is a NORMALISED FLOW
+        # IMBALANCE (max ±1.0), NOT a price return. Unlike delta_chainlink /
+        # delta_tiingo / delta_binance (which are fractional price returns,
+        # magnitude ~0.001), this value can hit ±1.0. Sign-only directional
+        # voting via SourceAgreementGate works correctly because only the sign
+        # is consumed. However:
+        #   * Future magnitude-aware consumers (weighted votes, delta_avg)
+        #     MUST NOT treat this as a price delta — coinglass would dominate.
+        #   * CoinGlass uses 1m taker volumes, a much shorter window than the
+        #     window-open-to-now price deltas of the spot sources. It measures
+        #     very-short-term flow, not the same signal as a session-open trend.
         delta_coinglass: Optional[float] = None
         if cg is not None:
             try:
@@ -1073,6 +1085,15 @@ class DataSurfaceManager:
                     denom = tb + ts_v
                     if denom > 0.0:
                         delta_coinglass = (tb - ts_v) / denom
+                        # Sanity check: result must be within [-1, 1] by
+                        # construction; flag if float drift produces a value
+                        # outside the valid range so bad CG data surfaces.
+                        if not -1.05 <= delta_coinglass <= 1.05:
+                            log.warning(
+                                "data_surface.delta_coinglass_out_of_range",
+                                extra={"value": delta_coinglass},
+                            )
+                            delta_coinglass = None
             except (TypeError, ValueError):
                 delta_coinglass = None
 

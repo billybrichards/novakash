@@ -12,8 +12,8 @@ This gate reads `surface.delta_chainlink_age_seconds` (populated by
 DataSurfaceManager from ChainlinkFeed.latest_updated_at[asset]) and SKIPs
 when the staleness exceeds the configured ceiling.
 
-Defaults: 30 seconds. Configurable per-strategy via YAML
-``params: { max_age_seconds: 60 }``.
+Defaults: 60 seconds (heartbeat + ~30s grace). Configurable per-strategy via
+YAML ``params: { max_age_seconds: 30 }`` for stricter enforcement.
 
 Backward compatibility: when the surface field is None (older surface
 revision or feed not yet populated), the gate PASSES with reason
@@ -38,8 +38,19 @@ class ChainlinkFreshnessGate(Gate):
 
     Args:
         max_age_seconds: Skip when `delta_chainlink_age_seconds` exceeds this
-            ceiling. Default 30 seconds (Polygon Chainlink BTC/USD updates
-            ~every 10-30s in healthy state).
+            ceiling.
+
+            Default 60 seconds: the Polygon BTC/USD Chainlink aggregator
+            publishes a new round every ~27s under normal conditions, plus a
+            0.5% deviation trigger. In quiet markets the on-chain ``updatedAt``
+            can legitimately sit at 25-28s, and any RPC jitter pushes past the
+            old 30s default on a *healthy* feed. 60s = 1 heartbeat + ~30s grace
+            for RPC jitter and quiet-market scenarios.
+
+            Strategies that want stricter freshness enforcement can override via
+            ``params: { max_age_seconds: 30 }`` in their YAML gate definition,
+            or via the ``chainlink_max_age_seconds`` runtime config key.
+
         skip_when_unknown: When True, also fail when the surface field is
             None (paranoid mode). Default False — pass-through so a missing
             field doesn't break upstream gates that already null-block.
@@ -47,7 +58,7 @@ class ChainlinkFreshnessGate(Gate):
 
     def __init__(
         self,
-        max_age_seconds: int = 30,
+        max_age_seconds: int = 60,
         skip_when_unknown: bool = False,
     ):
         self._max_age_seconds = int(max_age_seconds)

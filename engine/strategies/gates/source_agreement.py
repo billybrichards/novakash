@@ -28,6 +28,14 @@ class SourceAgreementGate(Gate):
         These run BEFORE the direction-agreement check. They block on feed
         health, not on direction opinion — the classic v4/v5 pattern for
         "at least confirm the oracles are speaking".
+
+    Direction alignment (C1 fix, audit #373):
+      * expected_direction: when set to "UP" or "DOWN", the gate verifies that
+        the vote majority MATCHES the strategy's intended direction. If sources
+        agree on UP but the strategy is firing DOWN, the gate SKIPs with reason
+        ``vote_majority=UP != strategy_direction=DOWN``. When None (default),
+        the gate passes as long as enough sources agree on *any* direction
+        (legacy behaviour preserved for backward-compat).
     """
 
     def __init__(
@@ -36,11 +44,15 @@ class SourceAgreementGate(Gate):
         spot_only: bool = False,
         require_chainlink_null_block: bool = False,
         require_tiingo_null_block: bool = False,
+        expected_direction: str | None = None,
     ):
         self._min_sources = min_sources
         self._spot_only = spot_only
         self._require_chainlink_null_block = bool(require_chainlink_null_block)
         self._require_tiingo_null_block = bool(require_tiingo_null_block)
+        self._expected_direction = (
+            expected_direction.upper() if expected_direction else None
+        )
 
     @property
     def name(self) -> str:
@@ -109,6 +121,28 @@ class SourceAgreementGate(Gate):
         direction = "UP" if up_count >= down_count else "DOWN"
 
         if max_agreement >= self._min_sources:
+            # C1 fix (audit #373): when expected_direction is set, verify the
+            # vote majority matches the strategy's intended direction. Without
+            # this check the gate could PASS when sources agree on UP while the
+            # strategy is firing DOWN — a direction-blind veto.
+            if (
+                self._expected_direction is not None
+                and direction != self._expected_direction
+            ):
+                return GateResult(
+                    passed=False,
+                    gate_name=self.name,
+                    reason=(
+                        f"source_agreement: vote_majority={direction} != "
+                        f"strategy_direction={self._expected_direction}"
+                    ),
+                    data={
+                        "vote_majority": direction,
+                        "strategy_direction": self._expected_direction,
+                        "agreement": max_agreement,
+                        "sources": sources,
+                    },
+                )
             return GateResult(
                 passed=True,
                 gate_name=self.name,
