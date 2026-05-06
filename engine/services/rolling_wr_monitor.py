@@ -211,20 +211,57 @@ def wilson_lower_bound(wins: int, n: int, z: float = 1.96) -> float:
     return max(0.0, (centre - margin) / denom)
 
 
-def fill_breakeven_wr(fill_price: float, fee_mult: float = 0.072) -> float:
+@dataclass
+class BreakevenWR:
+    """Return value of ``fill_breakeven_wr``.
+
+    Attributes:
+        value: Minimum win-rate required to net positive at the fill price.
+        clamped: True when ``fill_price`` was outside (0, 1) and had to be
+            substituted.  Callers can check this to surface data-quality
+            alerts rather than silently trusting the returned value.
+    """
+
+    value: float
+    clamped: bool = False
+
+
+def fill_breakeven_wr(
+    fill_price: float, fee_mult: float = 0.072
+) -> BreakevenWR:
     """Win rate required to net positive at the given fill price.
 
     For a buy at `fill_price`, profit per win = (1 - fill) - fee*fill,
     loss per loss = fill (full stake at fill price). Breakeven WR solves:
         WR * (1 - fill - fee*fill) = (1 - WR) * fill
         WR = fill / (1 - fee*fill)
+
+    Returns a :class:`BreakevenWR` with ``clamped=True`` when ``fill_price``
+    is outside (0, 1).  A WARNING is logged so operators can spot corrupt
+    fill data that would otherwise propagate silently through the pause logic.
     """
     if fill_price <= 0.0 or fill_price >= 1.0:
-        return 1.0
+        log.warning(
+            "fill_breakeven_wr.fill_out_of_range",
+            extra={
+                "original_fill": fill_price,
+                "substituted": 1.0,
+                "note": "fill_price must be in (0, 1); returning WR=1.0",
+            },
+        )
+        return BreakevenWR(value=1.0, clamped=True)
     denom = 1.0 - fee_mult * fill_price
     if denom <= 0:
-        return 1.0
-    return min(1.0, fill_price / denom)
+        log.warning(
+            "fill_breakeven_wr.denom_nonpositive",
+            extra={
+                "fill_price": fill_price,
+                "fee_mult": fee_mult,
+                "denom": denom,
+            },
+        )
+        return BreakevenWR(value=1.0, clamped=True)
+    return BreakevenWR(value=min(1.0, fill_price / denom), clamped=False)
 
 
 class CellPauseRepo(Protocol):
@@ -347,7 +384,8 @@ class RollingWRMonitor:
         # trade's fill alone).
         fills = [t.fill_price for t in recent if t.fill_price is not None]
         avg_fill = sum(fills) / len(fills) if fills else 0.5
-        breakeven = fill_breakeven_wr(avg_fill, self._fee_mult)
+        be_result = fill_breakeven_wr(avg_fill, self._fee_mult)
+        breakeven = be_result.value
         wilson_below_breakeven = wilson_lb < breakeven
 
         # Trigger 2: WR drop > N pp from baseline.

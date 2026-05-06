@@ -18,6 +18,7 @@ from typing import Any
 from services.cell_bucketing import session as _session
 from services.cell_bucketing import t_band as _t_band
 from services.rolling_wr_monitor import (
+    BreakevenWR,
     CellKey,
     ResolvedTrade,
     RollingWRMonitor,
@@ -115,13 +116,15 @@ def test_wilson_lower_bound_typical():
 def test_fill_breakeven_wr_at_50():
     # fill 0.5 + 7.2% fee -> WR ~= 0.5 / (1 - 0.036) = 0.5187
     be = fill_breakeven_wr(0.50, fee_mult=0.072)
-    assert 0.50 < be < 0.55
+    assert 0.50 < be.value < 0.55
+    assert be.clamped is False
 
 
 def test_fill_breakeven_wr_at_75():
     # high-fill fields require ~78%+ WR.
     be = fill_breakeven_wr(0.75, fee_mult=0.072)
-    assert 0.78 < be < 0.82
+    assert 0.78 < be.value < 0.82
+    assert be.clamped is False
 
 
 # ─────────────────────────── monitor behaviour ──────────────────────────────
@@ -478,3 +481,115 @@ def test_min_n_per_strategy_override():
     repo.trades_by_cell[cell].append(_trade(is_win=False, pnl=-10.0))
     pid = _run(monitor.on_trade_resolved(trade_override))
     assert pid is not None, "Should pause at n=5 with per-strategy min_n=5"
+
+
+# ─────────────────── F5: fill_breakeven_wr clamp behaviour ─────────────────
+
+
+def test_fill_breakeven_wr_clamp_low():
+    """fill_price=0.0 is out of range — must set clamped=True and return 1.0."""
+    be = fill_breakeven_wr(0.0)
+    assert be.value == 1.0
+    assert be.clamped is True
+
+
+def test_fill_breakeven_wr_clamp_high():
+    """fill_price=1.0 is out of range — must set clamped=True and return 1.0."""
+    be = fill_breakeven_wr(1.0)
+    assert be.value == 1.0
+    assert be.clamped is True
+
+
+def test_fill_breakeven_wr_clamp_negative():
+    """Negative fill_price is clearly invalid — must set clamped=True."""
+    be = fill_breakeven_wr(-0.5)
+    assert be.value == 1.0
+    assert be.clamped is True
+
+
+def test_fill_breakeven_wr_no_clamp_mid_range():
+    """Normal fill in (0, 1) must NOT set clamped."""
+    be = fill_breakeven_wr(0.60)
+    assert be.clamped is False
+    # Sanity: 0.60 / (1 - 0.072*0.60) = 0.60 / 0.9568 ≈ 0.627
+    assert 0.62 < be.value < 0.64
+
+
+def test_fill_breakeven_wr_returns_breakeven_wr_instance():
+    """Return type is BreakevenWR, not a plain float."""
+    result = fill_breakeven_wr(0.70)
+    assert isinstance(result, BreakevenWR)
+
+
+# ──────────────── F4: ResolvedTrade.tx_hash + alert format ──────────────────
+
+
+def test_resolved_trade_has_tx_hash_field():
+    """ResolvedTrade accepts tx_hash keyword and defaults to None."""
+    t = _trade()
+    assert t.tx_hash is None
+
+    t2 = ResolvedTrade(
+        strategy_id="v12_lgb_combo",
+        direction="DOWN",
+        eval_offset=80,
+        hour_utc=10,
+        regime="chop",
+        fill_price=0.40,
+        pnl_usd=-5.0,
+        is_win=False,
+        tx_hash="0xabc123",
+    )
+    assert t2.tx_hash == "0xabc123"
+
+
+class _CapturingAlerter:
+    """Minimal alerter stub that captures the sent message."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def send(self, msg: str) -> None:
+        self.messages.append(msg)
+
+
+def test_alert_includes_explorer_url_when_tx_hash_present():
+    """When trigger fires and trade has tx_hash, alert body contains polygonscan link."""
+    repo = FakeRepo()
+    alerter = _CapturingAlerter()
+    monitor = RollingWRMonitor(repo, alerter=alerter, min_trades=4)
+    cell = _trade().cell
+    repo.trades_by_cell[cell] = [
+        _trade(is_win=False, pnl=-10.0) for _ in range(4)
+    ]
+
+    trade_with_hash = ResolvedTrade(
+        strategy_id="v12_lgb_combo",
+        direction="DOWN",
+        eval_offset=80,
+        hour_utc=10,
+        regime="chop",
+        fill_price=0.40,
+        pnl_usd=-10.0,
+        is_win=False,
+        tx_hash="0xdeadbeef",
+    )
+    pid = _run(monitor.on_trade_resolved(trade_with_hash))
+    assert pid is not None
+    assert len(alerter.messages) == 1
+    assert "polygonscan.com/tx/0xdeadbeef" in alerter.messages[0]
+
+
+def test_alert_no_explorer_url_when_tx_hash_none():
+    """When tx_hash is None the alert body must NOT include a polygonscan link."""
+    repo = FakeRepo()
+    alerter = _CapturingAlerter()
+    monitor = RollingWRMonitor(repo, alerter=alerter, min_trades=4)
+    cell = _trade().cell
+    repo.trades_by_cell[cell] = [
+        _trade(is_win=False, pnl=-10.0) for _ in range(4)
+    ]
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is not None
+    assert len(alerter.messages) == 1
+    assert "polygonscan.com" not in alerter.messages[0]
