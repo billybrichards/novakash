@@ -21,6 +21,7 @@ Gate order (TRADE path):
    9. T-minus blend          (R4 — compute pu, direction; VHC uses pc_dir)
   10. Hard LGB safety floor  (R6 — bypassable by VHC for all directions)
   11. TRANSITION regime      (R5 — bypassable by VHC)
+ 11b. v4_regime direction    (NEW — NOT bypassable by VHC; note #347)
   12. Oracle direction       (shared — bypassable by VHC)
   13. Fill band              (R7 — shared, NOT bypassed by VHC)
   14. UP / DOWN fill floors  (R8 — shared, NOT bypassed by VHC)
@@ -66,6 +67,8 @@ from strategies.configs.v8_champion_lgb_only import (
     _lgb_dist_min_up,
     _block_down_vpin_regimes,
     _block_up_vpin_regimes,
+    _block_down_v4_regimes,
+    _block_up_v4_regimes,
     _in_cooldown,
     record_loss,
     reset_cooldown,
@@ -1023,6 +1026,40 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 f"{direction} allowed in vpin regime={vpin_regime}",
             )
         )
+
+    # ── 11b. Per-direction v4-regime block (AFTER direction known) ─────────
+    # Shared helpers from v8_champion_lgb_only. Checked against surface.v4_regime
+    # (HMM regime: calm_trend / volatile_trend / chop / risk_off). Runs AFTER
+    # tradeable_v4_regimes allow-list passes AND direction is resolved. Allows
+    # fine-grained direction × regime pruning (e.g. block NO in volatile_trend
+    # while keeping YES × volatile_trend — Hub note #347). Not VHC-bypassable
+    # by design: regime alpha is structural, not conviction-dependent.
+    # Default empty lists = gate is a no-op.
+    v4_regime_block = (
+        (direction == "DOWN" and v4_regime in _block_down_v4_regimes())
+        or (direction == "UP" and v4_regime in _block_up_v4_regimes())
+    )
+    if v4_regime_block:
+        gates.append(
+            _gate(
+                "v4_regime_direction",
+                False,
+                f"{direction} blocked in v4_regime={v4_regime}",
+            )
+        )
+        reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+        return _skip_v9(
+            f"v4_regime_direction: {direction} blocked in {v4_regime}",
+            gates,
+            direction=direction,
+        )
+    gates.append(
+        _gate(
+            "v4_regime_direction",
+            True,
+            f"{direction} allowed in v4_regime={v4_regime}",
+        )
+    )
 
     # ── 12. Oracle direction agreement ─────────────────────────────────────
     if _skip_on_oracle_disagree():

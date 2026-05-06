@@ -90,6 +90,37 @@ def _block_up_vpin_regimes() -> set[str]:
     )
 
 
+def _block_down_v4_regimes() -> set[str]:
+    """HMM v4 regimes where DOWN direction is additionally blocked.
+
+    Checked AFTER the direction-agnostic ``tradeable_v4_regimes`` gate passes.
+    Values are the v4 HMM regime labels: calm_trend / volatile_trend / chop /
+    risk_off. Default empty — no direction-specific v4 block.
+
+    Example override (block NO in volatile_trend — Hub note #347 finding):
+        UPDATE strategy_runtime_overrides
+        SET params = params || '{"block_down_v4_regimes": ["volatile_trend"]}'::jsonb
+        WHERE strategy_id = 'v9_1_lgb_only';
+    """
+    return set(
+        _gp.get_str_list(
+            "block_down_v4_regimes", "V8LGB_BLOCK_DOWN_V4_REGIMES", []
+        )
+    )
+
+
+def _block_up_v4_regimes() -> set[str]:
+    """HMM v4 regimes where UP direction is additionally blocked.
+
+    Symmetric counterpart to ``_block_down_v4_regimes``. Default empty.
+    """
+    return set(
+        _gp.get_str_list(
+            "block_up_v4_regimes", "V8LGB_BLOCK_UP_V4_REGIMES", []
+        )
+    )
+
+
 def _post_loss_cooldown_min() -> int:
     return _gp.get_int(
         "post_loss_cooldown_min", "V8LGB_POST_LOSS_COOLDOWN_MIN", 20
@@ -631,6 +662,39 @@ def evaluate_v8_champion_lgb_only(
                 f"{direction} allowed in vpin regime={vpin_regime}",
             )
         )
+
+    # ── 3c. Per-direction v4-regime block (AFTER direction known) ─────────
+    # Checked against surface.v4_regime (HMM regime: calm_trend /
+    # volatile_trend / chop / risk_off) — distinct from the vpin vol regime
+    # above. Runs AFTER tradeable_v4_regimes allow-list passes. Allows
+    # fine-grained direction × regime pruning (e.g. block NO in
+    # volatile_trend while keeping YES × volatile_trend). Default empty
+    # lists = gate is a no-op, preserving prior behaviour.
+    v4_regime_block = (
+        (direction == "DOWN" and v4_regime in _block_down_v4_regimes())
+        or (direction == "UP" and v4_regime in _block_up_v4_regimes())
+    )
+    if v4_regime_block:
+        gates.append(
+            _gate(
+                "v4_regime_direction",
+                False,
+                f"{direction} blocked in v4_regime={v4_regime}",
+            )
+        )
+        reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+        return _skip(
+            f"v4_regime_direction: {direction} blocked in {v4_regime}",
+            gates,
+            direction=direction,
+        )
+    gates.append(
+        _gate(
+            "v4_regime_direction",
+            True,
+            f"{direction} allowed in v4_regime={v4_regime}",
+        )
+    )
 
     # ── 7. Oracle direction agreement (if enabled) ─────────────────────────
     if _skip_on_oracle_disagree():
