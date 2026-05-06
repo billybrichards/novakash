@@ -24,6 +24,8 @@ import os
 import time
 import uuid
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -38,6 +40,40 @@ logger = structlog.get_logger(__name__)
 
 POLY_WINDOW_SECONDS = 300
 LIVE_MAX_TRADE_USD = 50.0
+
+
+# ── Dedicated executor for blocking Polymarket SDK calls (audit #371) ─────
+# The Polymarket SDK uses sync ``httpx``/``requests`` under the hood. The
+# pre-fix code wrapped every call with ``asyncio.to_thread``, which routed
+# them onto the loop's default ThreadPoolExecutor (default 8 workers).
+# When CLOB/data-api is slow, every worker could park on a blocking SDK
+# call and starve the asyncio loop — engine deadlocks (audit #371).
+#
+# Quarantining SDK calls into a dedicated 8-worker pool means Polymarket
+# back-pressure consumes only this pool. The default executor (bumped to
+# 24 in ``engine/main.py``) stays free for DB ops, redeemer, and other
+# unrelated ``asyncio.to_thread`` callers, so the loop keeps making
+# progress even when Polymarket gateways slow down.
+_POLY_SDK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="poly-sdk",
+)
+
+
+async def _run_poly_sdk(fn, *args, **kwargs):
+    """Run a blocking Polymarket SDK call in the dedicated executor.
+
+    Drop-in replacement for ``asyncio.to_thread(fn, *args, **kwargs)`` —
+    same semantics (returns the awaitable for fn's result), routed via
+    the isolated ``poly-sdk`` pool so Polymarket back-pressure can't
+    starve other async tasks.
+    """
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        return await loop.run_in_executor(
+            _POLY_SDK_EXECUTOR, partial(fn, *args, **kwargs)
+        )
+    return await loop.run_in_executor(_POLY_SDK_EXECUTOR, fn, *args)
 
 
 class LivePolymarketClient(PolymarketClientPort):
@@ -290,7 +326,7 @@ class LivePolymarketClient(PolymarketClientPort):
             seconds_to_expiry=expiration - int(time.time()) if expiration > 0 else "none",
         )
 
-        response = await asyncio.to_thread(_sign_and_submit)
+        response = await _run_poly_sdk(_sign_and_submit)
 
         # Response can be a dict or an object — handle both
         if isinstance(response, dict):
@@ -326,7 +362,7 @@ class LivePolymarketClient(PolymarketClientPort):
             return client.get_order_book(token_id)
 
         try:
-            book = await asyncio.wait_for(asyncio.to_thread(_fetch_book), timeout=5.0)
+            book = await asyncio.wait_for(_run_poly_sdk(_fetch_book), timeout=5.0)
         except asyncio.TimeoutError as exc:
             self._log.warning(
                 "get_clob_best_ask.timeout",
@@ -431,7 +467,7 @@ class LivePolymarketClient(PolymarketClientPort):
             size=f"{size:.2f}",
         )
 
-        response = await asyncio.to_thread(_sign_and_submit)
+        response = await _run_poly_sdk(_sign_and_submit)
 
         # CRITICAL BUG FIX (Apr 10): Polymarket CLOB response field names
         # Polymarket returns: success, orderID, status ("live"/"matched"/"delayed"/
@@ -550,7 +586,7 @@ class LivePolymarketClient(PolymarketClientPort):
             size=f"{size:.2f}",
         )
 
-        response = await asyncio.to_thread(_sign_and_submit)
+        response = await _run_poly_sdk(_sign_and_submit)
 
         # CRITICAL BUG FIX (Apr 10): See place_fok_order for full context.
         # Polymarket returns makingAmount/takingAmount (not size_matched) and
@@ -611,7 +647,7 @@ class LivePolymarketClient(PolymarketClientPort):
             return 0.02
         try:
             client = self._clob_client
-            book = await asyncio.to_thread(client.get_order_book, token_id)
+            book = await _run_poly_sdk(client.get_order_book, token_id)
             
             best_bid = float(book.bids[0].price) if book.bids else 0.0
             best_ask = float(book.asks[0].price) if book.asks else 1.0
@@ -681,7 +717,7 @@ class LivePolymarketClient(PolymarketClientPort):
                 size=size,
             )
             
-            response = await asyncio.to_thread(
+            response = await _run_poly_sdk(
                 self._clob_client.rfq.create_rfq_request,
                 user_request,
             )
@@ -698,7 +734,7 @@ class LivePolymarketClient(PolymarketClientPort):
             
             # Get best quote
             from py_clob_client_v2.rfq import GetRfqBestQuoteParams
-            best_quote = await asyncio.to_thread(
+            best_quote = await _run_poly_sdk(
                 self._clob_client.rfq.get_rfq_best_quote,
                 request_id,
             )
@@ -708,7 +744,7 @@ class LivePolymarketClient(PolymarketClientPort):
                 # Cancel the request
                 try:
                     from py_clob_client_v2.rfq import CancelRfqRequestParams
-                    await asyncio.to_thread(
+                    await _run_poly_sdk(
                         self._clob_client.rfq.cancel_rfq_request,
                         request_id,
                     )
@@ -734,7 +770,7 @@ class LivePolymarketClient(PolymarketClientPort):
                     max_price=f"${max_price:.2f}",
                 )
                 try:
-                    await asyncio.to_thread(
+                    await _run_poly_sdk(
                         self._clob_client.rfq.cancel_rfq_request,
                         request_id,
                     )
@@ -743,7 +779,7 @@ class LivePolymarketClient(PolymarketClientPort):
                 return (None, None)
             
             # Accept the quote
-            result = await asyncio.to_thread(
+            result = await _run_poly_sdk(
                 self._clob_client.rfq.accept_rfq_quote,
                 quote_id,
             )
@@ -810,7 +846,7 @@ class LivePolymarketClient(PolymarketClientPort):
                     return Decimal(str(order_book.asks[0].price))
                 return Decimal("0.5")
 
-            yes_best_ask = await asyncio.to_thread(_fetch_prices)
+            yes_best_ask = await _run_poly_sdk(_fetch_prices)
 
             if yes_best_ask is None:
                 self._log.warning("get_market_prices.token_not_found", market_slug=market_slug)
@@ -841,12 +877,12 @@ class LivePolymarketClient(PolymarketClientPort):
             ba = self._clob_client.get_balance_allowance(params)
             return int(ba.get("balance", "0")) / 1e6
 
-        return float(await asyncio.to_thread(_fetch))
+        return float(await _run_poly_sdk(_fetch))
 
     async def get_order_status(self, order_id: str) -> dict:
         """Return status dict for a given order ID."""
         client = self._ensure_client()
-        resp = await asyncio.to_thread(self._clob_client.get_order, order_id)
+        resp = await _run_poly_sdk(self._clob_client.get_order, order_id)
         # v11 fix: Normalize status to UPPERCASE for back-compat with
         # fill_check loops that compare `clob_status not in ("LIVE","UNKNOWN")`.
         # Polymarket returns lowercase: 'live'/'matched'/'unmatched'/'delayed'.
@@ -975,7 +1011,7 @@ class LivePolymarketClient(PolymarketClientPort):
         def _fetch():
             return self._clob_client.get_orders()
 
-        raw = await asyncio.to_thread(_fetch)
+        raw = await _run_poly_sdk(_fetch)
         # Normalise: py-clob-client may return a dict with 'data' key or a list
         if isinstance(raw, dict):
             return raw.get("data", [])
@@ -989,7 +1025,7 @@ class LivePolymarketClient(PolymarketClientPort):
         def _fetch():
             return self._clob_client.get_trades()
 
-        raw = await asyncio.to_thread(_fetch)
+        raw = await _run_poly_sdk(_fetch)
 
         # Normalise: API may return dict with 'data' key or a list directly
         if isinstance(raw, dict):
@@ -1097,7 +1133,7 @@ class LivePolymarketClient(PolymarketClientPort):
             return self._clob_client.get_order(order_id)
 
         try:
-            resp = await asyncio.to_thread(_fetch)
+            resp = await _run_poly_sdk(_fetch)
         except Exception as exc:
             # Check for "not found" responses — these are NOT errors, they're
             # the SOT-defining signal that the order never made it to the CLOB.
@@ -1123,7 +1159,7 @@ class LivePolymarketClient(PolymarketClientPort):
             return self._clob_client.get_orders()
 
         try:
-            raw = await asyncio.to_thread(_fetch)
+            raw = await _run_poly_sdk(_fetch)
         except Exception as exc:
             self._log.warning("list_recent_orders.fetch_failed", error=str(exc)[:200])
             return []
