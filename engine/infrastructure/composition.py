@@ -162,6 +162,38 @@ class CompositionRoot:
             paper_mode=settings.paper_mode,
         )
 
+        # ── Rolling-WR auto-pause monitor (audits #379 + #385) ───────────────
+        # Built before OrderManager so we can pass it as a constructor arg.
+        # The concrete repo is passed the DBClient shim; it extracts the
+        # asyncpg pool lazily so it survives DB reconnects.
+        from adapters.persistence.pg_cell_pause_repo import PgCellPauseRepo
+        from services.rolling_wr_monitor import RollingWRMonitor
+        self._cell_pause_repo = PgCellPauseRepo(db_client=self._db)
+        self._rolling_wr_monitor = RollingWRMonitor(
+            repo=self._cell_pause_repo,
+            alerter=self._alerter,
+        )
+        # In-memory snapshot of active cell pauses (refreshed every 30s by
+        # EngineRuntime). The set holds frozensets of (strategy_id, direction,
+        # t_band, regime, session) so the CellPauseGate lookup is O(1) and
+        # zero-I/O at decision time.
+        self._active_pause_snapshot: set[tuple] = set()
+
+        def _cell_pause_lookup(
+            strategy_id: str,
+            direction: str,
+            t_band: str,
+            regime: Optional[str],
+            session: Optional[str],
+        ) -> Optional[str]:
+            """Sync gate lookup — consults in-memory snapshot."""
+            key = (strategy_id, direction, t_band, regime, session)
+            if key in self._active_pause_snapshot:
+                return f"cell auto-paused by rolling-WR monitor"
+            return None
+
+        self._cell_pause_lookup = _cell_pause_lookup
+
         # ── Order & Risk Management ────────────────────────────────────────────
         self._order_manager = OrderManager(
             db=self._db,
@@ -169,6 +201,7 @@ class CompositionRoot:
             paper_mode=settings.paper_mode,
             on_resolution=None,
             poly_client=self._poly_client,
+            rolling_wr_monitor=self._rolling_wr_monitor,
         )
 
         # Determine effective starting bankroll (paper override if set)
@@ -664,6 +697,13 @@ class CompositionRoot:
                 # so the registry would stay paper forever and execute_uc
                 # never runs. Audit #318 — this was blocking v9_lgb_only fills.
                 self._strategy_registry.set_paper_mode(settings.paper_mode)
+                # Wire cell-pause lookup into any CellPauseGate gates loaded
+                # from YAML. The in-memory snapshot is refreshed every 30s
+                # by EngineRuntime.refresh_cell_pause_snapshot().
+                if hasattr(self._strategy_registry, "set_cell_pause_lookup"):
+                    self._strategy_registry.set_cell_pause_lookup(
+                        self._cell_pause_lookup
+                    )
                 log.info(
                     "orchestrator.strategy_registry_enabled",
                     strategies=self._strategy_registry.strategy_names,
@@ -956,3 +996,30 @@ class CompositionRoot:
     def owner_eoa_addresses(self) -> frozenset[str]:
         """Lowercased allowlist for wallet-delta classifier."""
         return self._owner_eoa_addresses
+
+    async def refresh_cell_pause_snapshot(self) -> None:
+        """Refresh the in-memory set of active cell pauses from the DB.
+
+        Called every 30s by EngineRuntime so the CellPauseGate has an
+        up-to-date view without hitting the DB on every evaluation tick.
+        Fire-and-forget: silently swallows errors so a DB hiccup doesn't
+        break the evaluation loop.
+        """
+        try:
+            rows = await self._cell_pause_repo.list_active_pauses()
+            snapshot: set[tuple] = set()
+            for row in rows:
+                key = (
+                    row.get("strategy_id"),
+                    row.get("direction"),
+                    row.get("t_band"),
+                    row.get("regime"),
+                    row.get("session"),
+                )
+                snapshot.add(key)
+            self._active_pause_snapshot = snapshot
+        except Exception as exc:
+            log.warning(
+                "composition.cell_pause_snapshot_refresh_failed",
+                error=str(exc)[:200],
+            )

@@ -895,6 +895,17 @@ class EngineRuntime:
             )
         )
 
+        # 6c. Cell-pause snapshot refresh (every 30s) — audits #379 + #385.
+        # Refreshes the in-memory set of active cell pauses so CellPauseGate
+        # can do O(1) sync lookups without blocking every evaluation tick.
+        if hasattr(self._root, "refresh_cell_pause_snapshot"):
+            self._tasks.append(
+                asyncio.create_task(
+                    self._cell_pause_snapshot_loop(),
+                    name="cell_pause_snapshot",
+                )
+            )
+
         # ── DATA SURFACE: wire feeds + warmup + start BEFORE the DDL /
         # recovery / reconciler work below. Strategies evaluate every 2s
         # and need feeds wired from t=0. Previously this block sat AFTER
@@ -1197,6 +1208,20 @@ class EngineRuntime:
                         except Exception as exc:
                             log.warning(
                                 "orchestrator.ensure_redeem_attempts_failed",
+                                error=str(exc)[:200],
+                            )
+                    # Audits #379 + #385: ensure cell_pauses table exists.
+                    _cell_pause_repo = getattr(
+                        self._root, "_cell_pause_repo", None
+                    )
+                    if _cell_pause_repo is not None and hasattr(
+                        _cell_pause_repo, "ensure_tables"
+                    ):
+                        try:
+                            await _cell_pause_repo.ensure_tables()
+                        except Exception as exc:
+                            log.warning(
+                                "orchestrator.ensure_cell_pauses_failed",
                                 error=str(exc)[:200],
                             )
                     await self._redeemer.connect()
@@ -5273,6 +5298,46 @@ class EngineRuntime:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── Cell-Pause Snapshot Refresh Loop ────────────────────────────────────
+
+    async def _cell_pause_snapshot_loop(self) -> None:
+        """Every 30s: refresh in-memory set of active cell pauses.
+
+        The CellPauseGate uses a sync O(1) set lookup against this
+        snapshot so strategy evaluations stay zero-I/O. Errors are
+        swallowed — a stale snapshot only means pauses are temporarily
+        ignored, which is safe.
+        """
+        REFRESH_INTERVAL = 30
+
+        log.info("cell_pause_snapshot_loop.started")
+
+        # Initial refresh immediately on boot.
+        try:
+            await self._root.refresh_cell_pause_snapshot()
+        except Exception as exc:
+            log.warning(
+                "cell_pause_snapshot_loop.initial_refresh_failed",
+                error=str(exc)[:200],
+            )
+
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=float(REFRESH_INTERVAL),
+                )
+                break  # shutdown
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await self._root.refresh_cell_pause_snapshot()
+            except Exception as exc:
+                log.warning(
+                    "cell_pause_snapshot_loop.refresh_failed",
+                    error=str(exc)[:200],
+                )
 
     # ── Shadow Trade Resolution Loop ─────────────────────────────────────────
 

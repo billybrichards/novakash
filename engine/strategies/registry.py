@@ -397,10 +397,37 @@ class StrategyRegistry:
                     f"Unknown gate type '{gate_type}' in strategy '{config.name}'"
                 )
 
+            # CellPauseGate needs strategy_id injected at build time.
+            # lookup is None until set_cell_pause_lookup() is called
+            # (after the rolling-WR repo is ready) — gate is a safe no-op
+            # until then.
+            if gate_type == "cell_pause" and "strategy_id" not in params:
+                params = dict(params, strategy_id=config.name)
+
             gate = gate_cls(**params)
             pipeline.append(gate)
 
         return pipeline
+
+    def set_cell_pause_lookup(
+        self, lookup: Optional[Callable]
+    ) -> None:
+        """Inject the cell-pause lookup function into every CellPauseGate
+        across all loaded strategy pipelines.
+
+        Called by CompositionRoot / EngineRuntime after the
+        PgCellPauseRepo is ready. The lookup is a sync wrapper around the
+        repo's ``is_cell_paused`` result (snapshot refreshed every 30s by
+        the monitor loop so the gate stays zero-I/O at decision time).
+
+        Passing ``None`` disables all gates (reverts to no-op PASS).
+        """
+        from strategies.gates.cell_pause import CellPauseGate
+
+        for pipeline in self._pipelines.values():
+            for gate in pipeline:
+                if isinstance(gate, CellPauseGate):
+                    gate._lookup = lookup  # noqa: SLF001
 
     def _load_hooks(self, config: StrategyConfig) -> dict[str, Callable]:
         """Load Python hooks from the strategy's .py file.
