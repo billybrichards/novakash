@@ -1432,7 +1432,8 @@ class ExecuteTradeUseCase:
 
         # ── Per-cell bet-size multiplier (cell_size_scaler) ─────────────
         # Strategies whose runtime overrides declare cell_size_multipliers
-        # get a per-(session, direction) stake amp. Defaults to 1.0 (no
+        # get a per-(session, direction, t_band, regime) stake amp via a
+        # most-specific-key-wins fallback chain. Defaults to 1.0 (no
         # behaviour change) for any strategy that hasn't opted in. The
         # scaler clamps to [MIN_BET_USD, runtime.max_position_usd] so a
         # misconfigured override can never bust the absolute cap.
@@ -1445,6 +1446,24 @@ class ExecuteTradeUseCase:
 
             sess = session_label()
             override_mgr = get_runtime_override_manager()
+
+            # t_band: convert eval_offset (sec-to-close) from the decision.
+            # Falls back to None when eval_offset is unavailable → scaler
+            # skips t_band axis (backward-compatible).
+            meta = getattr(decision, "metadata", None) or {}
+            _eval_offset = meta.get("eval_offset")
+            if _eval_offset is None:
+                # Also try decision.eval_offset for strategies that set it
+                # directly on the dataclass (not in metadata dict).
+                _eval_offset = getattr(decision, "eval_offset", None)
+            try:
+                _eval_offset_int: Optional[int] = int(_eval_offset) if _eval_offset is not None else None
+            except (TypeError, ValueError):
+                _eval_offset_int = None
+
+            # regime: pull from metadata (vpin_regime is the canonical key).
+            _regime: Optional[str] = meta.get("vpin_regime") or meta.get("regime")
+
             cell_envelope = apply_cell_size_multiplier(
                 adjusted,
                 strategy_id=decision.strategy_id,
@@ -1453,6 +1472,8 @@ class ExecuteTradeUseCase:
                 absolute_max_bet=runtime.max_position_usd,
                 min_bet_usd=min(MIN_BET_USD, runtime.min_bet_usd),
                 override_provider=override_mgr,
+                t_band=_eval_offset_int,
+                regime=_regime,
             )
             if cell_envelope["multiplier"] > 1.0:
                 log.info(
@@ -1460,6 +1481,8 @@ class ExecuteTradeUseCase:
                     strategy_id=decision.strategy_id,
                     session=cell_envelope["session"],
                     direction=cell_envelope["direction"],
+                    t_band=cell_envelope["t_band"],
+                    regime=cell_envelope["regime"],
                     multiplier=cell_envelope["multiplier"],
                     base_stake=cell_envelope["base_stake"],
                     final_stake=cell_envelope["final_stake"],

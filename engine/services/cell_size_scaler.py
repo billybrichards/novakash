@@ -18,13 +18,42 @@ sizing; everyone else returns 1.0 and is unaffected.
 Shape of the override (per-strategy `params.cell_size_multipliers`)::
 
     {
-      "us_open:UP": 1.5,
-      "asian_late:UP": 1.25,
-      "us_late:DOWN": 1.25,
-      "us_open:DOWN": 1.10
+      # Most specific (4-axis)
+      "asian_late:DOWN:T-121-180:CASCADE": 2.0,
+      # 3-axis combinations
+      "asian_late:DOWN:T-121-180": 1.5,
+      "asian_late:DOWN:CASCADE": 1.3,
+      # 2-axis (original behaviour)
+      "asian_late:DOWN": 1.25,
+      # Direction-only (strategy-wide)
+      "DOWN": 1.25,
     }
 
-Keys are `<session>:<direction>` where session ∈ session_label.session_for_hour
+Lookup priority (most specific → least specific → default 1.0)
+--------------------------------------------------------------
+1. ``session:dir:tband:regime``  — e.g. ``asian_late:DOWN:T-121-180:CASCADE``
+2. ``session:dir:tband``         — e.g. ``asian_late:DOWN:T-121-180``
+3. ``session:dir:regime``        — e.g. ``asian_late:DOWN:CASCADE``
+4. ``session:dir``               — e.g. ``asian_late:DOWN`` (original behaviour)
+5. ``dir:tband:regime``          — e.g. ``DOWN:T-121-180:CASCADE``
+6. ``tband:regime``              — e.g. ``T-121-180:CASCADE`` (regime+timing only)
+7. Default: 1.0
+
+First key that matches wins. No multiplication or stacking — an exact
+match returns the multiplier and the chain stops.
+
+t_band helper
+-------------
+``eval_offset`` uses engine T-minus convention (sec-to-close, verified
+2026-05-01). ``_t_band(eval_offset)`` converts to canonical bucket labels
+(T-0-30, T-31-60, …, T-241-300). These labels match the Hub-side analysis
+SQL and ``cell_bucketing.t_band()`` from PR #494.
+
+TODO: once PR #494 (feat/hour-blocks-source-agreement-cell-pause) merges
+into this branch, remove ``_t_band`` and import from
+``services.cell_bucketing`` instead.
+
+Keys are ``<session>:<direction>`` where session ∈ session_label.session_for_hour
 and direction ∈ {UP, DOWN, YES, NO}. UP/YES and DOWN/NO are accepted
 synonyms — the cell tables historically used YES/NO but engine code uses
 UP/DOWN. Both forms resolve.
@@ -32,7 +61,7 @@ UP/DOWN. Both forms resolve.
 Safety bounds
 -------------
 * Returned multiplier is clamped to ``[1.0, cell_size_multiplier_max]``
-  (default cap = 1.5). Negative or sub-1 entries in the override map
+  (default cap = 2.0). Negative or sub-1 entries in the override map
   are silently treated as 1.0 — this gate is only ever a stake AMP, never
   a discount, so a bad config can't shrink positions or short.
 * The caller (``_calculate_stake``) is responsible for the absolute
@@ -49,7 +78,7 @@ when ``multiplier > 1.0`` so we can audit boosted fires after the fact.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     import structlog  # type: ignore[import]
@@ -59,7 +88,7 @@ except Exception:  # pragma: no cover — tests without structlog
     _log = logging.getLogger(__name__)
 
 
-_DEFAULT_MULTIPLIER_MAX = 1.5
+_DEFAULT_MULTIPLIER_MAX = 2.0  # bumped from 1.5 to support up-to-2x sniper cells
 _DEFAULT_MULTIPLIER = 1.0
 
 # Direction synonyms — UP/YES and DOWN/NO map to the same cell.
@@ -69,6 +98,83 @@ _DIR_SYNONYMS: dict[str, tuple[str, ...]] = {
     "YES": ("YES", "UP"),
     "NO": ("NO", "DOWN"),
 }
+
+
+# ── t_band inline helper ──────────────────────────────────────────────────
+# TODO: Remove this once PR #494 (feat/hour-blocks-source-agreement-cell-pause)
+# merges into this branch and deduplicate via:
+#   from services.cell_bucketing import t_band as _t_band
+#
+# Bucket boundaries and label format MUST match cell_bucketing.t_band() exactly.
+
+def _t_band(eval_offset: Optional[int]) -> Optional[str]:
+    """Return the t_band label for an eval_offset (sec-to-close, T-minus convention).
+
+    Returns None when eval_offset is None (allows callers to skip t_band axis).
+    Labels match cell_bucketing.t_band() from PR #494.
+    """
+    if eval_offset is None:
+        return None
+    eo = int(eval_offset)
+    if eo <= 30:
+        return "T-0-30"
+    if eo <= 60:
+        return "T-31-60"
+    if eo <= 90:
+        return "T-61-90"
+    if eo <= 120:
+        return "T-91-120"
+    if eo <= 180:
+        return "T-121-180"
+    if eo <= 240:
+        return "T-181-240"
+    return "T-241-300"
+
+
+# ── Lookup priority chain ────────────────────────────────────────────────
+# Each lambda receives (session, dir, tband, regime) — all may be None.
+# Returns None when the combo doesn't produce a valid key (skipped in loop).
+#
+# Priority: most-specific first so first match wins.
+
+def _build_lookup_chain(
+    session: Optional[str],
+    direction_candidates: tuple[str, ...],
+    tband: Optional[str],
+    regime: Optional[str],
+) -> List[str]:
+    """Return candidate lookup keys in priority order (most specific first).
+
+    Multiple direction synonyms are tried at each priority level so that
+    a key stored as "asian_late:YES:T-121-180:CASCADE" matches when the
+    engine passes direction="UP".
+    """
+    keys: List[str] = []
+
+    def _add(parts: List[Optional[str]]) -> None:
+        """Add one candidate per direction synonym, skip if any part is None."""
+        # Replace the sentinel _DIR placeholder index 1 with each synonym
+        for d in direction_candidates:
+            candidate_parts = [p if p != "__DIR__" else d for p in parts]
+            if any(p is None for p in candidate_parts):
+                continue
+            keys.append(":".join(candidate_parts))  # type: ignore[arg-type]
+
+    # 1. session:dir:tband:regime
+    _add([session, "__DIR__", tband, regime])
+    # 2. session:dir:tband
+    _add([session, "__DIR__", tband])
+    # 3. session:dir:regime
+    _add([session, "__DIR__", regime])
+    # 4. session:dir  (original behaviour)
+    _add([session, "__DIR__"])
+    # 5. dir:tband:regime
+    _add(["__DIR__", tband, regime])
+    # 6. tband:regime
+    if tband is not None and regime is not None:
+        keys.append(f"{tband}:{regime}")
+
+    return keys
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -128,18 +234,42 @@ def cell_size_multiplier(
     session: Optional[str],
     direction: Optional[str],
     override_provider: Optional[Any] = None,
+    *,
+    t_band: Optional[int] = None,
+    regime: Optional[str] = None,
 ) -> float:
-    """Return the bet-size multiplier for the (strategy, session, direction)
-    cell.
+    """Return the bet-size multiplier for a cell, using a fallback chain.
 
-    Resolution order:
-    1. If any required arg is None / blank → return 1.0.
-    2. Read ``cell_size_multipliers`` from the strategy's runtime overrides.
-    3. Try lookup keys ``<session>:<dir_synonym>`` for each synonym of
-       ``direction`` (UP/YES and DOWN/NO are equivalent).
-    4. Clamp result to ``[1.0, cell_size_multiplier_max]``.
+    Resolution order (most-specific wins):
+    1. ``session:dir:tband:regime``
+    2. ``session:dir:tband``
+    3. ``session:dir:regime``
+    4. ``session:dir``              — original behaviour
+    5. ``dir:tband:regime``
+    6. ``tband:regime``
+    7. Default 1.0
+
+    Parameters
+    ----------
+    strategy_id:
+        Strategy identifier for override map lookup.
+    session:
+        Trading session label (e.g. ``asian_late``, ``us_open``).
+        If None the lookup skips all session-specific layers.
+    direction:
+        Trade direction. UP/YES and DOWN/NO are accepted synonyms.
+    override_provider:
+        Duck-typed RuntimeOverrideManager. None → always 1.0.
+    t_band:
+        eval_offset (sec-to-close, T-minus convention). Passed as int and
+        converted to label internally via ``_t_band()``. None skips the
+        t_band axis so behaviour is backward-compatible with pre-multi-axis
+        callers.
+    regime:
+        VPIN regime label (e.g. ``CASCADE``, ``TRANSITION``). None skips
+        the regime axis.
     """
-    if not strategy_id or not session or not direction:
+    if not strategy_id or not direction:
         return _DEFAULT_MULTIPLIER
 
     multipliers, cap = _read_override_map(strategy_id, override_provider)
@@ -147,21 +277,22 @@ def cell_size_multiplier(
         return _DEFAULT_MULTIPLIER
 
     direction_norm = direction.strip().upper()
-    candidates = _DIR_SYNONYMS.get(direction_norm, (direction_norm,))
+    dir_candidates = _DIR_SYNONYMS.get(direction_norm, (direction_norm,))
 
-    found: Optional[float] = None
-    for d in candidates:
-        key = f"{session}:{d}"
+    tband_label = _t_band(t_band)
+    regime_norm = regime.strip().upper() if regime else None
+
+    lookup_keys = _build_lookup_chain(session, dir_candidates, tband_label, regime_norm)
+
+    for key in lookup_keys:
         if key in multipliers:
             found = multipliers[key]
-            break
-    if found is None:
-        return _DEFAULT_MULTIPLIER
+            # Clamp [1.0, cap] — multiplier is amp-only, never a discount.
+            if found < 1.0:
+                return _DEFAULT_MULTIPLIER
+            return min(found, cap)
 
-    # Clamp [1.0, cap] — multiplier is amp-only, never a discount.
-    if found < 1.0:
-        return _DEFAULT_MULTIPLIER
-    return min(found, cap)
+    return _DEFAULT_MULTIPLIER
 
 
 def apply_cell_size_multiplier(
@@ -173,6 +304,8 @@ def apply_cell_size_multiplier(
     absolute_max_bet: float,
     min_bet_usd: float,
     override_provider: Optional[Any] = None,
+    t_band: Optional[int] = None,
+    regime: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compute the boosted stake plus an audit envelope for logging.
 
@@ -186,13 +319,17 @@ def apply_cell_size_multiplier(
           "session": "us_open",
           "direction": "UP",
           "strategy_id": "v12_lgb_combo",
+          "t_band": "T-121-180",      # None when eval_offset not provided
+          "regime": "CASCADE",        # None when not provided
+          "matched_key": null,        # which key won the lookup (for telemetry)
           "clamp_reason": null,       # or "absolute_max_bet" / "min_bet_floor"
         }
 
     The caller uses ``final_stake`` for execution and the rest for logs/TG.
     """
     multiplier = cell_size_multiplier(
-        strategy_id, session, direction, override_provider
+        strategy_id, session, direction, override_provider,
+        t_band=t_band, regime=regime,
     )
     scaled = round(base_stake * multiplier, 4)
 
@@ -213,5 +350,7 @@ def apply_cell_size_multiplier(
         "session": session,
         "direction": direction,
         "strategy_id": strategy_id,
+        "t_band": _t_band(t_band),
+        "regime": regime,
         "clamp_reason": clamp_reason,
     }
