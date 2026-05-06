@@ -223,6 +223,25 @@ class FullDataSurface:
     # swap) strategies read this field. Hub note #313 + docs/v9_1_PROVENANCE.md.
     probability_lgb_v9_1: Optional[float] = None
 
+    # ── Audit #374 — Chainlink delta-source freshness (2026-05-06) ────────
+    # Seconds since the last on-chain Chainlink Aggregator V3 round update for
+    # the surface's asset. Populated from ChainlinkFeed.latest_updated_at[asset]
+    # at surface-assembly time. None when the feed is offline or hasn't yet
+    # observed a round for this asset. Strategies use this to fail closed when
+    # the on-chain oracle is stale (the off-chain CG/Tiingo deltas will keep
+    # reading fine, masking a directional signal that has actually rotted).
+    delta_chainlink_age_seconds: Optional[int] = None
+
+    # ── Audit #373 — CoinGlass directional flow proxy (2026-05-06) ────────
+    # Directional ratio derived from CoinGlass taker buy vs taker sell volumes:
+    #   delta_coinglass = (taker_buy_vol - taker_sell_vol)
+    #                     / max(taker_buy_vol + taker_sell_vol, 1e-9)
+    # > 0 = net taker BUY pressure → UP; < 0 = net SELL pressure → DOWN.
+    # Used as a 4th vote in SourceAgreementGate when min_sources >= 3.
+    # Falls back to None when CG snapshot is missing — SourceAgreementGate then
+    # degrades to legacy 3-source (chainlink + tiingo + binance) behaviour.
+    delta_coinglass: Optional[float] = None
+
 
 class DataSurfaceManager:
     """Keeps FullDataSurface fresh in memory. No blocking I/O at decision time.
@@ -922,11 +941,27 @@ class DataSurfaceManager:
             if ti_price:
                 delta_tiingo = (ti_price - open_price) / open_price
 
+        # Audit #374: also capture Chainlink delta-source freshness at this
+        # asset. ChainlinkFeed populates `latest_updated_at[asset]` (epoch
+        # seconds) from the on-chain Aggregator V3 round.updatedAt every poll.
+        # When the feed is offline / hasn't yet seen a round → None.
+        delta_chainlink_age_seconds: Optional[int] = None
         if self._chainlink and open_price:
             cl_prices = getattr(self._chainlink, "latest_prices", {})
             cl_price = cl_prices.get(asset)
             if cl_price:
                 delta_chainlink = (cl_price - open_price) / open_price
+            cl_updated_at_map = getattr(
+                self._chainlink, "latest_updated_at", {}
+            )
+            cl_updated_at = cl_updated_at_map.get(asset)
+            if cl_updated_at:
+                try:
+                    age = int(now - float(cl_updated_at))
+                    if age >= 0:
+                        delta_chainlink_age_seconds = age
+                except (TypeError, ValueError):
+                    delta_chainlink_age_seconds = None
 
         if btc_price and open_price:
             delta_binance = (btc_price - open_price) / open_price
@@ -1022,6 +1057,24 @@ class DataSurfaceManager:
         cg_feed = self._cg_feeds.get(asset)
         if cg_feed:
             cg = getattr(cg_feed, "snapshot", None)
+
+        # Audit #373: derive a 4th directional vote from CoinGlass taker flow.
+        # +1 = net taker BUY pressure (UP); -1 = net SELL (DOWN). Normalised
+        # to [-1, 1]. None when CG snapshot is missing — SourceAgreementGate
+        # then degrades to 3-source (chainlink + tiingo + binance) cleanly.
+        delta_coinglass: Optional[float] = None
+        if cg is not None:
+            try:
+                tb = getattr(cg, "taker_buy_volume_1m", None)
+                ts_v = getattr(cg, "taker_sell_volume_1m", None)
+                if tb is not None and ts_v is not None:
+                    tb = float(tb)
+                    ts_v = float(ts_v)
+                    denom = tb + ts_v
+                    if denom > 0.0:
+                        delta_coinglass = (tb - ts_v) / denom
+            except (TypeError, ValueError):
+                delta_coinglass = None
 
         # CLOB from feed in-memory cache
         clob_data = {}
@@ -1333,6 +1386,9 @@ class DataSurfaceManager:
             probability_lgb_cedar=cedar_p_lgb,
             probability_classifier_cedar=cedar_p_classifier,
             v4_regime_cedar=cedar_regime,
+            # Audit #373 / #374 (2026-05-06)
+            delta_chainlink_age_seconds=delta_chainlink_age_seconds,
+            delta_coinglass=delta_coinglass,
         )
 
 

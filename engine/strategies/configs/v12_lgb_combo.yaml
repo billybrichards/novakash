@@ -33,7 +33,19 @@ mode: GHOST
 asset: BTC
 timescale: 5m
 
-gates: []
+gates:
+  # Audit #374 / #377 — declarative post-hook veto layer (2026-05-06).
+  # The v12_lgb_combo hook delegates to v9_ensemble for the inline gate
+  # stack; these additional gates run AFTER the hook returns TRADE as
+  # post-filters. They will SKIP an otherwise-fired trade when (a) the
+  # Chainlink oracle is stale, (b) the cell is auto-paused by the
+  # rolling-WR monitor, or (c) the 3+ price/flow sources don't agree.
+  - type: chainlink_freshness
+    params: { max_age_seconds: 30 }
+  - type: source_agreement
+    params: { min_sources: 3, spot_only: false }
+  - type: cell_pause
+    params: { strategy_id: v12_lgb_combo }
 
 gate_params:
   # ── Entry window (same as v10_lgb_only) ────────────────────────────
@@ -64,6 +76,14 @@ gate_params:
 
   # ── 24/7 trading ───────────────────────────────────────────────────
   blocked_utc_hours: []
+  # Audit #380 (2026-05-06) — per-direction UTC-hour blocks. Layered on top
+  # of `blocked_utc_hours` (symmetric). Defaults empty = no-op until ops
+  # ratifies cells via runtime_overrides.
+  blocked_utc_hours_down: []
+  blocked_utc_hours_up: []
+  # Audit #373 — N-source oracle agreement floor. Default 2 keeps legacy
+  # behaviour; bump to 3 for majority-of-4 (chainlink+tiingo+binance+coinglass).
+  oracle_agreement_min_sources: 2
   post_loss_cooldown_min: 20
 
   # ── LGB safety floor (same as v10_lgb_only) ────────────────────────

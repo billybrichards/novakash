@@ -91,6 +91,10 @@ class ChainlinkFeed:
         # In-memory cache: updated on EVERY poll tick. Keyed by asset name.
         # Read by DataSurfaceManager for zero-I/O delta calculation.
         self.latest_prices: dict[str, float] = {}
+        # Audit #374: per-asset Aggregator V3 round.updatedAt (epoch seconds).
+        # Surfaced as `delta_chainlink_age_seconds = now - updated_at` so
+        # strategies can fail closed when the on-chain oracle stalls.
+        self.latest_updated_at: dict[str, int] = {}
 
     # ─── Public Status ────────────────────────────────────────────────────────
 
@@ -171,6 +175,9 @@ class ChainlinkFeed:
                 # Update in-memory cache on every poll tick
                 # result is (asset, price, round_id, updated_at)
                 self.latest_prices[result[0]] = result[1]
+                # Audit #374: also expose round.updatedAt so DataSurfaceManager
+                # can compute `delta_chainlink_age_seconds`.
+                self.latest_updated_at[result[0]] = result[3]
 
         log.debug("chainlink_feed.poll_complete", total_assets=len(self._contracts), rows=len(rows))
         if rows:

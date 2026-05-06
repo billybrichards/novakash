@@ -71,6 +71,10 @@ def _register_gates() -> None:
     # standalone gate-list-style gates.
     from strategies.gates.oracle_direction import OracleDirectionGate
     from strategies.gates.fill_band import FillBandGate
+    # 2026-05-06 — Chainlink delta-source staleness flag (audit #374).
+    from strategies.gates.chainlink_freshness import ChainlinkFreshnessGate
+    # 2026-05-06 — rolling-WR auto-pause per cell (audits #379 + #385).
+    from strategies.gates.cell_pause import CellPauseGate
 
     _GATE_REGISTRY.update(
         {
@@ -102,6 +106,9 @@ def _register_gates() -> None:
             # 2026-05-04 — strict-gate-list safety gates
             "oracle_direction": OracleDirectionGate,
             "fill_band": FillBandGate,
+            # 2026-05-06 — audits #374, #379, #385
+            "chainlink_freshness": ChainlinkFreshnessGate,
+            "cell_pause": CellPauseGate,
         }
     )
 

@@ -138,6 +138,36 @@ def _vhc_threshold() -> float:
     return _gp.get_float("vhc_threshold", "V9_VHC_THRESHOLD", 0.25)
 
 
+# ── Audit #380 — per-direction blocked_utc_hours ───────────────────────────
+# Direction-specific UTC-hour blocks layered ON TOP of the legacy
+# `blocked_utc_hours` (symmetric for both directions). Defaults empty so the
+# new gate is a no-op until ops sets the YAML / env override.
+def _blocked_utc_hours_dn() -> list[int]:
+    return _gp.get_int_list(
+        "blocked_utc_hours_down", "V9_BLOCKED_HOURS_DN", []
+    )
+
+
+def _blocked_utc_hours_up() -> list[int]:
+    return _gp.get_int_list(
+        "blocked_utc_hours_up", "V9_BLOCKED_HOURS_UP", []
+    )
+
+
+# ── Audit #373 — N-source agreement minimum ────────────────────────────────
+# Number of price/flow sources (chainlink, tiingo, binance, coinglass) that
+# must agree on the strategy direction before fire. Default 2 = legacy
+# unanimous chainlink+tiingo behaviour preserved when only those two sources
+# are present. When 3 or 4 sources exist, requires `min_sources` of them to
+# match the strategy direction. Set to 3 to ratchet to majority-of-4 mode.
+def _oracle_agreement_min_sources() -> int:
+    return _gp.get_int(
+        "oracle_agreement_min_sources",
+        "V9_ORACLE_AGREEMENT_MIN_SOURCES",
+        2,
+    )
+
+
 def _vhc_bypass_transition() -> bool:
     return _gp.get_bool(
         "vhc_bypass_transition", "V9_VHC_BYPASS_TRANSITION", True
@@ -838,6 +868,64 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         )
     )
 
+    # ── 9a. Per-direction blocked_utc_hours (audit #380) ──────────────────
+    # Direction-specific hour-of-day block, layered on top of the symmetric
+    # `_blocked_utc_hours()` checked in step 2. Defaults empty = no-op.
+    # Ops sets these via runtime_overrides:
+    #   {"blocked_utc_hours_down": [10, 11], "blocked_utc_hours_up": [3]}
+    blocked_dn = set(_blocked_utc_hours_dn())
+    blocked_up = set(_blocked_utc_hours_up())
+    if blocked_dn or blocked_up:
+        window_ts = getattr(surface, "window_ts", None)
+        hour_dir = None
+        if window_ts:
+            try:
+                hour_dir = _dt.datetime.fromtimestamp(
+                    int(window_ts), _dt.timezone.utc
+                ).hour
+            except (TypeError, ValueError, OSError):
+                hour_dir = None
+        if hour_dir is not None:
+            if direction == "DOWN" and hour_dir in blocked_dn:
+                gates.append(
+                    _gate(
+                        "blocked_utc_hours_down",
+                        False,
+                        f"hour={hour_dir} in DOWN-blocked {sorted(blocked_dn)}",
+                    )
+                )
+                reset_confirmation_v9(
+                    _STRATEGY_ID, getattr(surface, "window_ts", 0)
+                )
+                return _skip_v9(
+                    f"blocked_utc_hour_dn: hour={hour_dir}",
+                    gates,
+                    direction=direction,
+                )
+            if direction == "UP" and hour_dir in blocked_up:
+                gates.append(
+                    _gate(
+                        "blocked_utc_hours_up",
+                        False,
+                        f"hour={hour_dir} in UP-blocked {sorted(blocked_up)}",
+                    )
+                )
+                reset_confirmation_v9(
+                    _STRATEGY_ID, getattr(surface, "window_ts", 0)
+                )
+                return _skip_v9(
+                    f"blocked_utc_hour_up: hour={hour_dir}",
+                    gates,
+                    direction=direction,
+                )
+            gates.append(
+                _gate(
+                    "blocked_utc_hours_directional",
+                    True,
+                    f"hour={hour_dir} {direction} allowed",
+                )
+            )
+
     # ── 9b. Delta alignment gate (AFTER direction known, BEFORE safety floor)
     # Skip if chainlink delta is moving AGAINST bet direction by more than
     # min_alignment_bps. See Hub note #301 / audit task #301.
@@ -1062,12 +1150,58 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     )
 
     # ── 12. Oracle direction agreement ─────────────────────────────────────
+    # Audit #373 (2026-05-06): extended from 2-source unanimous (chainlink +
+    # tiingo) to N-of-M directional vote across {chainlink, tiingo, binance,
+    # coinglass}. When `oracle_agreement_min_sources` <= count of available
+    # sources <= 2, the legacy unanimous chainlink+tiingo behaviour holds.
+    # When >=3 sources are available and `min_sources` >= 3, the gate fires
+    # only when fewer than `min_sources` agree on the strategy direction.
     if _skip_on_oracle_disagree():
-        cl_delta = surface.delta_chainlink or 0.0
-        ti_delta = surface.delta_tiingo or 0.0
-        cl_dir = "UP" if cl_delta > 0 else "DOWN"
-        ti_dir = "UP" if ti_delta > 0 else "DOWN"
-        if direction != cl_dir or direction != ti_dir:
+        cl_delta = surface.delta_chainlink
+        ti_delta = surface.delta_tiingo
+        bn_delta = getattr(surface, "delta_binance", None)
+        cg_delta = getattr(surface, "delta_coinglass", None)
+
+        per_source_dir: dict[str, str] = {}
+        if cl_delta is not None:
+            per_source_dir["chainlink"] = "UP" if cl_delta > 0 else "DOWN"
+        if ti_delta is not None:
+            per_source_dir["tiingo"] = "UP" if ti_delta > 0 else "DOWN"
+        if bn_delta is not None:
+            per_source_dir["binance"] = "UP" if bn_delta > 0 else "DOWN"
+        if cg_delta is not None:
+            per_source_dir["coinglass"] = "UP" if cg_delta > 0 else "DOWN"
+
+        cl_dir = per_source_dir.get("chainlink", "UP")
+        ti_dir = per_source_dir.get("tiingo", "UP")
+
+        # Backward compat: when fewer than 3 sources are available, fall back
+        # to the legacy unanimous chainlink+tiingo check (`disagree` fires
+        # when EITHER cl or ti differs from direction). When 3+ sources are
+        # available, use the configurable N-source agreement threshold.
+        min_sources = max(2, _oracle_agreement_min_sources())
+        if len(per_source_dir) < 3 or min_sources <= 2:
+            agree_count = sum(
+                1 for d in (cl_dir, ti_dir) if d == direction
+            )
+            disagree = agree_count < 2 and (
+                surface.delta_chainlink is not None
+                or surface.delta_tiingo is not None
+            )
+            # Mirror legacy: missing source treated as disagreement only when
+            # both are None — otherwise legacy logic of "either disagrees" wins.
+            disagree = (
+                surface.delta_chainlink is not None
+                and surface.delta_tiingo is not None
+                and (direction != cl_dir or direction != ti_dir)
+            )
+        else:
+            agree_count = sum(
+                1 for d in per_source_dir.values() if d == direction
+            )
+            disagree = agree_count < min_sources
+
+        if disagree:
             if (is_vhc_bypass and _vhc_bypass_oracle_direction()) or is_pl_vhc:
                 bypass_tag = "PL-VHC" if is_pl_vhc else "VHC"
                 bypass_detail = (
@@ -1087,16 +1221,21 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 )
                 vhc_bypasses.append("oracle_direction")
             else:
+                _src_summary = " ".join(
+                    f"{name}={d}" for name, d in per_source_dir.items()
+                ) or f"cl={cl_dir} ti={ti_dir}"
                 gates.append(
                     _gate(
                         "oracle_direction",
                         False,
-                        f"cl={cl_dir} ti={ti_dir} vs {direction}",
+                        f"{_src_summary} vs {direction} "
+                        f"(min_sources={min_sources}, agree={agree_count}"
+                        f"/{len(per_source_dir)})",
                     )
                 )
                 reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
                 return _skip_v9(
-                    f"oracle_direction: disagree cl={cl_dir} ti={ti_dir} "
+                    f"oracle_direction: disagree {_src_summary} "
                     f"vs {direction}",
                     gates,
                     direction=direction,

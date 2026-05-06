@@ -86,6 +86,13 @@ class SourceAgreementGate(Gate):
             sources["chainlink"] = surface.delta_chainlink
         if surface.delta_binance is not None:
             sources["binance"] = surface.delta_binance
+        # Audit #373 (2026-05-06): CoinGlass taker-flow direction as 4th vote.
+        # Optional & backward-compat: when surface.delta_coinglass is None
+        # (CG snapshot missing or surface predates the field), the gate falls
+        # back to legacy 3-source agreement and the original min_sources
+        # threshold is honoured against whatever is available.
+        if getattr(surface, "delta_coinglass", None) is not None:
+            sources["coinglass"] = surface.delta_coinglass
 
         if len(sources) < self._min_sources:
             return GateResult(
