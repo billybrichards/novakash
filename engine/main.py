@@ -32,6 +32,28 @@ from infrastructure.runtime import EngineRuntime
 async def main() -> None:
     configure_logging()
     log = structlog.get_logger(__name__)
+
+    # ── Bound the asyncio default ThreadPoolExecutor (audit #371) ──────────
+    # Default is 8 workers (cpu_count or floor 8). When all 8 park on
+    # blocking SDK calls (Polymarket data-api / CLOB), the asyncio loop
+    # starves and the engine deadlocks. Bumping to 24 gives ample headroom
+    # for DB ops, redeemer threads, and other ``asyncio.to_thread`` callers
+    # to coexist with the dedicated Polymarket SDK pool. The executor is
+    # owned by the running loop and reaped on shutdown.
+    from concurrent.futures import ThreadPoolExecutor
+
+    loop = asyncio.get_running_loop()
+    default_executor = ThreadPoolExecutor(
+        max_workers=24,
+        thread_name_prefix="engine-default",
+    )
+    loop.set_default_executor(default_executor)
+    log.info(
+        "engine.threadpool_configured",
+        max_workers=24,
+        thread_name_prefix="engine-default",
+    )
+
     log.info("engine.starting", paper_mode=settings.paper_mode)
 
     root = CompositionRoot(settings=settings)
