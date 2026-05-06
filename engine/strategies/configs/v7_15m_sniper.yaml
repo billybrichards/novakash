@@ -101,6 +101,14 @@ gate_params:
   high_vpin_bypass_threshold: 0.60
   high_vpin_bypass_buckets: [classifier_strong, pegged_classifier]
 
+  # ── 3-tick entry confirmation ──
+  # Require 3 consecutive ticks that all pass conviction + gates before
+  # firing. Matches the BTC 5m strategy pattern (v8/v9). The 15m entry
+  # window is 100s wide (T-400 to T-300); 3 ticks ≈ 6s of confirmation.
+  # Set to 0 to disable. Per-asset state isolation is handled by the
+  # hook (keyed by strategy_id:asset:window_ts).
+  min_consecutive_pass_ticks: 3
+
 sizing:
   type: custom
   custom_hook: clob_sizing

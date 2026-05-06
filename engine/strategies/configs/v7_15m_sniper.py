@@ -199,6 +199,21 @@ def _high_vpin_bypass_buckets() -> set[str]:
     )
 
 
+def _min_consecutive_pass_ticks() -> int:
+    """Number of consecutive passing ticks required before firing a TRADE.
+
+    Default 3 (matching v8/v9 BTC 5m strategies). Set to 0 to disable.
+    The 15m entry window is 100s wide (T-400 to T-300), so requiring 3
+    ticks (= ~6s) is a small fraction of the window and filters single-tick
+    classifier blips without materially reducing the tradeable window.
+    """
+    return _gp.get_int(
+        "min_consecutive_pass_ticks",
+        "V7_15M_SNIPER_MIN_CONSECUTIVE_PASS_TICKS",
+        3,
+    )
+
+
 def _try_bucket_risk_off_override(
     reason: str,
     bucket: str,
@@ -242,6 +257,47 @@ def _try_bucket_risk_off_override(
         f"risk_off overridden: bucket={bucket}, chainlink={cl_direction} aligns with trade={direction}",
     ))
     return True
+
+
+# ── 3-tick entry confirmation state machine ────────────────────────────────
+# Keyed by f"{strategy_id}:{asset}:{window_ts}" so all four v7 asset variants
+# (BTC / ETH / SOL / XRP) share this single hook but never mix state.
+# State: (consecutive_count, direction)
+_v7_consecutive_pass: dict[str, tuple[int, str]] = {}
+
+
+def check_confirmation_v7(strategy_id: str, asset: str, window_ts: int, direction: str) -> bool:
+    """Return True when consecutive passing tick count reaches the threshold."""
+    required = _min_consecutive_pass_ticks()
+    if required <= 0:
+        return True
+    key = f"{strategy_id}:{asset}:{window_ts}"
+    prev = _v7_consecutive_pass.get(key)
+    if prev and prev[1] == direction:
+        count = prev[0] + 1
+    else:
+        # First eval for this (key, direction) OR direction changed — reset.
+        count = 1
+    _v7_consecutive_pass[key] = (count, direction)
+    return count >= required
+
+
+def get_confirmation_count_v7(strategy_id: str, asset: str, window_ts: int) -> int:
+    """Return current consecutive pass count. Used by tests and gate logging."""
+    key = f"{strategy_id}:{asset}:{window_ts}"
+    prev = _v7_consecutive_pass.get(key)
+    return prev[0] if prev else 0
+
+
+def reset_confirmation_v7(strategy_id: str, asset: str, window_ts: int) -> None:
+    """Reset confirmation counter for a specific (strategy, asset, window)."""
+    key = f"{strategy_id}:{asset}:{window_ts}"
+    _v7_consecutive_pass.pop(key, None)
+
+
+def reset_all_confirmations_v7() -> None:
+    """Clear all v7 confirmation state. Used by tests."""
+    _v7_consecutive_pass.clear()
 
 
 # ── Utility helpers ────────────────────────────────────────────────────────
@@ -740,6 +796,38 @@ def evaluate_polymarket_15m_sniper(
         return _skip(f"regime_not_tradeable: {v4_regime}", gates, extras=bucket_extras)
     if v4_regime:
         gates.append(_gate("regime", True, f"regime={v4_regime} tradeable"))
+
+    # ── 3-tick entry confirmation ────────────────────────────────────────
+    _wts = getattr(surface, "window_ts", 0) or 0
+    _asset = getattr(surface, "asset", "BTC") or "BTC"
+    _required = _min_consecutive_pass_ticks()
+    if _required > 0:
+        _confirmed = check_confirmation_v7(_STRATEGY_ID, _asset, _wts, direction)
+        _count = get_confirmation_count_v7(_STRATEGY_ID, _asset, _wts)
+        if not _confirmed:
+            gates.append(
+                _gate(
+                    "entry_confirmation",
+                    False,
+                    f"{_count}/{_required} consecutive pass ticks",
+                )
+            )
+            return _skip(
+                f"entry_confirmation: {_count}/{_required} ticks",
+                gates,
+                extras={
+                    **bucket_extras,
+                    "entry_confirmation_count": _count,
+                    "entry_confirmation_required": _required,
+                },
+            )
+        gates.append(
+            _gate(
+                "entry_confirmation",
+                True,
+                f"{_count}/{_required} consecutive pass ticks — confirmed",
+            )
+        )
 
     # ── TRADE ───────────────────────────────────────────────────────────
     _cap_override = _entry_cap_override()

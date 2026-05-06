@@ -20,6 +20,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from strategies.configs.v7_15m_sniper import (
+    check_confirmation_v7,
+    evaluate_polymarket_15m_sniper,
+    get_confirmation_count_v7,
+    reset_confirmation_v7,
+    reset_all_confirmations_v7,
+)
+from strategies import gate_params as _gp
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.registry import StrategyRegistry
 
@@ -84,7 +92,10 @@ def registry():
     mgr = DataSurfaceManager(v4_base_url="http://fake")
     reg = StrategyRegistry(CONFIGS_DIR, mgr)
     reg.load_all()
-    return reg
+    # Reset v7 confirmation state so each test starts clean.
+    reset_all_confirmations_v7()
+    yield reg
+    reset_all_confirmations_v7()
 
 
 def _eval_eth(reg, surface):
@@ -97,6 +108,22 @@ def _eval_btc(reg, surface):
     return reg._evaluate_one(
         "v7_15m_sniper", reg.configs["v7_15m_sniper"], surface
     )
+
+
+def _eval_eth_trade(reg, surface):
+    """Helper to drive through the 3-tick confirmation and return the TRADE decision."""
+    result = None
+    for _ in range(3):
+        result = _eval_eth(reg, surface)
+    return result
+
+
+def _eval_btc_trade(reg, surface):
+    """Helper to drive through the 3-tick confirmation and return the TRADE decision."""
+    result = None
+    for _ in range(3):
+        result = _eval_btc(reg, surface)
+    return result
 
 
 # ── Registry load sanity ───────────────────────────────────────────────────
@@ -129,13 +156,13 @@ def test_v7_xrp_yaml_exists_and_correct():
 
 # ── Classifier-only mode (ETH/SOL/XRP — no_model) ──────────────────────────
 def test_classifier_only_up_trade(registry):
-    """ETH window, poly absent, p_classifier=0.92 → TRADE UP."""
+    """ETH window, poly absent, p_classifier=0.92 → TRADE UP (after 3-tick confirmation)."""
     surface = _make_surface(probability_classifier=0.92)
-    decision = _eval_eth(registry, surface)
+    decision = _eval_eth_trade(registry, surface)
 
     assert decision.action == "TRADE"
     assert decision.direction == "UP"
-    assert decision.strategy_id == "v7_15m_sniper"  # shared hook id
+    assert decision.strategy_id == "v7_15m_sniper_eth"  # registry patches to config name
     # Classifier-only mode flag present in metadata
     assert decision.metadata.get("classifier_only_mode") is True
     # Entry cap comes from YAML override (0.80), not poly_max_entry_price
@@ -156,7 +183,7 @@ def test_classifier_only_down_trade(registry):
         delta_binance=-0.015, delta_tiingo=-0.015, delta_chainlink=-0.015,
         delta_pct=-0.015,
     )
-    decision = _eval_eth(registry, surface)
+    decision = _eval_eth_trade(registry, surface)
 
     assert decision.action == "TRADE"
     assert decision.direction == "DOWN"
@@ -180,7 +207,7 @@ def test_classifier_only_does_not_skip_on_no_poly_advice(registry):
     non-BTC eval, making the whole shadow track useless.
     """
     surface = _make_surface(probability_classifier=0.92)
-    decision = _eval_eth(registry, surface)
+    decision = _eval_eth_trade(registry, surface)
 
     # Must not skip with the no_poly_advice reason.
     assert decision.skip_reason != "trade_not_advised: no_poly_advice"
@@ -213,7 +240,7 @@ def test_btc_full_stack_still_trades(registry):
         delta_binance=0.005, delta_tiingo=0.005, delta_chainlink=0.005,
         delta_pct=0.005,
     )
-    decision = _eval_btc(registry, surface)
+    decision = _eval_btc_trade(registry, surface)
 
     assert decision.action == "TRADE"
     assert decision.direction == "UP"
@@ -228,3 +255,194 @@ def test_btc_full_stack_still_trades(registry):
     assert trade_advised_gates
     assert trade_advised_gates[0]["passed"] is True
     assert "classifier_only_mode" not in trade_advised_gates[0]["reason"]
+
+
+# ── 3-tick entry confirmation ──────────────────────────────────────────────
+
+@pytest.fixture(autouse=False)
+def _v7_gate_params_3tick():
+    """Bind gate_params with min_consecutive_pass_ticks=3 for 3-tick tests."""
+    params = {
+        "min_offset_sec": 300,
+        "max_offset_sec": 400,
+        "bucket_abs_dist_strong": 0.30,
+        "bucket_path1_extreme_high": 0.90,
+        "bucket_path1_extreme_low": 0.10,
+        "path1_max_age_s": 120,
+        "path1_skip_on_null": True,
+        "vpin_min": 0.45,
+        "source_agreement_require_chainlink": True,
+        "source_agreement_require_tiingo": True,
+        "skip_on_oracle_disagree": False,
+        "health_gate": "off",
+        "skip_stale_sources": True,
+        "blocked_utc_hours": [],
+        "tradeable_v4_regimes": ["calm_trend", "volatile_trend", "risk_off", "chop"],
+        "entry_cap_override": 0.80,
+        "v7_risk_off_override_enabled": True,
+        "v7_risk_off_override_buckets": ["classifier_strong", "pegged_classifier"],
+        "high_vpin_bypass_enabled": True,
+        "high_vpin_bypass_threshold": 0.60,
+        "high_vpin_bypass_buckets": ["classifier_strong", "pegged_classifier"],
+        "min_consecutive_pass_ticks": 3,
+    }
+    token = _gp.set_active(params)
+    reset_all_confirmations_v7()
+    try:
+        yield
+    finally:
+        _gp.reset_active(token)
+        reset_all_confirmations_v7()
+
+
+# ── Unit tests: state machine in isolation ────────────────────────────────
+
+def test_v7_check_confirmation_accumulates():
+    """Consecutive calls with same direction accumulate toward threshold."""
+    reset_all_confirmations_v7()
+    assert not check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 1
+    assert not check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 2
+    assert check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 3
+    reset_all_confirmations_v7()
+
+
+def test_v7_check_confirmation_resets_on_direction_change():
+    """Direction change resets the counter back to 1."""
+    reset_all_confirmations_v7()
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 2
+    # Direction flips — counter resets
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "DOWN")
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 1
+    reset_all_confirmations_v7()
+
+
+def test_v7_window_flip_resets_counter():
+    """When window_ts changes, the old counter does not carry over."""
+    reset_all_confirmations_v7()
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    # New window — fresh start
+    result = check_confirmation_v7("v7_15m_sniper", "ETH", 1900, "UP")
+    assert not result  # 1/3, not enough
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1900) == 1
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 2  # old unaffected
+    reset_all_confirmations_v7()
+
+
+def test_v7_asset_isolation():
+    """ETH and BTC counters are independent even on the same window_ts."""
+    reset_all_confirmations_v7()
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    check_confirmation_v7("v7_15m_sniper", "ETH", 1000, "UP")
+    check_confirmation_v7("v7_15m_sniper", "BTC", 1000, "UP")
+    assert get_confirmation_count_v7("v7_15m_sniper", "ETH", 1000) == 2
+    assert get_confirmation_count_v7("v7_15m_sniper", "BTC", 1000) == 1
+    reset_all_confirmations_v7()
+
+
+# ── Integration tests with the evaluate hook ──────────────────────────────
+
+def test_3tick_requires_3_passing_evals(_v7_gate_params_3tick, registry):
+    """With min_consecutive_pass_ticks=3, TRADE only fires on the 3rd consecutive pass."""
+    surface = _make_surface(probability_classifier=0.92)
+
+    result1 = _eval_eth(registry, surface)
+    assert result1.action == "SKIP"
+    assert result1.skip_reason is not None
+    assert "entry_confirmation" in result1.skip_reason
+    assert "1/3" in result1.skip_reason
+
+    result2 = _eval_eth(registry, surface)
+    assert result2.action == "SKIP"
+    assert "2/3" in result2.skip_reason
+
+    result3 = _eval_eth(registry, surface)
+    assert result3.action == "TRADE"
+    assert result3.direction == "UP"
+
+
+def test_3tick_resets_on_direction_change(_v7_gate_params_3tick, registry):
+    """Pass-pass (UP)-then-DOWN: direction change resets counter, need 3 more for DOWN."""
+    surface_up = _make_surface(probability_classifier=0.92)  # UP direction
+    _eval_eth(registry, surface_up)  # tick 1 UP → count=1
+    _eval_eth(registry, surface_up)  # tick 2 UP → count=2
+
+    # Flip to DOWN — direction change resets the counter
+    surface_down = _make_surface(
+        probability_classifier=0.08,   # DOWN: |0.08-0.5|=0.42 ≥ 0.30
+        delta_chainlink=-0.015, delta_tiingo=-0.015, delta_binance=-0.015,
+        delta_pct=-0.015,
+    )
+    result1 = _eval_eth(registry, surface_down)  # count resets to 1
+    assert result1.action == "SKIP"
+    assert "1/3" in (result1.skip_reason or "")
+
+    result2 = _eval_eth(registry, surface_down)  # count=2
+    assert result2.action == "SKIP"
+    assert "2/3" in (result2.skip_reason or "")
+
+    result3 = _eval_eth(registry, surface_down)  # count=3 → TRADE
+    assert result3.action == "TRADE"
+    assert result3.direction == "DOWN"
+
+
+def test_3tick_window_rollover(_v7_gate_params_3tick, registry):
+    """2 passing ticks on window N; window flips; need 3 fresh ticks on window N+1."""
+    surface_w1 = _make_surface(probability_classifier=0.92, window_ts=1713010800)
+    _eval_eth(registry, surface_w1)  # tick 1
+    _eval_eth(registry, surface_w1)  # tick 2
+
+    surface_w2 = _make_surface(probability_classifier=0.92, window_ts=1713011700)
+    result1 = _eval_eth(registry, surface_w2)
+    assert result1.action == "SKIP"
+    assert "1/3" in (result1.skip_reason or "")
+
+    _eval_eth(registry, surface_w2)  # tick 2 on new window
+    result3 = _eval_eth(registry, surface_w2)  # tick 3
+    assert result3.action == "TRADE"
+
+
+def test_3tick_disabled_fires_immediately():
+    """When min_consecutive_pass_ticks=0, trades on the first passing tick.
+
+    Calls the hook directly (bypassing registry) so we can control gate_params.
+    """
+    reset_all_confirmations_v7()
+    # Full param set needed by the hook
+    params = {
+        "min_offset_sec": 300,
+        "max_offset_sec": 400,
+        "bucket_abs_dist_strong": 0.30,
+        "bucket_path1_extreme_high": 0.90,
+        "bucket_path1_extreme_low": 0.10,
+        "path1_max_age_s": 120,
+        "path1_skip_on_null": True,
+        "vpin_min": 0.45,
+        "source_agreement_require_chainlink": True,
+        "source_agreement_require_tiingo": True,
+        "skip_on_oracle_disagree": False,
+        "health_gate": "off",
+        "skip_stale_sources": True,
+        "blocked_utc_hours": [],
+        "tradeable_v4_regimes": ["calm_trend", "volatile_trend", "risk_off", "chop"],
+        "entry_cap_override": 0.80,
+        "v7_risk_off_override_enabled": True,
+        "v7_risk_off_override_buckets": ["classifier_strong", "pegged_classifier"],
+        "high_vpin_bypass_enabled": True,
+        "high_vpin_bypass_threshold": 0.60,
+        "high_vpin_bypass_buckets": ["classifier_strong", "pegged_classifier"],
+        "min_consecutive_pass_ticks": 0,   # disabled
+    }
+    token = _gp.set_active(params)
+    try:
+        surface = _make_surface(probability_classifier=0.92)
+        result = evaluate_polymarket_15m_sniper(surface)
+        assert result.action == "TRADE"
+    finally:
+        _gp.reset_active(token)
+        reset_all_confirmations_v7()
