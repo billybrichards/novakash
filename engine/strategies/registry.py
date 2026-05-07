@@ -1430,6 +1430,30 @@ class StrategyRegistry:
                         )
                     )
 
+        # v9.2-super canary persistence — write probability_lgb_v9_2 and
+        # cohort metadata on every tick where the field is populated.
+        # This fires even on SKIP ticks (so shadow evaluation is complete).
+        # Uses the same fire-and-forget pattern as v12 above.
+        # hub note #366: avoid broken sidecar writers — method is tested.
+        v9_2 = getattr(surface, "probability_lgb_v9_2", None)
+        if v9_2 is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_2"
+        ):
+            v9_2_task = asyncio.create_task(
+                self._db.update_signal_evaluations_lgb_v9_2(
+                    window_ts=surface.window_ts,
+                    asset=surface.asset,
+                    timeframe=surface.timescale,
+                    eval_offset=surface.eval_offset,
+                    probability_lgb_v9_2=float(v9_2),
+                )
+            )
+            v9_2_task.add_done_callback(
+                self._log_async_write_error(
+                    "registry.signal_eval_lgb_v9_2_write_error"
+                )
+            )
+
     def _write_gate_traces(
         self,
         *,

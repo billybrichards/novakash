@@ -223,6 +223,15 @@ class FullDataSurface:
     # swap) strategies read this field. Hub note #313 + docs/v9_1_PROVENANCE.md.
     probability_lgb_v9_1: Optional[float] = None
 
+    # v9.2 LGB Optuna-tuned retrain — 78-feature Sequoia v5, served alongside
+    # prod v5 via probability_lgb_v9_2 on /v4/snapshot when the v9.2 booster is
+    # loaded in timesfm-service (models/btc_5m/lgb_btc_v5_optuna.txt).
+    # The engine's v9_2_super_lgb_only (this PR) reads this field.
+    # All None until timesfm-service PR loads the v9.2 booster.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # Hub note #356 — PR-B handover. timesfm docs/V9_2_GATE_CONFIG.html — spec.
+    probability_lgb_v9_2: Optional[float] = None
+
     # ── Audit #374 — Chainlink delta-source freshness (2026-05-06) ────────
     # Seconds since the last on-chain Chainlink Aggregator V3 round update for
     # the surface's asset. Populated from ChainlinkFeed.latest_updated_at[asset]
@@ -1306,6 +1315,11 @@ class DataSurfaceManager:
             probability_lgb_v9_1=(
                 float(ts_data["probability_lgb_v9_1"])
                 if ts_data.get("probability_lgb_v9_1") is not None
+                else None
+            ),
+            probability_lgb_v9_2=(
+                float(ts_data["probability_lgb_v9_2"])
+                if ts_data.get("probability_lgb_v9_2") is not None
                 else None
             ),
             probability_classifier=(

@@ -1668,6 +1668,95 @@ class DBClient:
             )
             return 0
 
+    async def update_signal_evaluations_lgb_v9_2(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_2: Optional[float],
+        v9_2_conviction: Optional[float] = None,
+        v9_2_pred_direction: Optional[str] = None,
+        v9_2_cohort: Optional[str] = None,
+        v9_2_gate_fired: Optional[bool] = None,
+    ) -> int:
+        """Stamp v9.2-optuna fields onto signal_evaluations rows.
+
+        Mirror of update_signal_evaluations_lgb_v12 for the v9.2 canary.
+        Column added by migrations/add_probability_lgb_v9_2.sql.
+
+        Also writes cohort metadata (conviction, direction, cohort key,
+        gate_fired) so future training can use these fields without extra
+        JOINs — per hub note #353 (canonical training input is
+        signal_evaluations) and hub note #366 (avoid sidecar writer
+        regressions).
+
+        UPDATE-only (no INSERT). Idempotent: COALESCE preserves any
+        existing probability value.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_2 is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                base_args = [
+                    float(probability_lgb_v9_2),
+                    float(v9_2_conviction) if v9_2_conviction is not None else None,
+                    v9_2_pred_direction,
+                    v9_2_cohort,
+                    v9_2_gate_fired,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                ]
+                if eval_offset is None:
+                    result = await conn.execute(
+                        """
+                        UPDATE signal_evaluations
+                           SET probability_lgb_v9_2 = COALESCE(probability_lgb_v9_2, $1),
+                               v9_2_conviction      = COALESCE(v9_2_conviction, $2),
+                               v9_2_pred_direction  = COALESCE(v9_2_pred_direction, $3),
+                               v9_2_cohort          = COALESCE(v9_2_cohort, $4),
+                               v9_2_gate_fired      = COALESCE(v9_2_gate_fired, $5)
+                        WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
+                        """,
+                        *base_args,
+                    )
+                else:
+                    result = await conn.execute(
+                        """
+                        UPDATE signal_evaluations
+                           SET probability_lgb_v9_2 = COALESCE(probability_lgb_v9_2, $1),
+                               v9_2_conviction      = COALESCE(v9_2_conviction, $2),
+                               v9_2_pred_direction  = COALESCE(v9_2_pred_direction, $3),
+                               v9_2_cohort          = COALESCE(v9_2_cohort, $4),
+                               v9_2_gate_fired      = COALESCE(v9_2_gate_fired, $5)
+                        WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
+                          AND eval_offset = $9
+                        """,
+                        *base_args,
+                        int(eval_offset),
+                    )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_2_updated",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_2_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
     async def update_window_prices(
         self,
         window_ts: int,
