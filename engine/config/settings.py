@@ -167,6 +167,21 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Minimum rolling-window size before ANY auto-pause trigger can fire.
+    # At n<3 a healthy 87% WR cell normally loses on trade 1 and the Wilson
+    # LB would fire immediately on noise. Default 3 = first pause can only
+    # fire after 3 resolved trades in the 60-min window.
+    # Override via CELL_PAUSE_MIN_ROLLING_N env var. Per-strategy override via
+    # strategy_runtime_overrides.params["cell_pause_min_n"].
+    cell_pause_min_rolling_n: int = Field(
+        default=3,
+        description=(
+            "Minimum 60-min rolling trade count before any cell-pause trigger "
+            "can fire (audit #379). Default 3. Override via env or per-strategy "
+            "runtime params."
+        ),
+    )
+
 
 
 class TestSettings(Settings):

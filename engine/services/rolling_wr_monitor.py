@@ -45,6 +45,44 @@ log = logging.getLogger(__name__)
 _DEFAULT_PAUSE_SECONDS = 4 * 60 * 60
 
 
+def _resolve_min_rolling_n(
+    cell_params: Optional[dict[str, Any]] = None,
+) -> int:
+    """Resolve the minimum rolling-window size before any pause trigger fires.
+
+    Layer priority (highest wins):
+    1. Per-cell override: ``cell_params["cell_pause_min_n"]`` (from
+       strategy_runtime_overrides.params JSON field).
+    2. Settings value: ``settings.cell_pause_min_rolling_n`` (env var
+       ``CELL_PAUSE_MIN_ROLLING_N``).
+    3. Module default: 3.
+
+    This prevents the auto-pause from firing on a single-trade noise loss.
+    At an 87% WR cell, the probability of 1 loss is 13% — perfectly normal.
+    """
+    # Layer 1: per-cell runtime override.
+    if cell_params:
+        per_cell = cell_params.get("cell_pause_min_n")
+        if per_cell is not None:
+            try:
+                return int(per_cell)
+            except (TypeError, ValueError):
+                log.warning(
+                    "rolling_wr_monitor.invalid_cell_pause_min_n",
+                    extra={"value": per_cell},
+                )
+
+    # Layer 2: settings.
+    try:
+        from config.settings import get_settings
+        return int(get_settings().cell_pause_min_rolling_n)
+    except Exception:
+        pass
+
+    # Layer 3: module default.
+    return _DEFAULT_MIN_ROLLING_N
+
+
 def _resolve_pause_seconds(
     constructor_value: int,
     cell_params: Optional[dict[str, Any]] = None,
@@ -96,6 +134,15 @@ _DEFAULT_MIN_PNL_WINDOW_USD = -30.0
 # Default WR drop (percentage points) versus the 7d baseline that fires
 # a pause. 25pp is the value Hub note #350 cites.
 _DEFAULT_MAX_WR_DROP_PP = 25.0
+
+# Minimum rolling-window n before any pause trigger can fire.
+# At n<3 a healthy 87% WR cell may see a single loss (probability 13%)
+# and the Wilson LB collapses to ~0% — triggering a false pause. Requiring
+# n≥3 trades means the system has seen enough evidence to distinguish
+# genuine degradation from normal variance.
+# Overridable via settings.cell_pause_min_rolling_n and per-strategy
+# runtime params (see _resolve_min_rolling_n).
+_DEFAULT_MIN_ROLLING_N = 3
 
 
 @dataclass(frozen=True)
@@ -258,7 +305,30 @@ class RollingWRMonitor:
         recent = await self._repo.get_recent_trades_for_cell(
             cell, self._lookback
         )
-        if len(recent) < self._min_trades:
+        rolling_60m_n = len(recent)
+
+        # min_rolling_n floor: skip ALL trigger evaluation until enough trades
+        # have accumulated in the 60-min window. This prevents a single noise
+        # loss on a healthy cell (e.g. 1 loss on an 87% WR cell) from firing
+        # the Wilson LB trigger which collapses to ~0% at n=1.
+        cell_params = getattr(trade, "params", None)
+        min_n = _resolve_min_rolling_n(cell_params)
+        if rolling_60m_n < min_n:
+            log.debug(
+                "cell_pause.skip_min_n",
+                extra={
+                    "strategy_id": cell.strategy_id,
+                    "direction": cell.direction,
+                    "t_band": cell.t_band,
+                    "regime": cell.regime,
+                    "session": cell.session,
+                    "n": rolling_60m_n,
+                    "min_n": min_n,
+                },
+            )
+            return None
+
+        if rolling_60m_n < self._min_trades:
             return None
 
         wins = sum(1 for t in recent if t.is_win)
@@ -320,7 +390,7 @@ class RollingWRMonitor:
 
         # C5 fix: resolve pause duration at trigger time, respecting the
         # 3-layer config hierarchy (per-cell params > settings > constructor).
-        cell_params = getattr(trade, "params", None)
+        # cell_params already resolved above for the min_rolling_n check.
         effective_pause_seconds = _resolve_pause_seconds(
             self._pause_seconds, cell_params
         )

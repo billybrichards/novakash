@@ -21,6 +21,7 @@ from services.rolling_wr_monitor import (
     CellKey,
     ResolvedTrade,
     RollingWRMonitor,
+    _resolve_min_rolling_n,
     fill_breakeven_wr,
     wilson_lower_bound,
 )
@@ -349,8 +350,6 @@ def test_settings_override_applied_when_no_per_cell_params(monkeypatch):
     mock_settings = MagicMock()
     mock_settings.cell_pause_default_seconds = 3600  # 1 hour
 
-    original_resolve = wr_mod._resolve_pause_seconds
-
     def patched_resolve(constructor_value, cell_params=None):
         # Simulate settings layer returning 3600.
         if not cell_params or "cell_pause_seconds" not in cell_params:
@@ -367,3 +366,115 @@ def test_settings_override_applied_when_no_per_cell_params(monkeypatch):
     pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
     assert pid is not None
     assert repo.pauses[pid]["pause_seconds"] == 3600
+
+
+# ────────────── C6: min_rolling_n floor — no-pause-before-n-trades ──────────
+
+
+def test_min_n_default_3():
+    """_resolve_min_rolling_n with no params returns the module default of 3."""
+    from services import rolling_wr_monitor as wr_mod
+    # Patch get_settings to fail (simulate env not set), so we fall through to
+    # the module default.
+    import unittest.mock as mock
+    with mock.patch(
+        "services.rolling_wr_monitor.get_settings",
+        side_effect=Exception("not available"),
+        create=True,
+    ):
+        # Module default should be 3.
+        assert _resolve_min_rolling_n(None) == wr_mod._DEFAULT_MIN_ROLLING_N
+        assert wr_mod._DEFAULT_MIN_ROLLING_N == 3
+
+
+def test_pause_does_not_fire_at_n_less_than_min():
+    """Feed 2 LOSS trades into a fresh cell — no pause should fire (n < min_n=3)."""
+    repo = FakeRepo()
+    # Use min_trades=2 so the _min_trades gate doesn't interfere; only min_n
+    # should block the trigger here.
+    monitor = RollingWRMonitor(repo, min_trades=2)
+    cell = _trade().cell
+
+    # Populate repo with 2 losses (below default min_rolling_n=3).
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(2)]
+
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is None, "Should not pause when n < min_rolling_n (default 3)"
+    assert len(repo.pauses) == 0
+
+
+def test_pause_fires_at_min_n_with_trigger():
+    """Feed 3 LOSS trades — pause MUST fire once n reaches min_rolling_n=3."""
+    repo = FakeRepo()
+    # Use min_trades=1 so _min_trades doesn't interfere; only min_n controls.
+    monitor = RollingWRMonitor(repo, min_trades=1)
+    cell = _trade(fill=0.40).cell
+
+    # Populate repo with 3 losses: 60m_pnl = -$30 = exactly on the floor.
+    # Default min_pnl_window_usd = -$30, so 3 × -$10 = -$30 triggers.
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(3)]
+
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is not None, "Should pause once n >= min_rolling_n (3)"
+    assert len(repo.pauses) == 1
+
+
+def test_min_n_settings_override(monkeypatch):
+    """settings.cell_pause_min_rolling_n=5: no pause until 5th loss."""
+    from services import rolling_wr_monitor as wr_mod
+
+    def patched_resolve_min_n(cell_params=None):
+        # Simulate settings layer returning 5, no per-cell override.
+        if cell_params and cell_params.get("cell_pause_min_n") is not None:
+            return int(cell_params["cell_pause_min_n"])
+        return 5
+
+    monkeypatch.setattr(wr_mod, "_resolve_min_rolling_n", patched_resolve_min_n)
+
+    repo = FakeRepo()
+    monitor = RollingWRMonitor(repo, min_trades=1)
+    cell = _trade().cell
+
+    # 4 losses loaded — below the patched min_n=5.
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(4)]
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is None, "Should not pause at n=4 when settings min_n=5"
+
+    # Add 1 more trade → n=5, now triggers fire.
+    repo.trades_by_cell[cell].append(_trade(is_win=False, pnl=-10.0))
+    pid = _run(monitor.on_trade_resolved(_trade(is_win=False, pnl=-10.0)))
+    assert pid is not None, "Should pause at n=5 when settings min_n=5"
+
+
+def test_min_n_per_strategy_override():
+    """Trade with params={'cell_pause_min_n': 5} overrides default min_n=3."""
+    from services.rolling_wr_monitor import ResolvedTrade
+
+    repo = FakeRepo()
+    monitor = RollingWRMonitor(repo, min_trades=1)
+    cell = _trade().cell
+
+    # 4 losses in repo (would fire at n=3 with default, but we override to 5).
+    repo.trades_by_cell[cell] = [_trade(is_win=False, pnl=-10.0) for _ in range(4)]
+
+    # Pass trade with per-strategy min_n override of 5.
+    trade_override = ResolvedTrade(
+        strategy_id="v12_lgb_combo",
+        direction="DOWN",
+        eval_offset=80,
+        hour_utc=10,
+        regime="chop",
+        fill_price=0.40,
+        pnl_usd=-10.0,
+        is_win=False,
+        params={"cell_pause_min_n": 5},
+    )
+
+    # n=4 → below override of 5.
+    pid = _run(monitor.on_trade_resolved(trade_override))
+    assert pid is None, "Should not pause at n=4 when per-strategy min_n=5"
+
+    # Now add one more so the repo has 5 recent entries.
+    repo.trades_by_cell[cell].append(_trade(is_win=False, pnl=-10.0))
+    pid = _run(monitor.on_trade_resolved(trade_override))
+    assert pid is not None, "Should pause at n=5 with per-strategy min_n=5"
