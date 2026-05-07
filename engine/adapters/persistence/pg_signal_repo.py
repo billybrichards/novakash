@@ -628,10 +628,10 @@ class PgSignalRepository(SignalRepository):
                         window_ts, asset, timeframe, eval_offset,
                         ensemble_p_up, ensemble_p_lgb, ensemble_p_classifier,
                         ensemble_mode, ensemble_disagreement, ensemble_model_version,
-                        probability_lgb_v12
+                        probability_lgb_v12, probability_lgb_v9_2
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11
+                        $5,$6,$7,$8,$9,$10,$11,$12
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -640,7 +640,8 @@ class PgSignalRepository(SignalRepository):
                         ensemble_mode          = COALESCE(EXCLUDED.ensemble_mode, window_snapshots.ensemble_mode),
                         ensemble_disagreement  = COALESCE(EXCLUDED.ensemble_disagreement, window_snapshots.ensemble_disagreement),
                         ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version),
-                        probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12)
+                        probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12),
+                        probability_lgb_v9_2   = COALESCE(EXCLUDED.probability_lgb_v9_2, window_snapshots.probability_lgb_v9_2)
                     """,
                     int(window_ts),
                     asset,
@@ -653,6 +654,7 @@ class PgSignalRepository(SignalRepository):
                     ensemble_fields.get("ensemble_disagreement"),
                     ensemble_fields.get("ensemble_model_version"),
                     ensemble_fields.get("probability_lgb_v12"),
+                    ensemble_fields.get("probability_lgb_v9_2"),
                 )
         except Exception as exc:
             log.warning(
@@ -670,17 +672,17 @@ class PgSignalRepository(SignalRepository):
         eval_offset: Optional[int],
         probability_lgb_v12: Optional[float],
     ) -> int:
-        """Stamp ``probability_lgb_v12`` on signal_evaluations rows.
+        """Upsert ``probability_lgb_v12`` on signal_evaluations row.
 
-        Mirror of update_window_ensemble_fields for the parallel writer
-        target. Audit-task #332 — column existed (migration applied) but
-        no engine code path ever wrote it. Verbatim parity with
-        DBClient.update_signal_evaluations_lgb_v12.
-
-        UPDATE-only (no INSERT) — signal_evaluations rows are owned by
-        write_signal_evaluation, called from a different code path. If
-        the row does not yet exist this is a no-op; the next eval tick
-        creates it and a subsequent stamp call fills v12.
+        Mirror of DBClient.update_signal_evaluations_lgb_v12. Audit-task
+        #332 — column existed (migration applied) but the original
+        UPDATE-only writer no-op'd ~99.99% of the time because the
+        canonical ``write_signal_evaluation`` INSERT typically had not
+        yet fired for this exact (window_ts, asset, timeframe,
+        eval_offset). This implementation upserts a minimal row when
+        absent and lets the canonical writer's later UPSERT fill rich
+        columns (which uses raw EXCLUDED.* assignment so it does not
+        clobber our v12 stamp — verified in db_client.py).
 
         Idempotent via COALESCE.
         """
@@ -688,37 +690,33 @@ class PgSignalRepository(SignalRepository):
             return 0
         if probability_lgb_v12 is None:
             return 0
+        if eval_offset is None:
+            return 0
         try:
             async with self._pool.acquire() as conn:
-                if eval_offset is None:
-                    result = await conn.execute(
-                        """
-                        UPDATE signal_evaluations
-                           SET probability_lgb_v12 = COALESCE(probability_lgb_v12, $1)
-                        WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
-                        """,
-                        float(probability_lgb_v12),
-                        int(window_ts),
-                        asset,
-                        timeframe,
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v12, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
                     )
-                else:
-                    result = await conn.execute(
-                        """
-                        UPDATE signal_evaluations
-                           SET probability_lgb_v12 = COALESCE(probability_lgb_v12, $1)
-                        WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
-                          AND eval_offset = $5
-                        """,
-                        float(probability_lgb_v12),
-                        int(window_ts),
-                        asset,
-                        timeframe,
-                        int(eval_offset),
-                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v12 = COALESCE(
+                            signal_evaluations.probability_lgb_v12,
+                            EXCLUDED.probability_lgb_v12
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v12),
+                )
             n = int(result.split()[-1]) if result else 0
             log.debug(
-                "pg_signal_repo.signal_evaluations_lgb_v12_updated",
+                "pg_signal_repo.signal_evaluations_lgb_v12_upserted",
                 window_ts=window_ts,
                 asset=asset,
                 timeframe=timeframe,
@@ -747,60 +745,72 @@ class PgSignalRepository(SignalRepository):
         v9_2_cohort: Optional[str] = None,
         v9_2_gate_fired: Optional[bool] = None,
     ) -> int:
-        """Stamp v9.2-optuna fields on signal_evaluations rows.
+        """Upsert v9.2-optuna fields on signal_evaluations row.
 
         Mirror of DBClient.update_signal_evaluations_lgb_v9_2 (verbatim
         parity so the two writers cannot drift — lesson from PR #439).
 
-        UPDATE-only (no INSERT). Idempotent via COALESCE.
+        ``v9_2_gate_fired`` uses OR-merge (TRUE wins) so a TRADE-tick
+        stamp wins over earlier SKIP-tick stamps within the same row.
+
+        Idempotent for the COALESCE-protected fields.
         """
         if not self._pool:
             return 0
         if probability_lgb_v9_2 is None:
             return 0
+        if eval_offset is None:
+            return 0
         try:
             async with self._pool.acquire() as conn:
-                base_args = [
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_2,
+                        v9_2_conviction,
+                        v9_2_pred_direction,
+                        v9_2_cohort,
+                        v9_2_gate_fired,
+                        evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v9_2 = COALESCE(
+                            signal_evaluations.probability_lgb_v9_2,
+                            EXCLUDED.probability_lgb_v9_2
+                        ),
+                        v9_2_conviction      = COALESCE(
+                            signal_evaluations.v9_2_conviction,
+                            EXCLUDED.v9_2_conviction
+                        ),
+                        v9_2_pred_direction  = COALESCE(
+                            signal_evaluations.v9_2_pred_direction,
+                            EXCLUDED.v9_2_pred_direction
+                        ),
+                        v9_2_cohort          = COALESCE(
+                            signal_evaluations.v9_2_cohort,
+                            EXCLUDED.v9_2_cohort
+                        ),
+                        v9_2_gate_fired      = (
+                            COALESCE(signal_evaluations.v9_2_gate_fired, FALSE)
+                            OR COALESCE(EXCLUDED.v9_2_gate_fired, FALSE)
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
                     float(probability_lgb_v9_2),
                     float(v9_2_conviction) if v9_2_conviction is not None else None,
                     v9_2_pred_direction,
                     v9_2_cohort,
                     v9_2_gate_fired,
-                    int(window_ts),
-                    asset,
-                    timeframe,
-                ]
-                if eval_offset is None:
-                    result = await conn.execute(
-                        """
-                        UPDATE signal_evaluations
-                           SET probability_lgb_v9_2 = COALESCE(probability_lgb_v9_2, $1),
-                               v9_2_conviction      = COALESCE(v9_2_conviction, $2),
-                               v9_2_pred_direction  = COALESCE(v9_2_pred_direction, $3),
-                               v9_2_cohort          = COALESCE(v9_2_cohort, $4),
-                               v9_2_gate_fired      = COALESCE(v9_2_gate_fired, $5)
-                        WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
-                        """,
-                        *base_args,
-                    )
-                else:
-                    result = await conn.execute(
-                        """
-                        UPDATE signal_evaluations
-                           SET probability_lgb_v9_2 = COALESCE(probability_lgb_v9_2, $1),
-                               v9_2_conviction      = COALESCE(v9_2_conviction, $2),
-                               v9_2_pred_direction  = COALESCE(v9_2_pred_direction, $3),
-                               v9_2_cohort          = COALESCE(v9_2_cohort, $4),
-                               v9_2_gate_fired      = COALESCE(v9_2_gate_fired, $5)
-                        WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
-                          AND eval_offset = $9
-                        """,
-                        *base_args,
-                        int(eval_offset),
-                    )
+                )
             n = int(result.split()[-1]) if result else 0
             log.debug(
-                "pg_signal_repo.signal_evaluations_lgb_v9_2_updated",
+                "pg_signal_repo.signal_evaluations_lgb_v9_2_upserted",
                 window_ts=window_ts,
                 asset=asset,
                 timeframe=timeframe,

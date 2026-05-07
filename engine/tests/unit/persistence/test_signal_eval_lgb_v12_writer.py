@@ -5,10 +5,14 @@ Audit-task #332 (writer regression #6). The column was added by
 populated it. PR #438 wired ``window_snapshots`` only; the parallel
 ``signal_evaluations`` writer target stayed at 100% NULL.
 
-Fix: ``DBClient.update_signal_evaluations_lgb_v12`` (mirrored on
-``PgSignalRepository``) UPDATE-only stamper, fired from
-``StrategyRegistry._write_window_trace`` immediately after the existing
-``update_window_ensemble_fields`` call.
+PR #500 (this PR): the original UPDATE-only stamper was racing against
+the canonical INSERT in ``write_signal_evaluation`` and silently no-op'd
+~99.99% of the time (only 34 rows ever populated). Converted to
+INSERT...ON CONFLICT upsert so the row is created (with just the v12
+field stamped) when the canonical writer hasn't fired yet, and merged
+via COALESCE when it has. The canonical writer's later UPSERT does NOT
+touch ``probability_lgb_v12`` in its UPDATE branch (verified
+db_client.py), so our stamp is preserved.
 
 These tests pin the SQL contract so a future refactor cannot drop the
 column from the writer again.
@@ -25,7 +29,7 @@ from persistence.db_client import DBClient
 
 
 class _FakeConn:
-    def __init__(self, result: str = "UPDATE 1") -> None:
+    def __init__(self, result: str = "INSERT 0 1") -> None:
         self.calls: list[dict[str, Any]] = []
         self._result = result
 
@@ -35,7 +39,7 @@ class _FakeConn:
 
 
 class _FakePool:
-    def __init__(self, result: str = "UPDATE 1") -> None:
+    def __init__(self, result: str = "INSERT 0 1") -> None:
         self.conn = _FakeConn(result)
 
     def acquire(self):
@@ -51,7 +55,7 @@ class _FakePool:
         return _CM()
 
 
-def _stub_db(result: str = "UPDATE 1") -> DBClient:
+def _stub_db(result: str = "INSERT 0 1") -> DBClient:
     db = DBClient.__new__(DBClient)
     db._pool = _FakePool(result)
     return db
@@ -60,8 +64,8 @@ def _stub_db(result: str = "UPDATE 1") -> DBClient:
 # ─── DBClient.update_signal_evaluations_lgb_v12 ───────────────────────────
 
 @pytest.mark.asyncio
-async def test_v12_writer_stamps_when_eval_offset_present():
-    db = _stub_db("UPDATE 3")
+async def test_v12_writer_upserts_row_when_eval_offset_present():
+    db = _stub_db("INSERT 0 1")
     n = await db.update_signal_evaluations_lgb_v12(
         window_ts=1777617300,
         asset="BTC",
@@ -69,22 +73,34 @@ async def test_v12_writer_stamps_when_eval_offset_present():
         eval_offset=60,
         probability_lgb_v12=0.6731,
     )
-    assert n == 3
+    assert n == 1
     assert len(db._pool.conn.calls) == 1
     call = db._pool.conn.calls[0]
-    assert "UPDATE signal_evaluations" in call["sql"]
-    assert "COALESCE(probability_lgb_v12" in call["sql"], "must preserve existing value"
-    assert "eval_offset = $5" in call["sql"]
-    assert call["args"][0] == 0.6731
-    assert call["args"][1] == 1777617300
-    assert call["args"][2] == "BTC"
-    assert call["args"][3] == "5m"
-    assert call["args"][4] == 60
+    sql = call["sql"]
+    assert "INSERT INTO signal_evaluations" in sql
+    assert "ON CONFLICT (window_ts, asset, timeframe, eval_offset)" in sql
+    assert "DO UPDATE SET" in sql
+    # COALESCE(existing, EXCLUDED.*) preserves the canonical writer's value
+    # if it has already populated this column (defensive idempotency).
+    assert (
+        "COALESCE(\n                            signal_evaluations.probability_lgb_v12,\n                            EXCLUDED.probability_lgb_v12"
+        in sql
+    ) or "COALESCE(signal_evaluations.probability_lgb_v12" in sql.replace(
+        "\n", " "
+    ).replace("  ", " ")
+    args = call["args"]
+    assert args[0] == 1777617300
+    assert args[1] == "BTC"
+    assert args[2] == "5m"
+    assert args[3] == 60
+    assert args[4] == 0.6731
 
 
 @pytest.mark.asyncio
-async def test_v12_writer_omits_eval_offset_clause_when_none():
-    db = _stub_db("UPDATE 7")
+async def test_v12_writer_noop_when_eval_offset_none():
+    """signal_evaluations.eval_offset is part of the unique key; passing
+    None makes the row uninsertable. Writer must short-circuit before SQL."""
+    db = _stub_db()
     n = await db.update_signal_evaluations_lgb_v12(
         window_ts=1777617300,
         asset="BTC",
@@ -92,11 +108,8 @@ async def test_v12_writer_omits_eval_offset_clause_when_none():
         eval_offset=None,
         probability_lgb_v12=0.42,
     )
-    assert n == 7
-    sql = db._pool.conn.calls[0]["sql"]
-    assert "eval_offset" not in sql, "no eval_offset arg → no eval_offset filter"
-    args = db._pool.conn.calls[0]["args"]
-    assert args == (0.42, 1777617300, "BTC", "5m")
+    assert n == 0
+    assert db._pool.conn.calls == []
 
 
 @pytest.mark.asyncio
@@ -157,8 +170,8 @@ async def test_v12_writer_coerces_value_to_float():
         eval_offset=0, probability_lgb_v12="0.55",  # type: ignore[arg-type]
     )
     args = db._pool.conn.calls[0]["args"]
-    assert isinstance(args[0], float)
-    assert args[0] == pytest.approx(0.55)
+    assert isinstance(args[4], float)
+    assert args[4] == pytest.approx(0.55)
 
 
 # ─── PgSignalRepository parity ───────────────────────────────────────────
@@ -170,7 +183,7 @@ async def test_pg_signal_repo_v12_writer_parity():
     fix BOTH paths)."""
     from adapters.persistence.pg_signal_repo import PgSignalRepository
 
-    pool = _FakePool("UPDATE 1")
+    pool = _FakePool("INSERT 0 1")
     repo = PgSignalRepository(pool)  # type: ignore[arg-type]
     n = await repo.update_signal_evaluations_lgb_v12(
         window_ts=1777617300,
@@ -181,9 +194,9 @@ async def test_pg_signal_repo_v12_writer_parity():
     )
     assert n == 1
     sql = pool.conn.calls[0]["sql"]
-    assert "UPDATE signal_evaluations" in sql
-    assert "COALESCE(probability_lgb_v12" in sql
-    assert "eval_offset = $5" in sql
+    assert "INSERT INTO signal_evaluations" in sql
+    assert "ON CONFLICT (window_ts, asset, timeframe, eval_offset)" in sql
+    assert "DO UPDATE SET" in sql
 
 
 # ─── Registry wiring ──────────────────────────────────────────────────────
@@ -194,12 +207,21 @@ class _SurfaceStub:
     trace_repo write via monkeypatch / AsyncMock so we do not need a
     real dataclass or trace adapter."""
 
-    def __init__(self, *, eval_offset: int = 60, asset: str = "BTC") -> None:
+    def __init__(
+        self,
+        *,
+        eval_offset: int = 60,
+        asset: str = "BTC",
+        probability_lgb_v9_2: float | None = None,
+        regime: str | None = None,
+    ) -> None:
         self.window_ts = 1777617300
         self.asset = asset
         self.timescale = "5m"
         self.eval_offset = eval_offset
         self.assembled_at = 0.0
+        self.probability_lgb_v9_2 = probability_lgb_v9_2
+        self.regime = regime
 
 
 def _stub_registry(db: AsyncMock) -> "Any":
@@ -235,6 +257,7 @@ async def test_registry_calls_v12_writer_after_ensemble_write(monkeypatch):
             "ensemble_disagreement": None,
             "ensemble_model_version": "v12-lgb-2026-04",
             "probability_lgb_v12": 0.71,
+            "probability_lgb_v9_2": None,
         },
     )
     # _v34_surface_fields is called earlier in _write_window_trace; stub it
@@ -246,6 +269,7 @@ async def test_registry_calls_v12_writer_after_ensemble_write(monkeypatch):
     db = AsyncMock()
     db.update_window_ensemble_fields = AsyncMock(return_value=None)
     db.update_signal_evaluations_lgb_v12 = AsyncMock(return_value=1)
+    db.update_signal_evaluations_lgb_v9_2 = AsyncMock(return_value=1)
 
     reg = _stub_registry(db)
 
@@ -282,6 +306,7 @@ async def test_registry_skips_v12_writer_when_value_missing(monkeypatch):
             "ensemble_disagreement": None,
             "ensemble_model_version": None,
             "probability_lgb_v12": None,
+            "probability_lgb_v9_2": None,
         },
     )
     monkeypatch.setattr(
@@ -291,6 +316,7 @@ async def test_registry_skips_v12_writer_when_value_missing(monkeypatch):
     db = AsyncMock()
     db.update_window_ensemble_fields = AsyncMock(return_value=None)
     db.update_signal_evaluations_lgb_v12 = AsyncMock(return_value=0)
+    db.update_signal_evaluations_lgb_v9_2 = AsyncMock(return_value=0)
 
     reg = _stub_registry(db)
 

@@ -729,8 +729,10 @@ def _stub_db(result: str = "UPDATE 1"):
 
 @pytest.mark.asyncio
 async def test_v9_2_writer_stamps_all_cohort_fields():
-    """Writer must update all 5 v9.2 columns."""
-    db = _stub_db("UPDATE 3")
+    """Writer must upsert all 5 v9.2 columns. PR #500 converted from
+    UPDATE-only to INSERT...ON CONFLICT to fix the race with the
+    canonical write_signal_evaluation INSERT."""
+    db = _stub_db("INSERT 0 1")
     n = await db.update_signal_evaluations_lgb_v9_2(
         window_ts=1777617300,
         asset="BTC",
@@ -742,15 +744,17 @@ async def test_v9_2_writer_stamps_all_cohort_fields():
         v9_2_cohort="NORMAL_UP",
         v9_2_gate_fired=True,
     )
-    assert n == 3
+    assert n == 1
     call = db._pool.conn.calls[0]
     sql = call["sql"]
-    assert "UPDATE signal_evaluations" in sql
+    assert "INSERT INTO signal_evaluations" in sql
+    assert "ON CONFLICT (window_ts, asset, timeframe, eval_offset)" in sql
     assert "probability_lgb_v9_2" in sql
     assert "v9_2_conviction" in sql
     assert "v9_2_cohort" in sql
     assert "v9_2_gate_fired" in sql
-    assert "eval_offset = $9" in sql
+    # gate_fired uses OR-merge so a TRUE-stamp wins over earlier FALSE/NULL.
+    assert "OR COALESCE(EXCLUDED.v9_2_gate_fired" in sql
 
 
 @pytest.mark.asyncio
@@ -809,7 +813,7 @@ async def test_v9_2_pg_signal_repo_parity():
     """PgSignalRepository must match DBClient byte-for-byte."""
     from adapters.persistence.pg_signal_repo import PgSignalRepository
 
-    pool = _FakePool("UPDATE 1")
+    pool = _FakePool("INSERT 0 1")
     repo = PgSignalRepository(pool)  # type: ignore[arg-type]
     n = await repo.update_signal_evaluations_lgb_v9_2(
         window_ts=1777617300,
@@ -824,14 +828,16 @@ async def test_v9_2_pg_signal_repo_parity():
     )
     assert n == 1
     sql = pool.conn.calls[0]["sql"]
-    assert "UPDATE signal_evaluations" in sql
-    assert "COALESCE(probability_lgb_v9_2" in sql
-    assert "eval_offset = $9" in sql
+    assert "INSERT INTO signal_evaluations" in sql
+    assert "ON CONFLICT (window_ts, asset, timeframe, eval_offset)" in sql
+    assert "OR COALESCE(EXCLUDED.v9_2_gate_fired" in sql
 
 
 @pytest.mark.asyncio
-async def test_v9_2_writer_omits_eval_offset_when_none():
-    db = _stub_db("UPDATE 2")
+async def test_v9_2_writer_noop_when_eval_offset_none():
+    """eval_offset is part of the unique key — None makes the row
+    uninsertable. PR #500: writer short-circuits before SQL."""
+    db = _stub_db("INSERT 0 0")
     n = await db.update_signal_evaluations_lgb_v9_2(
         window_ts=1777617300,
         asset="BTC",
@@ -839,6 +845,5 @@ async def test_v9_2_writer_omits_eval_offset_when_none():
         eval_offset=None,
         probability_lgb_v9_2=0.70,
     )
-    assert n == 2
-    sql = db._pool.conn.calls[0]["sql"]
-    assert "eval_offset" not in sql
+    assert n == 0
+    assert db._pool.conn.calls == []
