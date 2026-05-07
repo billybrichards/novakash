@@ -999,6 +999,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 clob_up_price=_gamma_up,
                 clob_down_price=_gamma_down,
                 binance_price=current_price,
+                chainlink_price=_chainlink_price,
                 tiingo_close=_tii_close,
                 delta_binance=_dbin,
                 delta_chainlink=_dchain,
@@ -1007,6 +1008,12 @@ class FiveMinVPINStrategy(BaseStrategy):
                 delta_source=_src_used,
                 # gate_* and prev_v2_probability_up stay None — they're
                 # not yet resolved at this point in the function.
+                # Audit #224/#233 Tier 1 — gamma prices + window_ts let
+                # the builder derive gamma_implied_up, gamma_market_vig,
+                # clob_imbalance, session_bucket, and source_delta_divergence.
+                gamma_up_price=_gamma_up,
+                gamma_down_price=_gamma_down,
+                window_ts=getattr(window, "window_ts", None),
             )
 
             ctx = GateContext(
@@ -1685,6 +1692,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                     delta_source=_price_source_used,
                     # gate_*: not yet resolved at pre-eval time
                     # prev_v2_probability_up: no prior value at first-tick
+                    # Audit #224/#233 Tier 1 (added 2026-05-07).
+                    gamma_up_price=window.up_price,
+                    gamma_down_price=window.down_price,
+                    window_ts=getattr(window, "window_ts", None),
                 )
                 _v2_pre = await self._timesfm_v2.score_with_features(
                     asset=window.asset,

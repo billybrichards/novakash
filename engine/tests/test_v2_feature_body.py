@@ -5,7 +5,7 @@ for Sequoia v5's push-mode scoring.
 These tests enforce the invariants that v5's serving correctness
 depends on:
 
-  1. Exactly 26 fields (25 v5 + 1 PR #464 sister `polymarket_price_to_beat`),
+  1. Exactly 38 fields (25 v5 + 1 PR #464 sister + 12 Audit #224/#233 Tier 1),
      matching FEATURE_COLUMNS_V5 in the timesfm training/scoring code
      (one-to-one, no extras, no drift).
   2. Missing values stay None on the wire (→ JSON null → scorer NaN).
@@ -69,6 +69,22 @@ EXPECTED_V5_FIELDS: list[str] = [
     # PR #464 sister: Polymarket canonical reference (telemetry until
     # OPEN_PRICE_USE_PRICE_TO_BEAT flips on the scorer side).
     "polymarket_price_to_beat",
+    # Audit #224/#233 Tier 1 enrichments (added 2026-05-07) — 12 fields
+    # the v9.x boosters trained on but the engine push contract used to
+    # omit. Must mirror `training/train_lgb_v5.py::FEATURE_COLUMNS_V5`
+    # rows 46-57 of the v9.2 meta in novakash-timesfm-repo.
+    "gamma_up_price",
+    "gamma_down_price",
+    "gamma_implied_up",
+    "gamma_market_vig",
+    "clob_imbalance",
+    "session_bucket",
+    "vpin_mean_60s",
+    "vpin_std_60s",
+    "vpin_min_60s",
+    "vpin_max_60s",
+    "vpin_range_60s",
+    "source_delta_divergence",
 ]
 
 
@@ -77,18 +93,22 @@ EXPECTED_V5_FIELDS: list[str] = [
 # ────────────────────────────────────────────────────────────────────
 
 
-def test_v5_feature_body_schema_is_exactly_26_fields():
+def test_v5_feature_body_schema_is_exactly_38_fields():
     """The schema is load-bearing: drift here = v5 silently breaks.
 
-    Field count grew from 25 → 26 with PR #464 sister change adding
-    `polymarket_price_to_beat` for the Polymarket-canonical-open-price
-    rollout. The scorer-side `FEATURE_COLUMNS_V5` MUST grow in lockstep,
-    or the parity check fails.
+    Field count history:
+        25 → 26  (PR #464: polymarket_price_to_beat)
+        26 → 38  (Audit #224/#233 Tier 1: 12 enrichments — gamma_*,
+                  clob_imbalance, session_bucket, vpin_*_60s,
+                  source_delta_divergence). The v9.x scorer already
+                  defaults these to NaN at serve time
+                  (`app/v2_scorer.py:879-889`), so adding them to the
+                  push contract is backward-compatible.
     """
     body = V5FeatureBody()
     d = body.to_json_dict()
     assert list(d.keys()) == EXPECTED_V5_FIELDS
-    assert len(d) == 26
+    assert len(d) == 38
 
 
 def test_empty_body_is_all_none_and_zero_coverage():
@@ -126,13 +146,26 @@ def test_full_body_is_full_coverage():
         delta_source_num=0.0,
         v2_logit=0.5,
         polymarket_price_to_beat=67000.5,
+        # Audit #224/#233 Tier 1 (added 2026-05-07).
+        gamma_up_price=0.50,
+        gamma_down_price=0.50,
+        gamma_implied_up=0.5,
+        gamma_market_vig=0.0,
+        clob_imbalance=0.10,
+        session_bucket=3.0,
+        vpin_mean_60s=0.55,
+        vpin_std_60s=0.05,
+        vpin_min_60s=0.40,
+        vpin_max_60s=0.70,
+        vpin_range_60s=0.30,
+        source_delta_divergence=0.001,
     )
     assert body.coverage() == 1.0
 
 
 def test_partial_body_has_fractional_coverage():
     body = V5FeatureBody(eval_offset=120.0, vpin=0.5, delta_pct=0.01)
-    assert body.coverage() == pytest.approx(3 / 26, rel=1e-9)
+    assert body.coverage() == pytest.approx(3 / len(EXPECTED_V5_FIELDS), rel=1e-9)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -459,3 +492,168 @@ def test_builder_all_v5_field_names_present_in_output():
     for name in EXPECTED_V5_FIELDS:
         assert name in d, f"builder output missing field {name}"
     assert len(d) == len(EXPECTED_V5_FIELDS)
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Audit #224/#233 Tier 1 enrichments (added 2026-05-07)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestAudit224Tier1:
+    """Verify the 12 audit-#224 fields match the training-time formulas.
+
+    Sources for each formula (novakash-timesfm-repo @ 166c7fd):
+      - gamma_up_price / gamma_down_price       queries.py:129-130
+      - gamma_implied_up                        build_dataset.py:325
+      - gamma_market_vig                        build_dataset.py:326
+      - clob_imbalance                          build_dataset.py:291
+      - session_bucket                          queries.py:222-228
+      - source_delta_divergence                 build_dataset.py:268,272,330-332
+      - vpin_range_60s                          build_dataset.py:307
+    """
+
+    def test_gamma_prices_pass_through(self):
+        body = build_v5_feature_body(gamma_up_price=0.42, gamma_down_price=0.55)
+        d = body.to_json_dict()
+        assert d["gamma_up_price"] == pytest.approx(0.42)
+        assert d["gamma_down_price"] == pytest.approx(0.55)
+
+    def test_gamma_implied_up_is_up_over_total(self):
+        # implied = up / (up + down)
+        body = build_v5_feature_body(gamma_up_price=0.6, gamma_down_price=0.4)
+        d = body.to_json_dict()
+        assert d["gamma_implied_up"] == pytest.approx(0.6)
+        # Sum is exactly 1.0 → vig is 0.0 (a perfectly tight book)
+        assert d["gamma_market_vig"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_gamma_market_vig_includes_book_juice(self):
+        # When the book sums to less than 1, vig > 0 (market uncertainty)
+        body = build_v5_feature_body(gamma_up_price=0.3, gamma_down_price=0.5)
+        d = body.to_json_dict()
+        assert d["gamma_market_vig"] == pytest.approx(0.2)
+
+    def test_gamma_one_side_missing_yields_none(self):
+        body = build_v5_feature_body(gamma_up_price=0.42, gamma_down_price=None)
+        d = body.to_json_dict()
+        assert d["gamma_up_price"] == pytest.approx(0.42)
+        assert d["gamma_down_price"] is None
+        assert d["gamma_implied_up"] is None
+        assert d["gamma_market_vig"] is None
+
+    def test_gamma_zero_total_yields_none_implied_but_vig_is_one(self):
+        # Both sides 0 — no implied probability, but vig = 1.0 (max juice)
+        body = build_v5_feature_body(gamma_up_price=0.0, gamma_down_price=0.0)
+        d = body.to_json_dict()
+        assert d["gamma_implied_up"] is None
+        assert d["gamma_market_vig"] == pytest.approx(1.0)
+
+    def test_clob_imbalance_is_up_ask_minus_down_ask(self):
+        body = build_v5_feature_body(clob_up_ask=0.55, clob_down_ask=0.47)
+        d = body.to_json_dict()
+        assert d["clob_imbalance"] == pytest.approx(0.08)
+
+    def test_clob_imbalance_one_side_missing_is_none(self):
+        body = build_v5_feature_body(clob_up_ask=0.55, clob_down_ask=None)
+        assert body.to_json_dict()["clob_imbalance"] is None
+
+    def test_session_bucket_5_bucket_integer_encoding(self):
+        # Training-side bands (queries.py:222-228):
+        #   00-03 → 0, 04-08 → 1, 09-11 → 2, 12-16 → 3, 17-23 → 4
+        cases = [
+            (0,  0.0), (3,  0.0),
+            (4,  1.0), (8,  1.0),
+            (9,  2.0), (11, 2.0),
+            (12, 3.0), (16, 3.0),
+            (17, 4.0), (23, 4.0),
+        ]
+        for hour, expected in cases:
+            # Pick a fixed ISO date and just sweep the hour. 2026-05-07.
+            ts = int(_dt_for_test(hour).timestamp())
+            body = build_v5_feature_body(window_ts=ts)
+            assert body.to_json_dict()["session_bucket"] == pytest.approx(
+                expected
+            ), f"hour={hour} → expected bucket {expected}"
+
+    def test_session_bucket_none_when_no_window_ts(self):
+        body = build_v5_feature_body()
+        assert body.to_json_dict()["session_bucket"] is None
+
+    def test_source_delta_divergence_matches_training_formula(self):
+        # tiingo_vs_binance     = (tiingo - binance) / binance
+        # chainlink_vs_binance  = (chainlink - binance) / binance
+        # divergence            = |t_vs_b - c_vs_b|
+        body = build_v5_feature_body(
+            binance_price=100.0,
+            tiingo_close=100.5,    # +0.5%
+            chainlink_price=100.2, # +0.2%
+        )
+        d = body.to_json_dict()
+        # Expected divergence = |0.005 - 0.002| = 0.003
+        assert d["source_delta_divergence"] == pytest.approx(0.003, rel=1e-9)
+
+    def test_source_delta_divergence_requires_all_three_prices(self):
+        # Missing chainlink → divergence stays None.
+        body = build_v5_feature_body(
+            binance_price=100.0, tiingo_close=100.5, chainlink_price=None
+        )
+        assert body.to_json_dict()["source_delta_divergence"] is None
+
+    def test_source_delta_divergence_zero_binance_yields_none(self):
+        # Avoid /0; stay None to keep LightGBM's missing-value path happy.
+        body = build_v5_feature_body(
+            binance_price=0.0, tiingo_close=100.0, chainlink_price=99.5
+        )
+        assert body.to_json_dict()["source_delta_divergence"] is None
+
+    def test_vpin_range_60s_derived_from_min_max(self):
+        body = build_v5_feature_body(vpin_min_60s=0.10, vpin_max_60s=0.42)
+        d = body.to_json_dict()
+        assert d["vpin_range_60s"] == pytest.approx(0.32)
+        assert d["vpin_min_60s"] == pytest.approx(0.10)
+        assert d["vpin_max_60s"] == pytest.approx(0.42)
+
+    def test_vpin_stats_passthrough_default_none(self):
+        body = build_v5_feature_body()
+        d = body.to_json_dict()
+        for k in (
+            "vpin_mean_60s", "vpin_std_60s", "vpin_min_60s",
+            "vpin_max_60s", "vpin_range_60s",
+        ):
+            assert d[k] is None, f"{k} should default to None"
+
+    def test_full_audit_224_population_smoke(self):
+        # End-to-end: every audit-#224 derived field populates when
+        # all the inputs are available. Smokes the full chain.
+        ts = int(_dt_for_test(15).timestamp())  # 15 UTC → bucket 3 (US)
+        body = build_v5_feature_body(
+            binance_price=100.0,
+            tiingo_close=100.4,
+            chainlink_price=100.1,
+            clob_up_ask=0.52,
+            clob_down_ask=0.49,
+            gamma_up_price=0.50,
+            gamma_down_price=0.49,
+            window_ts=ts,
+            vpin_mean_60s=0.20,
+            vpin_std_60s=0.05,
+            vpin_min_60s=0.12,
+            vpin_max_60s=0.30,
+        )
+        d = body.to_json_dict()
+        # Six derived fields must be non-None when all inputs available.
+        for k in (
+            "gamma_implied_up", "gamma_market_vig",
+            "clob_imbalance", "session_bucket",
+            "source_delta_divergence", "vpin_range_60s",
+        ):
+            assert d[k] is not None, f"{k} should be populated"
+        # session_bucket = 3 for hour 15 UTC
+        assert d["session_bucket"] == pytest.approx(3.0)
+        # vpin_range_60s = max - min
+        assert d["vpin_range_60s"] == pytest.approx(0.30 - 0.12)
+
+
+def _dt_for_test(hour_utc: int):
+    """Helper to build a fixed-date UTC datetime at a given hour."""
+    import datetime as _dt
+    return _dt.datetime(2026, 5, 7, hour_utc, 30, 0, tzinfo=_dt.timezone.utc)
