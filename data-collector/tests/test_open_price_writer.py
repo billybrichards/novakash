@@ -29,6 +29,24 @@ if "asyncpg" not in sys.modules:
     asyncpg_mod = _make_stub_module("asyncpg")
     asyncpg_mod.Pool = object  # type: ignore[attr-defined]
 
+# Review fix X-2: ensure the asyncpg stub exposes the same public surface as the
+# real package — including `create_pool` and `connect`. Without these
+# attributes, downstream tests in the same pytest session that patch
+# `asyncpg.create_pool` (e.g. engine/tests/test_ticks_v2_probability_writer.py
+# ::test_record_v2_probability_uses_injected_pool_only) raise AttributeError
+# at patch entry. We add the attributes idempotently so this works whether
+# the real asyncpg is installed in the venv (in which case sys.modules already
+# has the real module and we skip) or only the stub is present.
+_asyncpg_mod = sys.modules["asyncpg"]
+if not hasattr(_asyncpg_mod, "create_pool"):
+    async def _stub_create_pool(*_args, **_kwargs):  # pragma: no cover - test stub
+        raise NotImplementedError("asyncpg.create_pool is stubbed in tests")
+    _asyncpg_mod.create_pool = _stub_create_pool  # type: ignore[attr-defined]
+if not hasattr(_asyncpg_mod, "connect"):
+    async def _stub_connect(*_args, **_kwargs):  # pragma: no cover - test stub
+        raise NotImplementedError("asyncpg.connect is stubbed in tests")
+    _asyncpg_mod.connect = _stub_connect  # type: ignore[attr-defined]
+
 if "aiohttp" not in sys.modules:
     aiohttp_mod = _make_stub_module("aiohttp")
     aiohttp_mod.ClientSession = object  # type: ignore[attr-defined]
