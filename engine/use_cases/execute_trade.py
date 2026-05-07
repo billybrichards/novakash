@@ -1430,6 +1430,78 @@ class ExecuteTradeUseCase:
         adjusted = min(adjusted, hard_cap)
         adjusted = round(adjusted, 2)
 
+        # ── Per-cell bet-size multiplier (cell_size_scaler) ─────────────
+        # Strategies whose runtime overrides declare cell_size_multipliers
+        # get a per-(session, direction, t_band, regime) stake amp via a
+        # most-specific-key-wins fallback chain. Defaults to 1.0 (no
+        # behaviour change) for any strategy that hasn't opted in. The
+        # scaler clamps to [MIN_BET_USD, runtime.max_position_usd] so a
+        # misconfigured override can never bust the absolute cap.
+        try:
+            from services.cell_size_scaler import apply_cell_size_multiplier
+            # C2 FIX: use canonical 7-bucket session_label from cell_bucketing
+            # (not the defunct 5-bucket services.session_label module).
+            from services.cell_bucketing import session_label as _cell_session_label
+            import datetime as _dt_sess
+            from strategies.runtime_override import (
+                get_runtime_override_manager,
+            )
+
+            _now_utc = _dt_sess.datetime.now(_dt_sess.timezone.utc)
+            sess = _cell_session_label(_now_utc.hour)
+            override_mgr = get_runtime_override_manager()
+
+            # t_band: convert eval_offset (sec-to-close) from the decision.
+            # Falls back to None when eval_offset is unavailable → scaler
+            # skips t_band axis (backward-compatible).
+            meta = getattr(decision, "metadata", None) or {}
+            _eval_offset = meta.get("eval_offset")
+            if _eval_offset is None:
+                # Also try decision.eval_offset for strategies that set it
+                # directly on the dataclass (not in metadata dict).
+                _eval_offset = getattr(decision, "eval_offset", None)
+            try:
+                _eval_offset_int: Optional[int] = int(_eval_offset) if _eval_offset is not None else None
+            except (TypeError, ValueError):
+                _eval_offset_int = None
+
+            # regime: pull from metadata (vpin_regime is the canonical key).
+            _regime: Optional[str] = meta.get("vpin_regime") or meta.get("regime")
+
+            cell_envelope = apply_cell_size_multiplier(
+                adjusted,
+                strategy_id=decision.strategy_id,
+                session=sess,
+                direction=decision.direction,
+                absolute_max_bet=runtime.max_position_usd,
+                min_bet_usd=max(MIN_BET_USD, runtime.min_bet_usd),  # C2 FIX: max not min
+                override_provider=override_mgr,
+                t_band=_eval_offset_int,
+                regime=_regime,
+            )
+            if cell_envelope["multiplier"] > 1.0:
+                log.info(
+                    "cell_boost",
+                    strategy_id=decision.strategy_id,
+                    session=cell_envelope["session"],
+                    direction=cell_envelope["direction"],
+                    t_band=cell_envelope["t_band"],
+                    regime=cell_envelope["regime"],
+                    multiplier=cell_envelope["multiplier"],
+                    base_stake=cell_envelope["base_stake"],
+                    final_stake=cell_envelope["final_stake"],
+                    clamp_reason=cell_envelope["clamp_reason"],
+                )
+            adjusted = round(cell_envelope["final_stake"], 2)
+        except Exception as exc:  # pragma: no cover — defensive
+            # Cell-scaler failure must never block a trade; fall through
+            # to the un-amped stake (current behaviour).
+            log.debug(
+                "cell_size_scaler_skipped",
+                strategy_id=getattr(decision, "strategy_id", None),
+                error=str(exc)[:200],
+            )
+
         return StakeCalculation(
             base_stake=base_stake,
             price_multiplier=price_multiplier,
@@ -1454,7 +1526,11 @@ class ExecuteTradeUseCase:
                 False,
                 f"drawdown {status.drawdown_pct:.1%} > {runtime.max_drawdown_kill:.0%}",
             )
-        min_bet = min(MIN_BET_USD, runtime.min_bet_usd)
+        # C2 FIX: use max() so the higher of the two floors wins (neither floor
+        # is breached). Using min() was a bug: if MIN_BET_USD=$2 and
+        # runtime.min_bet_usd=$5, we'd pass $2 as the floor — allowing stakes
+        # that violate the runtime config's minimum.
+        min_bet = max(MIN_BET_USD, runtime.min_bet_usd)
         if stake.adjusted_stake < min_bet:
             return (
                 False,
