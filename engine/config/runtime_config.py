@@ -182,10 +182,38 @@ class RuntimeConfig:
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)
 
         # ── v6.0 TimesFM-Only Strategy ────────────────────────────────────
-        self.timesfm_enabled: bool = (
-            os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
-        )
-        self.timesfm_url: str = os.environ.get("TIMESFM_URL", "http://16.52.14.182:8080")
+        # Audit #397 (review fix 397-1): mirror the URL-implies-enabled logic
+        # from infrastructure/composition.py here. Without this fix
+        # `runtime.timesfm_enabled` stays False even when TIMESFM_URL is set,
+        # causing five_min_vpin's forecast gate at five_min_vpin.py:~900 to skip.
+        # Logic:
+        #   - TIMESFM_ENABLED=false (explicit)               -> False
+        #   - TIMESFM_ENABLED=true  + URL unset              -> log error, False
+        #   - TIMESFM_ENABLED=true  + URL set                -> True
+        #   - TIMESFM_ENABLED unset + URL set                -> True (URL = intent)
+        #   - TIMESFM_ENABLED unset + URL unset              -> False
+        _timesfm_url_raw = os.environ.get("TIMESFM_URL", "").strip()
+        _timesfm_enabled_raw = os.environ.get("TIMESFM_ENABLED", "").strip().lower()
+        if _timesfm_enabled_raw == "false":
+            self.timesfm_enabled = False
+        elif _timesfm_enabled_raw == "true" and not _timesfm_url_raw:
+            # Explicit enable but no URL — log and disable.
+            try:
+                import logging as _logging
+                _logging.getLogger(__name__).error(
+                    "runtime_config.timesfm_url_missing_skip "
+                    "TIMESFM_ENABLED=true but TIMESFM_URL is not set — "
+                    "TimesFM gate disabled (audit #397 review fix 1)"
+                )
+            except Exception:
+                pass
+            self.timesfm_enabled = False
+        elif _timesfm_enabled_raw == "true":
+            self.timesfm_enabled = True
+        else:
+            # No explicit override — enable iff URL configured.
+            self.timesfm_enabled = bool(_timesfm_url_raw)
+        self.timesfm_url: str = _timesfm_url_raw or "http://3.96.151.28:8080"
         self.timesfm_min_confidence: float = _env_float("TIMESFM_MIN_CONFIDENCE", 0.30)
         self.timesfm_assets: list[str] = os.environ.get("TIMESFM_ASSETS", "BTC").split(
             ","
