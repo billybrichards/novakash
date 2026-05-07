@@ -159,6 +159,12 @@ async def upsert_market(pool: asyncpg.Pool, data: dict):
                 spread = EXCLUDED.spread,
                 volume = EXCLUDED.volume,
                 liquidity = EXCLUDED.liquidity,
+                -- audit #395: keep open_price once published. priceToBeat
+                -- from Gamma eventMetadata is the canonical reference (PR
+                -- #464) and may publish 60-180s after window open. NULL
+                -- snapshots BEFORE that point must NOT clobber a value
+                -- captured later in the window — hence COALESCE(new, old).
+                open_price = COALESCE(EXCLUDED.open_price, market_data.open_price),
                 snapshot_count = market_data.snapshot_count + 1,
                 last_snapshot_at = NOW()
         """,
@@ -191,14 +197,18 @@ async def save_snapshot(pool: asyncpg.Pool, data: dict):
 
 
 async def resolve_window(pool: asyncpg.Pool, window_ts: int, asset: str,
-                         timeframe: str, close_price: float, outcome: str):
-    """Mark a window as resolved with outcome."""
+                         timeframe: str, close_price: float, outcome: str,
+                         open_price: Optional[float] = None):
+    """Mark a window as resolved with outcome (and open_price if available)."""
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE market_data
-            SET resolved = TRUE, close_price = $1, outcome = $2, resolved_at = NOW()
+            SET resolved = TRUE, close_price = $1, outcome = $2, resolved_at = NOW(),
+                -- audit #395: priceToBeat from prev-window finalPrice is sometimes
+                -- only available at resolution time; keep existing value if newer.
+                open_price = COALESCE(market_data.open_price, $6)
             WHERE window_ts = $3 AND asset = $4 AND timeframe = $5
-        """, close_price, outcome, window_ts, asset, timeframe)
+        """, close_price, outcome, window_ts, asset, timeframe, open_price)
 
 
 async def get_unresolved(pool: asyncpg.Pool) -> list:
@@ -274,6 +284,24 @@ async def fetch_current_markets(session: aiohttp.ClientSession, asset: str,
             results = []
             
             for event in events:
+                # ── audit #395 / PR #464: capture canonical priceToBeat ──
+                # Polymarket exposes the resolved Chainlink Streams sample at
+                # window open via eventMetadata.priceToBeat. This is the
+                # canonical reference price the UI displays as "Price To Beat"
+                # and is the engine's preferred open_price source. Publishes
+                # ~60-180s after window opens.
+                event_meta = event.get("eventMetadata") or {}
+                price_to_beat: Optional[float] = None
+                if isinstance(event_meta, dict):
+                    ptb_raw = event_meta.get("priceToBeat")
+                    if ptb_raw is not None:
+                        try:
+                            ptb_val = float(ptb_raw)
+                            if ptb_val > 0:
+                                price_to_beat = ptb_val
+                        except (TypeError, ValueError):
+                            pass
+
                 markets = event.get("markets", [])
                 for market in markets:
                     slug = market.get("slug", "")
@@ -371,7 +399,9 @@ async def fetch_current_markets(session: aiohttp.ClientSession, asset: str,
                         "liquidity": float(market.get("liquidity", 0) or 0) or None,
                         "up_token_id": up_token,
                         "down_token_id": down_token,
-                        "open_price": None,  # Set from resolution
+                        # audit #395: canonical priceToBeat captured from
+                        # eventMetadata when published (typically T+60..180s).
+                        "open_price": price_to_beat,
                         "window_start": window_start,
                         "window_end": window_end,
                     })
@@ -403,13 +433,34 @@ async def fetch_resolved_market(session: aiohttp.ClientSession, slug: str) -> Op
             events = await resp.json()
             if not events:
                 return None
-            
-            market = events[0].get("markets", [{}])[0]
-            
+
+            event = events[0]
+            market = event.get("markets", [{}])[0]
+
             # Check if resolved
             if not market.get("closed"):
                 return None
-            
+
+            # audit #395: capture canonical priceToBeat / finalPrice from
+            # eventMetadata if still missing on the resolved row. This is the
+            # "second chance" path — even if the active-collection cycle missed
+            # it (rate-limit window, container restart, etc.), the resolution
+            # cycle backfills it.
+            event_meta = event.get("eventMetadata") or {}
+            price_to_beat: Optional[float] = None
+            if isinstance(event_meta, dict):
+                for key in ("priceToBeat", "finalPrice"):
+                    raw = event_meta.get(key)
+                    if raw is None:
+                        continue
+                    try:
+                        val = float(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if val > 0:
+                        price_to_beat = val
+                        break
+
             # Get resolution
             outcome_prices_raw = market.get("outcomePrices", "[]")
             if isinstance(outcome_prices_raw, str):
@@ -419,15 +470,16 @@ async def fetch_resolved_market(session: aiohttp.ClientSession, slug: str) -> Op
                     prices = []
             else:
                 prices = outcome_prices_raw
-            
+
             # Resolved market: winning token goes to ~$1.00, loser to ~$0.00
             up_final = float(prices[0]) if len(prices) > 0 else 0.5
             outcome = "UP" if up_final > 0.5 else "DOWN"
-            
+
             return {
                 "outcome": outcome,
                 "up_final": up_final,
                 "down_final": float(prices[1]) if len(prices) > 1 else 1.0 - up_final,
+                "open_price": price_to_beat,
             }
     
     except Exception as exc:
@@ -487,6 +539,9 @@ async def collect_cycle(session: aiohttp.ClientSession, pool: asyncpg.Pool,
                         window["timeframe"],
                         close_price=0.0,
                         outcome=result["outcome"],
+                        # audit #395: backfill open_price from prev-window
+                        # finalPrice / priceToBeat at resolution time.
+                        open_price=result.get("open_price"),
                     )
                     resolved += 1
                 except Exception as exc:
