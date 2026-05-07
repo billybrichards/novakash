@@ -189,6 +189,13 @@ class TickRecorder:
                 # → restore into RDS ticks_v2_probability. 5.6M rows exist
                 # on Railway from 2026-04-05 to 2026-05-07. Do NOT attempt
                 # backfill in this PR — file a separate ops task.
+                #
+                # Review fix 396-2: `phase` column distinguishes the pre-eval
+                # snapshot from the decision-path snapshot. Both call sites in
+                # five_min_vpin._evaluate_window write the same key with
+                # functionally-equivalent feature payloads, which used to look
+                # like duplicates in analytics. Default 'decision' so any
+                # pre-existing rows (none on RDS yet) read sensibly.
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS ticks_v2_probability (
                         id               BIGSERIAL PRIMARY KEY,
@@ -198,8 +205,12 @@ class TickRecorder:
                         model_version    TEXT,
                         probability_up   DOUBLE PRECISION,
                         probability_raw  DOUBLE PRECISION,
-                        features         JSONB
+                        features         JSONB,
+                        phase            TEXT NOT NULL DEFAULT 'decision'
                     );
+                    -- Forward-compat: idempotent column add for existing tables.
+                    ALTER TABLE ticks_v2_probability
+                        ADD COLUMN IF NOT EXISTS phase TEXT NOT NULL DEFAULT 'decision';
                     CREATE INDEX IF NOT EXISTS idx_ticks_v2_prob_asset_ts
                         ON ticks_v2_probability (asset, ts DESC);
                     CREATE INDEX IF NOT EXISTS idx_ticks_v2_prob_ts
@@ -441,6 +452,7 @@ class TickRecorder:
         asset: str = "BTC",
         seconds_to_close: Optional[int] = None,
         features_dict: Optional[dict] = None,
+        phase: str = "decision",
     ) -> None:
         """
         Write a v2/LightGBM scoring snapshot to ticks_v2_probability.
@@ -462,6 +474,11 @@ class TickRecorder:
             seconds_to_close: eval_offset (seconds to window close)
             features_dict:    Optional serialised feature body for replay /
                               training. Pass a plain dict (will be JSON-encoded).
+            phase:            Discriminator distinguishing the pre-eval
+                              feature-snapshot write (`pre_eval`) from the
+                              decision-path write (`decision`). Lets analytics
+                              tell apart the two writes that happen within the
+                              same _evaluate_window invocation. Review fix 396-2.
         """
         if not self._pool or not result:
             return
@@ -482,8 +499,8 @@ class TickRecorder:
                     """
                     INSERT INTO ticks_v2_probability
                         (ts, asset, seconds_to_close, model_version,
-                         probability_up, probability_raw, features)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                         probability_up, probability_raw, features, phase)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
                     """,
                     ts,
                     asset,
@@ -492,12 +509,14 @@ class TickRecorder:
                     float(prob_up),
                     float(result["probability_raw"]) if result.get("probability_raw") is not None else None,
                     features_json,
+                    phase,
                 )
             log.debug(
                 "tick_recorder.v2_probability_written",
                 asset=asset,
                 stc=seconds_to_close,
                 p_up=round(float(prob_up), 4),
+                phase=phase,
             )
         except Exception as exc:
             log.debug(

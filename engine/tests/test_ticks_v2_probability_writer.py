@@ -228,6 +228,55 @@ async def test_record_v2_probability_missing_prob_up_is_noop() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
+#  5b. Phase discriminator (review fix 396-2)
+# ════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_record_v2_probability_phase_default_is_decision() -> None:
+    """When phase kwarg is omitted, the writer must default to 'decision'."""
+    pool = _MockPool()
+    recorder = TickRecorder(pool=pool)
+    await recorder.record_v2_probability(
+        result={"probability_up": 0.5},
+        asset="BTC",
+        seconds_to_close=60,
+    )
+    _query, args = pool.conn.execute_calls[0]
+    # phase is the LAST positional arg (8th, index 7).
+    assert args[-1] == "decision"
+
+
+@pytest.mark.asyncio
+async def test_record_v2_probability_phase_pre_eval_propagates() -> None:
+    """phase='pre_eval' is passed through to the INSERT."""
+    pool = _MockPool()
+    recorder = TickRecorder(pool=pool)
+    await recorder.record_v2_probability(
+        result={"probability_up": 0.5},
+        asset="BTC",
+        seconds_to_close=60,
+        phase="pre_eval",
+    )
+    _query, args = pool.conn.execute_calls[0]
+    assert args[-1] == "pre_eval"
+
+
+@pytest.mark.asyncio
+async def test_ensure_tables_includes_phase_column() -> None:
+    """The DDL emitted by ensure_tables() must include the `phase` column."""
+    pool = _MockPool()
+    recorder = TickRecorder(pool=pool)
+    await recorder.ensure_tables()
+    statements = " ".join(q for q, _ in pool.conn.execute_calls)
+    assert "phase" in statements, (
+        "Expected `phase` column in ticks_v2_probability DDL "
+        "(review fix 396-2). Statements:\n"
+        + "\n".join(q[:120] for q, _ in pool.conn.execute_calls)
+    )
+
+
+# ════════════════════════════════════════════════════════════════════
 #  6.  ensure_tables() emits ticks_v2_probability DDL
 # ════════════════════════════════════════════════════════════════════
 

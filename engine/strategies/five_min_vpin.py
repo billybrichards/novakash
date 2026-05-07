@@ -1757,6 +1757,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 features_dict=_pre_features.to_json_dict()
                                 if hasattr(_pre_features, "to_json_dict")
                                 else None,
+                                phase="pre_eval",  # review fix 396-2
                             )
                         )
                         _v2_task_pre.add_done_callback(_log_v2_task_error)
@@ -2255,6 +2256,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                             features_dict=_decision_features.to_json_dict()
                             if hasattr(_decision_features, "to_json_dict")
                             else None,
+                            phase="decision",  # review fix 396-2
                         )
                     )
                     _v2_task_dec.add_done_callback(_log_v2_task_error)
