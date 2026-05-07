@@ -42,6 +42,7 @@ from execution.order_manager import Order, OrderManager, OrderStatus
 from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
 from signals.vpin import VPINCalculator
+from signals.vpin_buffer import VpinRollingBuffer
 from signals.twap_delta import TWAPTracker, TWAPResult
 from signals.timesfm_client import TimesFMClient, TimesFMForecast
 from signals.window_evaluator import (
@@ -264,6 +265,14 @@ class FiveMinVPINStrategy(BaseStrategy):
         )
         self._poly = poly_client
         self._vpin = vpin_calculator
+        # 60-second rolling window of VPIN samples for the
+        # vpin_{mean,std,min,max,range}_60s features (audit #224 Tier 1).
+        # Lifetime mirrors the VPINCalculator: one per strategy instance,
+        # i.e. one per asset. Populated on every market-state tick where
+        # a vpin reading is available; consumed at v5 feature-body
+        # construction time. See `signals/vpin_buffer.py` for the SQL
+        # parity contract (PostgreSQL STDDEV_SAMP, n-1 denominator).
+        self._vpin_buffer = VpinRollingBuffer(window_s=60.0)
         self._alerter = alerter
         self._cg_enhanced = cg_enhanced  # CoinGlassEnhancedFeed (optional)
         self._cg_feeds = cg_feeds or {}
@@ -863,6 +872,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Get current VPIN
         current_vpin = self._vpin.current_vpin
 
+        # Audit #224 Tier 1: feed the 60s rolling buffer. The
+        # VPINCalculator returns 0.0 before the first bucket completes;
+        # those zeros are real measurements at training time (the SQL
+        # window includes them whenever ticks_binance has rows), so we
+        # push them here too rather than gating on `> 0`. See
+        # `signals/vpin_buffer.py` for SQL semantics.
+        self._vpin_buffer.push(time.time(), current_vpin)
+        _vpin_60s_stats = self._vpin_buffer.compute()
+
         # ── TWAP-Delta evaluation (v5.7) ─────────────────────────────────
         twap_result: Optional[TWAPResult] = None
         if self._twap:
@@ -1014,6 +1032,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 gamma_up_price=_gamma_up,
                 gamma_down_price=_gamma_down,
                 window_ts=getattr(window, "window_ts", None),
+                # Audit #224 Tier 1: 60s rolling VPIN aggregates.
+                # vpin_range_60s is auto-derived from min/max in the
+                # builder (see v2_feature_body.py).
+                vpin_mean_60s=_vpin_60s_stats["vpin_mean_60s"],
+                vpin_std_60s=_vpin_60s_stats["vpin_std_60s"],
+                vpin_min_60s=_vpin_60s_stats["vpin_min_60s"],
+                vpin_max_60s=_vpin_60s_stats["vpin_max_60s"],
             )
 
             ctx = GateContext(
@@ -1690,6 +1715,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     delta_tiingo=delta_tiingo,
                     regime=_snap_regime,
                     delta_source=_price_source_used,
+                    # Audit #224 Tier 1: 60s rolling VPIN aggregates.
+                    vpin_mean_60s=_vpin_60s_stats["vpin_mean_60s"],
+                    vpin_std_60s=_vpin_60s_stats["vpin_std_60s"],
+                    vpin_min_60s=_vpin_60s_stats["vpin_min_60s"],
+                    vpin_max_60s=_vpin_60s_stats["vpin_max_60s"],
                     # gate_*: not yet resolved at pre-eval time
                     # prev_v2_probability_up: no prior value at first-tick
                     # Audit #224/#233 Tier 1 (added 2026-05-07).
@@ -2150,6 +2180,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     regime=_snap_regime,
                     delta_source=_price_source_used,
                     prev_v2_probability_up=window_snapshot.get("v2_probability_up"),
+                    # Audit #224 Tier 1: 60s rolling VPIN aggregates.
+                    vpin_mean_60s=_vpin_60s_stats["vpin_mean_60s"],
+                    vpin_std_60s=_vpin_60s_stats["vpin_std_60s"],
+                    vpin_min_60s=_vpin_60s_stats["vpin_min_60s"],
+                    vpin_max_60s=_vpin_60s_stats["vpin_max_60s"],
                 )
                 _v2_result = await self._timesfm_v2.score_with_features(
                     asset=window.asset,
