@@ -182,6 +182,46 @@ class TestSessionMatch:
         assert result is None
 
 
+class TestHourUtcMatch:
+    """Hour-precision blocks via the `hour_utc` field — preferred over
+    session for single-hour weak cells where session_label's 4-hour
+    bucket would over-block adjacent hours."""
+
+    def test_hour_utc_match_blocks(self):
+        # hour 10 UTC, predicate matches hour 10
+        result = _call([{"hour_utc": 10}], window_ts=_HOUR_10_UTC_TS)
+        assert result is not None
+        assert "hour_utc=10" in result
+
+    def test_hour_utc_mismatch_passes(self):
+        # hour 10 UTC, predicate matches hour 19
+        result = _call([{"hour_utc": 19}], window_ts=_HOUR_10_UTC_TS)
+        assert result is None
+
+    def test_hour_utc_with_no_window_ts_passes(self):
+        """No window_ts → hour_utc=None; predicate cannot match."""
+        result = _call([{"hour_utc": 10}], window_ts=None)
+        assert result is None
+
+    def test_hour_utc_invalid_value_passes(self):
+        """Non-numeric hour_utc in predicate → silent no-match (defensive)."""
+        result = _call([{"hour_utc": "ten"}], window_ts=_HOUR_10_UTC_TS)
+        assert result is None
+
+    def test_hour_utc_with_direction_compound(self):
+        """Direction + hour_utc — both must match (mirrors v9.2 use case)."""
+        # hour 19 UTC weak for UP only (per v9.2 alpha-mining)
+        hour_19_ts = 1_778_180_400  # 2026-05-07 19:00:00 UTC
+        pred = [{"direction": "UP", "hour_utc": 19}]
+        # UP + h19 → block
+        assert _call(pred, direction="UP", window_ts=hour_19_ts) is not None
+        # DOWN + h19 → pass (DOWN at h19 is fine, 94.5% WR)
+        assert _call(pred, direction="DOWN", window_ts=hour_19_ts) is None
+        # UP + h20 → pass (h20 is gold hour, 99.2% WR)
+        hour_20_ts = 1_778_184_000
+        assert _call(pred, direction="UP", window_ts=hour_20_ts) is None
+
+
 class TestMultiFieldPredicate:
     def test_all_fields_must_match(self):
         """A predicate with direction + t_band — only matches when both fit."""
