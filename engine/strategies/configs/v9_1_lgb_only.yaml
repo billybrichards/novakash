@@ -51,7 +51,18 @@ timescale: 5m
 hooks_file: v9_1_lgb_only.py
 pre_gate_hook: evaluate_v9_1_lgb_only
 
-gates: []
+gates:
+  # Audit #374 / #377 — declarative post-hook veto layer (2026-05-06).
+  # The v9_1_lgb_only hook delegates to v9_ensemble for the inline gate
+  # stack; these run AFTER the hook returns TRADE as post-filters.
+  #
+  # C2 (audit #373): SourceAgreementGate removed — v9_ensemble's inline
+  # _skip_on_oracle_disagree() is canonical. See v12_lgb_combo.yaml comment.
+  - type: chainlink_freshness
+    # B2 (audit #374): default is now 60s (heartbeat + ~30s grace). Explicit
+    # override removed — rely on the class default.
+  - type: cell_pause
+    params: { strategy_id: v9_1_lgb_only }
 
 gate_params:
   # Inherit all v9_lgb_only gate_params verbatim. The ONLY difference is
@@ -80,6 +91,11 @@ gate_params:
   down_min_fill_price: 0.15
 
   blocked_utc_hours: []
+  # Audit #380 (2026-05-06) — per-direction UTC-hour blocks.
+  blocked_utc_hours_down: []
+  blocked_utc_hours_up: []
+  # Audit #373 — N-source oracle agreement floor.
+  oracle_agreement_min_sources: 2
   post_loss_cooldown_min: 20
 
   # ── LGB safety floor ────────────────────────────────────────────────

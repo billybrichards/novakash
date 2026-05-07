@@ -155,6 +155,32 @@ class Settings(BaseSettings):
         description="Price source for window delta: chainlink (default/oracle), binance (legacy), tiingo, or consensus (all must agree)",
     )
 
+    # Rolling-WR monitor auto-pause duration (C5 fix, audit #379).
+    # Default 14400s (4h) = enough to bridge a regime shift; ops can release
+    # earlier via RollingWRMonitor.release() or by updating the DB row directly.
+    # Override via CELL_PAUSE_DEFAULT_SECONDS env var without redeploying code.
+    cell_pause_default_seconds: int = Field(
+        default=14400,
+        description=(
+            "Default auto-pause duration in seconds for the rolling-WR monitor "
+            "(audit #379). 14400 = 4 hours. Override via env or runtime config."
+        ),
+    )
+
+    # Minimum rolling-window size before ANY auto-pause trigger can fire.
+    # At n<3 a healthy 87% WR cell normally loses on trade 1 and the Wilson
+    # LB would fire immediately on noise. Default 3 = first pause can only
+    # fire after 3 resolved trades in the 60-min window.
+    # Override via CELL_PAUSE_MIN_ROLLING_N env var. Per-strategy override via
+    # strategy_runtime_overrides.params["cell_pause_min_n"].
+    cell_pause_min_rolling_n: int = Field(
+        default=3,
+        description=(
+            "Minimum 60-min rolling trade count before any cell-pause trigger "
+            "can fire (audit #379). Default 3. Override via env or per-strategy "
+            "runtime params."
+        ),
+    )
 
 
 
