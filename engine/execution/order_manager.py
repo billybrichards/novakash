@@ -22,6 +22,7 @@ from config.constants import (  # noqa: F401 — re-export for backward compat
     OPINION_WINDOW_SECONDS,
     MIN_BTC_MOVE_PCT,
 )
+from services.rolling_wr_monitor import ResolvedTrade as _ResolvedTrade
 
 __all__ = [
     "OrderManager",
@@ -51,6 +52,7 @@ class OrderManager:
         on_resolution: Optional[callable] = None,
         poly_client: object = None,
         canonical_resolver: object = None,
+        rolling_wr_monitor: object = None,
     ) -> None:
         self._db = db
         self._bankroll = bankroll
@@ -61,6 +63,10 @@ class OrderManager:
         # against Polymarket HTML / window_snapshots / on-chain CTF before
         # writing WIN/LOSS. None disables verification (legacy behaviour).
         self._canonical_resolver = canonical_resolver
+        # Audits #379 + #385: RollingWRMonitor fires auto-pause on cells that
+        # cross drawdown triggers. Called after every WIN/LOSS resolution.
+        # None disables the feature (safe default before DI wiring).
+        self._rolling_wr_monitor = rolling_wr_monitor
         self._orders: Dict[str, Order] = {}
         self._order_id_aliases: Dict[str, str] = {}  # retry_id → original_order_id
         self._lock = asyncio.Lock()
@@ -350,7 +356,62 @@ class OrderManager:
                 venue=order.venue,
                 strategy=order.strategy,
             )
-            return order
+
+        # Audits #379 + #385 — fire RollingWRMonitor so the auto-pause
+        # gate can pause underperforming (strategy, direction, t_band,
+        # regime, session) cells after a streak of losses. Called outside
+        # the lock to avoid holding it during the async DB call.
+        if self._rolling_wr_monitor is not None:
+            try:
+                meta = order.metadata or {}
+                direction_str = "UP" if order.direction == "YES" else "DOWN"
+                eval_offset = meta.get("eval_offset")
+                if eval_offset is not None:
+                    try:
+                        eval_offset = int(eval_offset)
+                    except (TypeError, ValueError):
+                        eval_offset = None
+                # B1 FIX: use created_at (entry time) not resolved_at for
+                # session bucketing. A trade fired at 17:55 UTC that settles
+                # at 18:01 UTC belongs to us_pm (14-18), not us_late (18-21).
+                hour_utc = None
+                import datetime as _dt
+                entry_ts = order.created_at
+                if entry_ts:
+                    hour_utc = _dt.datetime.fromtimestamp(
+                        float(entry_ts), _dt.timezone.utc
+                    ).hour
+                regime = meta.get("vpin_regime")
+                fill = order.fill_price
+                if fill is None:
+                    try:
+                        fill = float(order.price)
+                    except (TypeError, ValueError):
+                        fill = None
+                # F4: wire polymarket_tx_hash into ResolvedTrade for Telegram
+                # alerts. Sourced from order.metadata (populated by the trade
+                # recorder when the CLOB fill is confirmed on-chain).
+                tx_hash = meta.get("polymarket_tx_hash")
+                rt = _ResolvedTrade(
+                    strategy_id=order.strategy,
+                    direction=direction_str,
+                    eval_offset=eval_offset,
+                    hour_utc=hour_utc,
+                    regime=regime,
+                    fill_price=fill,
+                    pnl_usd=float(order.pnl_usd or 0.0),
+                    is_win=(order.outcome == "WIN"),
+                    resolved_at=order.resolved_at or time.time(),
+                    tx_hash=tx_hash,
+                )
+                await self._rolling_wr_monitor.on_trade_resolved(rt)
+            except Exception as exc:
+                self._log.warning(
+                    "order_manager.rolling_wr_callback_error",
+                    error=str(exc),
+                )
+
+        return order
 
     # ------------------------------------------------------------------
     # DB Persistence
@@ -579,6 +640,8 @@ class OrderManager:
                     self._on_resolution(resolved)
                 except Exception as exc:
                     self._log.error("order_manager.resolution_callback_error", error=str(exc))
+            # NOTE: RollingWRMonitor is called inside resolve_order() itself,
+            # so it fires for both poll_resolutions and direct resolve_order calls.
 
     async def _resolve_from_polymarket(self, order: Order) -> tuple[str, float] | None:
         """Resolve a Polymarket order via the canonical priority chain.

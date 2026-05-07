@@ -176,6 +176,11 @@ class ResolvedTrade:
     # inside this dict overrides the default pause duration for this trade's
     # cell (mirrors strategy_runtime_overrides.params JSON field pattern).
     params: Optional[dict[str, Any]] = field(default=None)
+    # F4: on-chain transaction hash from the Polymarket CLOB fill. Sourced from
+    # `trades.polymarket_tx_hash` column via order_manager. Optional so callers
+    # that don't have it yet remain compatible. When present, Telegram alerts
+    # link to https://polygonscan.com/tx/<tx_hash> for operator verification.
+    tx_hash: Optional[str] = None
 
     @property
     def cell(self) -> CellKey:
@@ -403,7 +408,13 @@ class RollingWRMonitor:
         )
 
         if pause_id is not None:
-            await self._alert(cell, reason, trigger_metric, effective_pause_seconds)
+            await self._alert(
+                cell,
+                reason,
+                trigger_metric,
+                effective_pause_seconds,
+                tx_hash=trade.tx_hash,
+            )
             log.warning(
                 "rolling_wr_monitor.cell_paused",
                 extra={
@@ -429,6 +440,8 @@ class RollingWRMonitor:
         reason: str,
         trigger_metric: dict[str, Any],
         pause_seconds: Optional[int] = None,
+        *,
+        tx_hash: Optional[str] = None,
     ) -> None:
         if self._alerter is None:
             return
@@ -436,6 +449,9 @@ class RollingWRMonitor:
         until = datetime.now(timezone.utc) + timedelta(
             seconds=effective
         )
+        explorer_line = ""
+        if tx_hash:
+            explorer_line = f"\ntx: https://polygonscan.com/tx/{tx_hash}"
         msg = (
             "[CELL PAUSED]\n"
             f"strategy: {cell.strategy_id}\n"
@@ -443,6 +459,7 @@ class RollingWRMonitor:
             f"{cell.regime or '*'} / {cell.session or '*'}\n"
             f"reason: {reason}\n"
             f"resumes: {until.isoformat()}"
+            f"{explorer_line}"
         )
         try:
             send = getattr(self._alerter, "_send", None) or getattr(
