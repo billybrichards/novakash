@@ -988,18 +988,17 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     # a conviction question. Default [] = gate is a no-op.
     # See Hub note in PR description and reference_config_layering.md for how
     # to set per-strategy overrides without restarting the engine.
+    # pl_dist = abs(pl - 0.5): LGB distance used as canonical confidence score
+    # (bleed-cell analysis used this metric) and reused by gate 10 below.
+    pl_dist = abs(pl - 0.5)
     _block_cells_predicates = _gp.get_list("block_cells", default=[])
     if _block_cells_predicates:
-        # pl_dist (confidence_score) is not yet computed — compute inline.
-        # We use abs(pl - 0.5) (LGB distance) as the canonical confidence
-        # score because the bleed-cell analysis used that metric.
-        _conf_score = abs(pl - 0.5)
         _vpin_regime_for_block = getattr(surface, "regime", None)
         _block_reason = _check_block_cells(
             predicates=_block_cells_predicates,
             direction=direction,
             eval_offset=offset,
-            confidence_score=_conf_score,
+            confidence_score=pl_dist,
             regime=_vpin_regime_for_block,
             window_ts=getattr(surface, "window_ts", None),
         )
@@ -1012,12 +1011,12 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 "block_cells",
                 True,
                 f"no predicate matched {direction}/"
-                f"t_band={_t_band_label(offset)}/conf={abs(pl - 0.5):.4f}",
+                f"t_band={_t_band_label(offset)}/conf={pl_dist:.4f}",
             )
         )
 
     # ── 10. Hard LGB safety floor (R6) ────────────────────────────────────
-    pl_dist = abs(pl - 0.5)
+    # pl_dist already computed above (gate 9c).
 
     # Check if classifier HC agrees — allows relaxed LGB floor
     pc_hc_agrees = False
