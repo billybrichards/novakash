@@ -82,6 +82,81 @@ def test_runtime_no_legacy_ip_fallback() -> None:
     )
 
 
+def test_engine_tree_no_legacy_ip_in_executable_code() -> None:
+    """Audit #397 review fix #3: scan the entire engine tree for legacy IP
+    and fail if any non-comment / non-docstring matches found.
+
+    Scope: every .py and .yaml file under engine/ (excluding the tests
+    directory which deliberately mentions the IP for guarding purposes).
+
+    Acceptable matches:
+      - Lines whose first non-whitespace char is '#' (comment)
+      - Lines inside triple-quoted strings (docstrings)
+      - Lines inside a YAML comment ('#')
+    Anything else fails the test.
+    """
+    import re
+
+    py_or_yaml = []
+    for ext in ("*.py", "*.yaml", "*.yml"):
+        py_or_yaml.extend(ENGINE_ROOT.rglob(ext))
+
+    failures: list[str] = []
+    for path in py_or_yaml:
+        # Skip our own test directory — it intentionally references the IP
+        # in test assertions / docstrings.
+        if "tests" in path.parts:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if LEGACY_IP not in text:
+            continue
+
+        # Heuristic: walk line by line, track whether we're inside a Python
+        # triple-quoted string. Any IP occurrence on a code line is a fail.
+        in_triple = False
+        triple_quote = ""
+        for lineno, raw in enumerate(text.splitlines(), start=1):
+            line = raw.strip()
+            # Triple-quote tracker (handles """ and ''' on same line)
+            if not in_triple:
+                for q in ('"""', "'''"):
+                    if q in line:
+                        # Count occurrences — even count means closes on same line
+                        if line.count(q) % 2 == 1:
+                            in_triple = True
+                            triple_quote = q
+                            break
+            else:
+                if triple_quote in line:
+                    in_triple = False
+                    triple_quote = ""
+                    continue  # the closing line itself is still in-string
+
+            if LEGACY_IP not in raw:
+                continue
+            # Inside triple-quoted string -> docstring -> ok
+            if in_triple:
+                continue
+            # Comment line -> ok
+            if line.startswith("#"):
+                continue
+            # YAML inline comment -> ok if IP appears AFTER a '#'
+            comment_pos = raw.find("#")
+            ip_pos = raw.find(LEGACY_IP)
+            if comment_pos >= 0 and ip_pos > comment_pos:
+                continue
+            failures.append(f"{path.relative_to(ENGINE_ROOT)}:{lineno}: {raw.rstrip()}")
+
+    assert not failures, (
+        "Legacy IP {ip} found in engine code (executable, not comments/docstrings):\n  "
+        + "\n  ".join(failures)
+        + "\n\nReplace with 3.96.151.28 or remove the hardcoded fallback (audit #397)."
+    ).format(ip=LEGACY_IP)
+
+
 def test_tick_recorder_docstring_not_railway() -> None:
     """tick_recorder.py docstring must no longer say 'Railway PostgreSQL'."""
     src = _read(TICK_RECORDER_PATH)
