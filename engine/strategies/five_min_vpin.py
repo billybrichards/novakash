@@ -210,6 +210,15 @@ def _ensemble_surface_fields(surface) -> dict:
         # so SQL-based v9-vs-v12 comparison (v_signal_comparison view)
         # works without a separate writer call.
         "probability_lgb_v12": getattr(surface, "probability_lgb_v12", None),
+        # 2026-05-07: v9.2 LGB Optuna-tuned canary — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v9_2. PR #499 added
+        # the column + a sidecar UPDATE writer that silently no-op'd
+        # because signal_evaluations rows weren't yet present at trace-fire
+        # time. This entry routes the value through the window_snapshots
+        # upsert (same path that works for v12) so SQL analysis has
+        # first-class access. signal_evaluations is fixed separately by
+        # converting the sidecar writer to an upsert.
+        "probability_lgb_v9_2": getattr(surface, "probability_lgb_v9_2", None),
     }
 
 

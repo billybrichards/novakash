@@ -1180,6 +1180,23 @@ class StrategyRegistry:
                         error=str(exc)[:200],
                     )
 
+        # v9.2-super: stamp ``v9_2_gate_fired = TRUE`` on the
+        # signal_evaluations row whenever the v9_2_super_lgb_only strategy
+        # actually returned TRADE for this surface. The trace-time write
+        # (in ``_write_window_trace``) leaves this column NULL; the
+        # writer's upsert uses OR-merge on this field, so a TRUE stamped
+        # later wins over the earlier NULL/FALSE. Mirrors the cohort
+        # metadata that the v9_2 strategy hook records in its decision
+        # metadata blob (probability_lgb_v9_2 / v9_2_conviction /
+        # v9_2_pred_direction / v9_2_cohort).
+        try:
+            self._stamp_v9_2_gate_fired(surface, decisions)
+        except Exception as exc:
+            log.debug(
+                "registry.stamp_v9_2_gate_fired_error",
+                error=str(exc)[:200],
+            )
+
         return decisions
 
     # ── Skip-reason → attempt-card outcome classifier ─────────────────
@@ -1435,24 +1452,117 @@ class StrategyRegistry:
         # This fires even on SKIP ticks (so shadow evaluation is complete).
         # Uses the same fire-and-forget pattern as v12 above.
         # hub note #366: avoid broken sidecar writers — method is tested.
+        #
+        # Cohort metadata (conviction / pred_direction / cohort key) is
+        # derived directly from the surface here so it can be stamped
+        # at trace time (before per-strategy evaluation runs). The
+        # strategy computes the same values from the same surface fields,
+        # so the values are guaranteed to match. ``v9_2_gate_fired`` is
+        # filled in later by ``stamp_v9_2_gate_fired`` when the strategy
+        # actually fires (TRADE) — see ``evaluate_all``. The upsert uses
+        # OR-merge for that field so the TRADE stamp wins.
         v9_2 = getattr(surface, "probability_lgb_v9_2", None)
         if v9_2 is not None and self._db is not None and hasattr(
             self._db, "update_signal_evaluations_lgb_v9_2"
         ):
-            v9_2_task = asyncio.create_task(
-                self._db.update_signal_evaluations_lgb_v9_2(
-                    window_ts=surface.window_ts,
-                    asset=surface.asset,
-                    timeframe=surface.timescale,
-                    eval_offset=surface.eval_offset,
-                    probability_lgb_v9_2=float(v9_2),
+            try:
+                _v9_2_p = float(v9_2)
+                _v9_2_conviction = max(_v9_2_p, 1.0 - _v9_2_p)
+                _v9_2_pred_direction = "UP" if _v9_2_p >= 0.5 else "DOWN"
+                _v9_2_regime = getattr(surface, "regime", None) or "UNKNOWN"
+                _v9_2_cohort = f"{_v9_2_regime}_{_v9_2_pred_direction}"
+            except (TypeError, ValueError):
+                _v9_2_p = None
+            if _v9_2_p is not None:
+                v9_2_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_2(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_2=_v9_2_p,
+                        v9_2_conviction=_v9_2_conviction,
+                        v9_2_pred_direction=_v9_2_pred_direction,
+                        v9_2_cohort=_v9_2_cohort,
+                        # gate_fired left None at trace time; stamped TRUE
+                        # later by stamp_v9_2_gate_fired when the strategy
+                        # actually returns TRADE for v9_2_super_lgb_only.
+                        v9_2_gate_fired=None,
+                    )
                 )
-            )
-            v9_2_task.add_done_callback(
-                self._log_async_write_error(
-                    "registry.signal_eval_lgb_v9_2_write_error"
+                v9_2_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_2_write_error"
+                    )
                 )
+
+    def _stamp_v9_2_gate_fired(
+        self,
+        surface: FullDataSurface,
+        decisions: list,
+    ) -> None:
+        """Stamp ``v9_2_gate_fired = TRUE`` when v9_2_super fired TRADE.
+
+        Called from the tail of ``evaluate_all`` after every strategy has
+        produced a decision for this surface. Looks for a TRADE decision
+        from the ``v9_2_super_lgb_only`` strategy and, if present, fires
+        a fire-and-forget upsert that ORs the gate_fired flag onto the
+        signal_evaluations row. The trace-time write (in
+        ``_write_window_trace``) seeded the row with the prob + cohort
+        metadata; this is purely a mark of "gate fired" so analytics can
+        join to actual fires without re-running the gate logic.
+
+        No-op when the strategy SKIPped, the row probability is None, or
+        the db handle is missing the writer method.
+        """
+        import asyncio
+
+        if self._db is None or not hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_2"
+        ):
+            return
+        v9_2 = getattr(surface, "probability_lgb_v9_2", None)
+        if v9_2 is None:
+            return
+        # Find the v9_2 TRADE decision (only one strategy emits this id).
+        v9_2_trade = None
+        for d in decisions:
+            if (
+                getattr(d, "strategy_id", None) == "v9_2_super_lgb_only"
+                and getattr(d, "action", None) == "TRADE"
+            ):
+                v9_2_trade = d
+                break
+        if v9_2_trade is None:
+            return
+
+        try:
+            _v9_2_p = float(v9_2)
+        except (TypeError, ValueError):
+            return
+        _v9_2_conviction = max(_v9_2_p, 1.0 - _v9_2_p)
+        _v9_2_pred_direction = "UP" if _v9_2_p >= 0.5 else "DOWN"
+        _v9_2_regime = getattr(surface, "regime", None) or "UNKNOWN"
+        _v9_2_cohort = f"{_v9_2_regime}_{_v9_2_pred_direction}"
+
+        task = asyncio.create_task(
+            self._db.update_signal_evaluations_lgb_v9_2(
+                window_ts=surface.window_ts,
+                asset=surface.asset,
+                timeframe=surface.timescale,
+                eval_offset=surface.eval_offset,
+                probability_lgb_v9_2=_v9_2_p,
+                v9_2_conviction=_v9_2_conviction,
+                v9_2_pred_direction=_v9_2_pred_direction,
+                v9_2_cohort=_v9_2_cohort,
+                v9_2_gate_fired=True,
             )
+        )
+        task.add_done_callback(
+            self._log_async_write_error(
+                "registry.stamp_v9_2_gate_fired_write_error"
+            )
+        )
 
     def _write_gate_traces(
         self,
