@@ -115,11 +115,14 @@ def test_gate_t_band_buckets_correctly():
 
 
 def test_gate_session_buckets_correctly():
+    # Session labels use the 7-bucket system from Hub note #350.
+    # Updated from the old 4-bucket system (eu_pm_us_am / us_pm_asian_am
+    # no longer exist — see cell_bucketing.py mismatch note).
     cases = [
-        (3, "asian_late"),
+        (3, "asian_early"),  # was: "asian_late" in old 4-bucket system
         (8, "eu_am"),
-        (14, "eu_pm_us_am"),
-        (22, "us_pm_asian_am"),
+        (14, "us_pm"),       # was: "eu_pm_us_am"
+        (22, "off_hours"),   # was: "us_pm_asian_am"
     ]
     for hour, expected_session in cases:
         active = {
