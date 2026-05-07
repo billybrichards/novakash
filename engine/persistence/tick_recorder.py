@@ -1,18 +1,20 @@
 """
 TickRecorder — Comprehensive tick-level data recorder.
 
-Records ALL real-time data to Railway PostgreSQL for later analysis:
+Records ALL real-time data to RDS PostgreSQL for later analysis:
   - Binance aggTrades (buffered 1s, batch INSERT)
   - CoinGlass snapshots (every 10s)
   - Gamma/Polymarket prices (every window evaluation)
   - TimesFM forecasts (every forecast)
+  - v2/LightGBM scoring snapshots (every score_with_features call)
   - VPIN is included in the Binance ticks table
 
 Architecture:
   - Passive observation ONLY — never blocks the trading loop
   - All writes are fire-and-forget (errors logged and swallowed)
-  - Uses the existing asyncpg.Pool from DBClient
+  - Uses the existing asyncpg.Pool from DBClient (canonical DATABASE_URL)
   - Binance ticks are buffered in memory and flushed every 1 second
+  - ticks_v2_probability writer uses the SAME pool — no Railway fallback
 
 Usage:
     recorder = TickRecorder(pool=db_client._pool)
@@ -20,6 +22,8 @@ Usage:
     await recorder.start()
     # ... in trade callback:
     recorder.record_binance_tick(trade, vpin=0.42)
+    # ... after scoring:
+    await recorder.record_v2_probability(result, asset="BTC", seconds_to_close=60, features_dict={...})
     # ... on stop:
     await recorder.stop()
 """
@@ -176,6 +180,30 @@ class TickRecorder:
                         await conn.execute(f"ALTER TABLE ticks_timesfm ADD COLUMN IF NOT EXISTS {col} {col_type}")
                     except Exception:
                         pass
+
+                # ── ticks_v2_probability ──────────────────────────────────
+                # Audit #396: writer previously pointed to Railway only.
+                # Fixed to write via the canonical asyncpg pool (RDS).
+                # Backfill plan: pg_dump Railway hopper.proxy.rlwy.net:35772
+                # → restore into RDS ticks_v2_probability. 5.6M rows exist
+                # on Railway from 2026-04-05 to 2026-05-07. Do NOT attempt
+                # backfill in this PR — file a separate ops task.
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS ticks_v2_probability (
+                        id               BIGSERIAL PRIMARY KEY,
+                        ts               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        asset            VARCHAR(10)  NOT NULL,
+                        seconds_to_close INTEGER,
+                        model_version    TEXT,
+                        probability_up   DOUBLE PRECISION,
+                        probability_raw  DOUBLE PRECISION,
+                        features         JSONB
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_ticks_v2_prob_asset_ts
+                        ON ticks_v2_probability (asset, ts DESC);
+                    CREATE INDEX IF NOT EXISTS idx_ticks_v2_prob_ts
+                        ON ticks_v2_probability (ts DESC);
+                """)
 
             log.info("tick_recorder.tables_ensured")
         except Exception as exc:
@@ -404,6 +432,77 @@ class TickRecorder:
             log.debug(
                 "tick_recorder.record_timesfm.error",
                 error=str(exc),
+            )
+
+    async def record_v2_probability(
+        self,
+        result: dict,
+        asset: str = "BTC",
+        seconds_to_close: Optional[int] = None,
+        features_dict: Optional[dict] = None,
+    ) -> None:
+        """
+        Write a v2/LightGBM scoring snapshot to ticks_v2_probability.
+
+        Audit #396: this writer previously existed ONLY in the separate
+        novakash-timesfm-repo service which writes to Railway. After the
+        prod migration to RDS (~2026-04-30 22:36 UTC), the Railway-only
+        writer produced 0 rows on RDS. This method writes via the canonical
+        asyncpg pool (DATABASE_URL → RDS) — no separate connection string,
+        no Railway fallback.
+
+        Fire-and-forget — never blocks or raises.
+
+        Args:
+            result:           dict from TimesFMV2Client.score_with_features()
+                              Must include 'probability_up'. 'probability_raw'
+                              and 'model_version' are recorded if present.
+            asset:            e.g. "BTC"
+            seconds_to_close: eval_offset (seconds to window close)
+            features_dict:    Optional serialised feature body for replay /
+                              training. Pass a plain dict (will be JSON-encoded).
+        """
+        if not self._pool or not result:
+            return
+        prob_up = result.get("probability_up")
+        if prob_up is None:
+            return
+        import json as _json
+        try:
+            ts = datetime.now(timezone.utc)
+            features_json: Optional[str] = None
+            if features_dict is not None:
+                try:
+                    features_json = _json.dumps(features_dict)
+                except (TypeError, ValueError):
+                    features_json = None
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO ticks_v2_probability
+                        (ts, asset, seconds_to_close, model_version,
+                         probability_up, probability_raw, features)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                    """,
+                    ts,
+                    asset,
+                    seconds_to_close,
+                    result.get("model_version"),
+                    float(prob_up),
+                    float(result["probability_raw"]) if result.get("probability_raw") is not None else None,
+                    features_json,
+                )
+            log.debug(
+                "tick_recorder.v2_probability_written",
+                asset=asset,
+                stc=seconds_to_close,
+                p_up=round(float(prob_up), 4),
+            )
+        except Exception as exc:
+            log.debug(
+                "tick_recorder.record_v2_probability.error",
+                asset=asset,
+                error=str(exc)[:120],
             )
 
     # ─── Internal Flush Loop ──────────────────────────────────────────────────

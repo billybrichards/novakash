@@ -1727,6 +1727,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                         window_snapshot["v2_quantiles_at_close"] = json.dumps(
                             _timesfm["quantiles_at_close"]
                         )
+                    # Audit #396: write scoring snapshot to ticks_v2_probability
+                    # (RDS, via canonical asyncpg pool). Pre-eval call site.
+                    if self._tick_recorder is not None:
+                        try:
+                            await self._tick_recorder.record_v2_probability(
+                                result=_v2_pre,
+                                asset=window.asset,
+                                seconds_to_close=_eval_offset,
+                                features_dict=_pre_features.to_json_dict()
+                                if hasattr(_pre_features, "to_json_dict")
+                                else None,
+                            )
+                        except Exception:
+                            pass  # fire-and-forget; errors logged inside record_v2_probability
             except Exception as e:
                 self._log.warning("v2.probability.fetch_failed", error_str=str(e)[:100])
 
@@ -2207,6 +2221,21 @@ class FiveMinVPINStrategy(BaseStrategy):
                             error=str(_snap_exc)[:80],
                             offset=eval_offset,
                         )
+
+                # Audit #396: write scoring snapshot to ticks_v2_probability
+                # (RDS, via canonical asyncpg pool). Decision-path call site.
+                if self._tick_recorder is not None:
+                    try:
+                        await self._tick_recorder.record_v2_probability(
+                            result=_v2_result,
+                            asset=window.asset,
+                            seconds_to_close=eval_offset,
+                            features_dict=_decision_features.to_json_dict()
+                            if hasattr(_decision_features, "to_json_dict")
+                            else None,
+                        )
+                    except Exception:
+                        pass  # fire-and-forget; errors logged inside record_v2_probability
 
                 self._log.info(
                     "v81.early_gate",

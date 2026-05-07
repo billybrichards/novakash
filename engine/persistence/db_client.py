@@ -38,6 +38,15 @@ class DBClient:
     Manages a connection pool; call `connect()` before use and `close()` on shutdown.
     """
 
+    # Hostname substring that MUST appear in DATABASE_URL for RDS prod.
+    # Prevents a future misconfiguration from silently pointing all sidecar
+    # writers (including ticks_v2_probability) back at Railway or another DB.
+    # Audit #396: ticks_v2_probability was Railway-only because the Montreal
+    # scorer service's writer was never migrated to RDS. This constant lets
+    # the startup warning catch the same class of regression early.
+    # Enforcement is WARNING-only so dev boxes with local DBs don't hard-crash.
+    _PROD_RDS_HOST_FRAGMENT: str = "novakash-pg-prod"
+
     def __init__(self, settings: Settings) -> None:
         # Use lowercase field from settings (pydantic model)
         # Strip SQLAlchemy dialect prefix if present (asyncpg needs plain postgresql://)
@@ -46,6 +55,18 @@ class DBClient:
             dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
         self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = None
+        # Defensive: warn loudly if DATABASE_URL is not pointing at prod RDS.
+        # Catches regressions like audit #396 (Railway-only ticks writer) at startup.
+        if self._PROD_RDS_HOST_FRAGMENT not in dsn:
+            log.warning(
+                "db_client.non_rds_dsn",
+                hint=(
+                    f"DATABASE_URL does not contain '{self._PROD_RDS_HOST_FRAGMENT}'. "
+                    "All sidecar writers (ticks_v2_probability etc.) will target the "
+                    "configured DB. In production, DATABASE_URL must point at RDS "
+                    "(audit #396)."
+                ),
+            )
         # LT-04: dedicated pinned connection for LISTEN. asyncpg requires a
         # connection that is NOT shared with the pool because LISTEN holds
         # the connection open and callbacks fire on its read loop.
