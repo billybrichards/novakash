@@ -18,16 +18,73 @@ GROUP BY 1,2,3,4,5;
 
 …can starve the engine of connections, hold locks, slow trade fills, or page out the RDS buffer cache so subsequent live queries hit disk. This is what hammered RDS yesterday (3 rogue queries, 19+ min stuck).
 
-## Table sizes (verified 2026-05-07)
+## Canonical RDS schema (verified 2026-05-07)
 
-| Table | Total size | Notes |
-|---|---|---|
-| `strategy_decisions` | 17 GB | Biggest. Indexed on `(strategy_id, evaluated_at)`. Single-strat queries OK. |
-| `window_snapshots` | 5.4 GB | Outcome data (`actual_direction` ⚠️ stale post-Apr-27 per memory). |
-| `window_evaluation_traces` | 2.1 GB | JSONB-heavy, slow to scan. Avoid for mining. |
-| `signal_evaluations` | **1 GB** | Per-tick predictions. Smallest — best mining target. 14d slice ~500 MB. |
-| `strategy_comparison` | 35 MB | Pre-aggregated. Use directly when possible. |
-| `trades` | 11 MB | Trivial size. Always safe. |
+**Connection:** `novakash-pg-prod.cpmisy2asv71.ca-central-1.rds.amazonaws.com:5432/novakash`
+
+### Primary tables — analytics + outcomes
+
+| Table | Size | Role | priceToBeat-aware? |
+|---|---|---|---|
+| `strategy_decisions` | **17 GB** | Engine decision log (skip_reason, action, confidence). Biggest table. Indexed on `(strategy_id, evaluated_at)`. | n/a |
+| `window_snapshots` | 5.4 GB | Engine **gate evaluations** — **NOT canonical** for v9.1 features (per audit #391). `actual_direction` stale post-Apr-27. | partial |
+| `window_evaluation_traces` | 2.1 GB | JSONB-heavy traces. Slow to scan. AVOID for mining. | partial |
+| **`signal_evaluations`** | **1 GB** | **Canonical training corpus** — action history + 30+ inline features + `delta_*`. **Best mining target.** 14d slice ~500 MB. | **YES (post-PR #464)** |
+| **`market_data`** | 67 MB | **Canonical priceToBeat source** — `open_price`, `close_price`, `outcome`, `resolved`. Use this for outcomes, not window_snapshots.actual_direction. | **YES** |
+| `strategy_comparison` | 35 MB | Pre-aggregated cell stats. Use first if WR/PnL columns aren't NULL (audit #340). | n/a |
+| `trades` | 11 MB | Real orders + `pnl_usd` (inflated — use `wallet_truth.py` canonical). | n/a |
+| `strategy_runtime_overrides` | 96 KB | Live config (kelly, floors, offsets, mode). | n/a |
+| `audit_tasks_dev` | 520 KB | Audit task store. POST endpoint broken — direct INSERT only. | n/a |
+
+### Sidecar tick tables (joined via `training/queries.py` LATERAL joins)
+
+| Table | Size | Feature family | Key columns |
+|---|---|---|---|
+| `ticks_binance` | **888 MB** | binance_price, vpin | `quantity`, `is_buyer_maker` |
+| `ticks_v3_composite` | 500 MB | `v3_*` | `composite_score`, `elm_signal`, `cascade_signal`, `taker_signal`, `oi_signal`, `funding_signal`, `vpin_signal`, `momentum_signal`, `cascade_strength`, `cascade_tau1`, `cascade_exhaustion` |
+| `ticks_gamma` | 373 MB | `gamma_*` | `up_price`, `down_price`, `slug`, `up_token_id`, `down_token_id` |
+| `ticks_tiingo` | 219 MB | `tiingo_close` | bid/ask/last prices |
+| `ticks_clob` | 114 MB | `clob_*` | orderbook bid/ask, `spread`, `mid_price` |
+| `ticks_chainlink` | 103 MB | `chainlink_price` | `round_id`, `updated_at` |
+| `ticks_coinglass` | 70 MB | `cg_*` | `oi_usd`, `oi_delta_pct`, `liq_long_usd`, `liq_short_usd`, `long_pct`, `short_pct`, `taker_buy_usd`, `taker_sell_usd`, `funding_rate`, `long_short_ratio`, `top_position_ratio` |
+| `ticks_elm_predictions` | 25 MB | (legacy ELM, mostly unused) | `probability_up` |
+| `ticks_v2_probability` | **40 KB** ⚠️ | `lgb_v12` | `model_version`, `probability_up`, `probability_raw`, `features` (jsonb) — **suspiciously tiny, may be sparse/recent** |
+| `ticks_timesfm` | **32 KB** ⚠️ | derived `tfm_*` | `tfm_tail_risk`, `tfm_skew`, `tfm_spread_norm`, `tfm_quantile_ratio` (per `queries.py:143-146`) — **suspiciously tiny** |
+
+**Sidebar total:** ~2.3 GB raw across 10 sidecar tables. Compressed 14d dump = ~400-700 MB.
+
+⚠️ `ticks_v2_probability` (40 KB) and `ticks_timesfm` (32 KB) sizes are alarming — either (a) they're freshly-created and only have recent data, or (b) writer regression. **File audit-task to investigate.** v9.1 retrains may be silently feature-starved if these are broken.
+
+### Canonical join pattern (per `training/queries.py`)
+
+```sql
+-- Per-tick training row = signal_evaluations LEFT LATERAL each sidecar
+-- joined on (window_ts, evaluated_at proximity)
+SELECT se.*,
+       v3.composite_score, v3.elm_signal, v3.cascade_strength, ...,
+       cg.oi_usd, cg.liq_long_usd, cg.taker_buy_usd, ...,
+       gamma.up_price, gamma.down_price,
+       tfm.tfm_tail_risk, tfm.tfm_skew, ...,
+       v12.probability_up AS lgb_v12,
+       cl.chainlink_price, ti.tiingo_close, b.binance_price, b.vpin,
+       clob.clob_mid_price, clob.clob_spread,
+       md.open_price AS pricetobeat,    -- canonical priceToBeat
+       md.close_price, md.outcome
+FROM signal_evaluations se
+LEFT JOIN LATERAL (SELECT * FROM ticks_v3_composite     WHERE ... ORDER BY ts DESC LIMIT 1) v3   ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_coinglass        WHERE ... ORDER BY ts DESC LIMIT 1) cg   ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_gamma            WHERE ... ORDER BY ts DESC LIMIT 1) gamma ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_timesfm          WHERE ... ORDER BY ts DESC LIMIT 1) tfm  ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_v2_probability   WHERE ... ORDER BY ts DESC LIMIT 1) v12  ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_chainlink        WHERE ... ORDER BY ts DESC LIMIT 1) cl   ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_tiingo           WHERE ... ORDER BY ts DESC LIMIT 1) ti   ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_binance          WHERE ... ORDER BY ts DESC LIMIT 1) b    ON true
+LEFT JOIN LATERAL (SELECT * FROM ticks_clob             WHERE ... ORDER BY ts DESC LIMIT 1) clob ON true
+JOIN market_data md ON md.window_ts = se.window_ts        -- canonical priceToBeat + outcome
+WHERE se.evaluated_at > NOW() - INTERVAL '14 days';
+```
+
+**This pattern is EXPENSIVE on prod RDS** — 11 LATERAL subqueries × ~5M rows. **NEVER run against prod.** Always pg_dump → DuckDB.
 
 ## Four-tier strategy (use highest tier that satisfies the use case)
 
@@ -72,38 +129,65 @@ GROUP BY 1, 2, 3, 4;
 
 Run from Montreal `psql` (VPC-local, fastest). NEVER from off-VPC. 5s sleep between chunks. Budget: ~2-3 min per day chunk × 14 days = ~30 min wall, ~10s of cumulative RDS CPU per day.
 
-### Tier 3 — Partial pg_dump → local DuckDB
+### Tier 3 — Partial pg_dump → local DuckDB (FULL canonical corpus)
 
-For multi-day GROUP BY scans without timeouts, dump to local Mac and query in DuckDB (zero infra).
+For multi-day mining + retrain corpus assembly. Dumps **all canonical analytics tables** (primary + sidecar) for 14d slice. Compressed ~400-700 MB. Restore + DuckDB-grind on Mac.
 
 ```bash
-# On Montreal (VPC-local), single dump of 14d × narrow column set:
-PGPASSWORD=$DBP pg_dump \
+# === Run on Montreal (VPC-local) ===
+TS=$(date +%Y%m%d_%H%M)
+DUMP_FILE=/tmp/canonical_14d_${TS}.dump
+
+PGPASSWORD="$DBP" pg_dump \
   -h novakash-pg-prod.cpmisy2asv71.ca-central-1.rds.amazonaws.com \
   -U postgres -d novakash \
-  --data-only --format=c \
+  --data-only --format=c --jobs=2 \
   -t signal_evaluations \
-  -t window_snapshots \
+  -t market_data \
   -t trades \
-  --where="evaluated_at > NOW() - INTERVAL '14 days'" \
-  > /tmp/mine_14d_$(date +%Y%m%d).dump
+  -t strategy_decisions \
+  -t strategy_runtime_overrides \
+  -t ticks_v3_composite \
+  -t ticks_coinglass \
+  -t ticks_gamma \
+  -t ticks_timesfm \
+  -t ticks_v2_probability \
+  -t ticks_chainlink \
+  -t ticks_tiingo \
+  -t ticks_binance \
+  -t ticks_clob \
+  --where="evaluated_at > NOW() - INTERVAL '14 days'"  \
+  > "$DUMP_FILE"
 
-# scp back. ~150-300 MB compressed.
-scp novakash@15.222.138.228:/tmp/mine_14d_*.dump ~/Downloads/
+# Note: --where applies per-table by column — only signal_evaluations has evaluated_at.
+# For tick tables, use a wrapper script that does per-table date filtering via TS column.
+# Alternative: pg_dump separately per table with table-specific --where.
 
-# DuckDB query (no Postgres server needed locally):
+# scp to Mac
+scp novakash@15.222.138.228:/tmp/canonical_14d_*.dump ~/Downloads/
+
+# Restore to local Postgres@15 (Postgres@15 client is forward-compat with PG16 server dumps)
+createdb novakash_mining
+pg_restore -d novakash_mining -j 4 ~/Downloads/canonical_14d_*.dump
+
+# Or skip Postgres entirely — DuckDB reads PG dumps via the postgres extension:
 duckdb /tmp/mine.duckdb <<'SQL'
 INSTALL postgres; LOAD postgres;
--- Convert pg dump → parquet for fast OLAP
-ATTACH 'host=localhost dbname=novakash_local' AS pg (TYPE postgres);
+ATTACH 'host=localhost dbname=novakash_mining user=postgres' AS pg (TYPE postgres, READ_ONLY);
+-- Materialize hot tables to parquet for 10x faster mining queries
 COPY (SELECT * FROM pg.signal_evaluations) TO '/tmp/se.parquet' (FORMAT parquet);
--- ... GROUP BY runs in seconds vs minutes on prod
+COPY (SELECT * FROM pg.market_data)        TO '/tmp/md.parquet' (FORMAT parquet);
+COPY (SELECT * FROM pg.trades)             TO '/tmp/tr.parquet' (FORMAT parquet);
+-- Now mine away on parquet (DuckDB columnar, blazing fast)
+.read /tmp/shadow_mine_query.sql
 SQL
 ```
 
-✅ Bypasses the Hub-box CPU/disk bottleneck (Billy: hub not powerful enough)
-✅ pg_dump runs single-pass, low connection footprint (1 conn for dump duration ~2-5 min)
-⚠️ Run dump during low-trade hours (02:00-06:00 UTC, fewer market events) for lowest live-engine impact
+✅ Bypasses Hub-box constraint entirely (Billy: hub box not powerful enough)
+✅ Single dump = single 5-15 min RDS connection (low live-engine impact)
+✅ All canonical tables in one dump → ad-hoc cell-mining + retrain corpus from same artefact
+⚠️ Dump must run 02:00-06:00 UTC (low-trade-volume window)
+⚠️ For per-tick-table date filtering: wrap each `pg_dump -t TABLE --where="ts > ..."` in its own call, concatenate dumps. Sample script: `scripts/ops/canonical_dump.sh` (TBD).
 
 ### Tier 4 — Materialised cell-stats refresh (engineered, recommended next-week)
 
@@ -162,9 +246,14 @@ CREATE UNIQUE INDEX ON cell_stats_daily (bucket_date, direction, regime, t_band,
 ## Recommended sequence for IMMEDIATE shadow mining (this week)
 
 1. **First try Tier 1** — query `strategy_comparison` for everything you can.
-2. **If that's not enough, Tier 3** — partial pg_dump 14d → local DuckDB. Run dump at 04:00 UTC. ~3 hr total wall (dump + scp + DuckDB grind).
-3. Don't use Tier 2 unless you specifically need a single-strategy fast lookup.
-4. Don't use raw multi-day GROUP BY queries on prod RDS.
+2. **If that's not enough, Tier 3** — full canonical pg_dump 14d (signal_evaluations + market_data + 10 sidecar tables) → local DuckDB. Run dump at 04:00 UTC. ~3 hr total wall (dump 5-15 min + scp 5-10 min + restore 10-20 min + DuckDB grind on parquets).
+3. Don't use Tier 2 unless you specifically need a single-strategy fast lookup. It hits prod RDS directly.
+4. Don't use raw multi-day GROUP BY queries on prod RDS — especially the LATERAL join pattern from `training/queries.py`.
+
+## Two follow-up audits to file
+
+1. **`ticks_v2_probability` (40 KB) and `ticks_timesfm` (32 KB) sizes are alarming.** Either freshly-created or writer regression. v9.1 retrains may be silently feature-starved if these are broken. Compare row counts vs `signal_evaluations` (1 GB / millions of rows) to confirm.
+2. **Materialised cell-stats matview (Tier 4)** as a daily 04:00 UTC refresh. Single scan beats N ad-hoc scans. ~5-10 min RDS impact/day.
 
 ## Standing rules (codify in CLAUDE.md if not already)
 
