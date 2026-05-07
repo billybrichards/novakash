@@ -390,21 +390,15 @@ class CompositionRoot:
             log.info("orchestrator.five_min_disabled")
 
         # ── v6.0 TimesFM-Only Strategy ──────────────────────────────────────
-        # Read from os.environ first, then .env file as fallback
-        timesfm_enabled = os.environ.get("TIMESFM_ENABLED", "").lower() == "true"
-        if not timesfm_enabled:
-            # Fallback: read .env file directly if env var not set
-            env_file = Path(__file__).parent.parent / ".env"
-            if env_file.exists():
-                with open(env_file) as f:
-                    for line in f:
-                        if line.startswith("TIMESFM_ENABLED="):
-                            timesfm_enabled = (
-                                line.split("=", 1)[1].strip().lower() == "true"
-                            )
-                            break
+        # Enable logic (audit #397):
+        #   1. Resolve TIMESFM_URL from env (or .env file fallback).
+        #   2. If TIMESFM_URL is set, enable by default — URL presence signals intent.
+        #      TIMESFM_ENABLED=false can still explicitly disable.
+        #   3. If TIMESFM_URL is absent, skip cleanly with an error-level log.
+        # No legacy IP fallback — if the URL is missing the service is unconfigured.
 
-        timesfm_url = os.environ.get("TIMESFM_URL")
+        # Resolve URL (env > .env file; no hardcoded fallback)
+        timesfm_url = os.environ.get("TIMESFM_URL", "").strip()
         if not timesfm_url:
             env_file = Path(__file__).parent.parent / ".env"
             if env_file.exists():
@@ -413,9 +407,28 @@ class CompositionRoot:
                         if line.startswith("TIMESFM_URL="):
                             timesfm_url = line.split("=", 1)[1].strip()
                             break
-        timesfm_url = timesfm_url or "http://16.52.14.182:8080"
 
-        timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE")
+        # Resolve explicit enable/disable override (env > .env file)
+        _timesfm_enabled_raw = os.environ.get("TIMESFM_ENABLED", "").strip()
+        if not _timesfm_enabled_raw:
+            env_file = Path(__file__).parent.parent / ".env"
+            if env_file.exists():
+                with open(env_file) as f:
+                    for line in f:
+                        if line.startswith("TIMESFM_ENABLED="):
+                            _timesfm_enabled_raw = line.split("=", 1)[1].strip()
+                            break
+
+        # Decision: URL present → enabled by default unless explicitly set to false
+        if _timesfm_enabled_raw.lower() == "false":
+            timesfm_enabled = False
+        elif _timesfm_enabled_raw.lower() == "true":
+            timesfm_enabled = True
+        else:
+            # No explicit override — enable iff URL is configured
+            timesfm_enabled = bool(timesfm_url)
+
+        timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE", "").strip()
         if not timesfm_min_conf_str:
             env_file = Path(__file__).parent.parent / ".env"
             if env_file.exists():
@@ -426,22 +439,34 @@ class CompositionRoot:
                             break
         timesfm_min_conf = float(timesfm_min_conf_str or "0.30")
 
+        if timesfm_enabled and not timesfm_url:
+            # TIMESFM_ENABLED=true but no URL — warn and skip cleanly
+            log.error(
+                "orchestrator.timesfm_url_missing_skip",
+                reason="TIMESFM_ENABLED=true but TIMESFM_URL is not set — TimesFM disabled",
+            )
+            timesfm_enabled = False
+
         if timesfm_enabled:
             self._timesfm_client = TimesFMClient(
                 base_url=timesfm_url,
                 timeout_seconds=10.0,
             )
-            # v5.8: Only the CLIENT is created. No standalone strategies.
-            # TimesFM is used ONLY as an agreement signal inside v5.7c.
+            # Only the CLIENT is created here. No standalone strategies.
+            # TimesFM is used as an agreement signal inside the strategy gates
+            # AND as the 1Hz ticks_timesfm writer (audit #397).
             log.info(
-                "orchestrator.timesfm_v58_mode",
+                "orchestrator.timesfm_v6_enabled",
                 url=timesfm_url,
                 min_confidence=timesfm_min_conf,
-                mode="agreement_only",
-                note="TimesFM used as v5.8 agreement signal, not standalone",
+                mode="agreement_signal_and_tick_writer",
             )
         else:
-            log.info("orchestrator.timesfm_v6_disabled")
+            log.info(
+                "orchestrator.timesfm_v6_disabled",
+                url_configured=bool(timesfm_url),
+                explicit_override=_timesfm_enabled_raw or None,
+            )
 
         # v5.8: Inject TimesFM client into five_min_strategy (created before client was initialized)
         if self._timesfm_client and self._five_min_strategy:
@@ -453,7 +478,7 @@ class CompositionRoot:
         if _v2_enabled and self._five_min_strategy:
             from signals.timesfm_v2_client import TimesFMV2Client
 
-            _v2_url = os.environ.get("TIMESFM_V2_URL", "http://16.52.14.182:8080")
+            _v2_url = os.environ.get("TIMESFM_V2_URL") or timesfm_url or "http://3.96.151.28:8080"
             self._five_min_strategy.set_timesfm_v2_client(
                 TimesFMV2Client(base_url=_v2_url)
             )

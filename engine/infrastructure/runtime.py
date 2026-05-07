@@ -666,9 +666,8 @@ class EngineRuntime:
                     seed_timesfm_buffer,
                 )
 
-                _timesfm_url = os.environ.get(
-                    "TIMESFM_URL", "http://16.52.14.182:8080"
-                )
+                # Use canonical URL from env; no legacy IP fallback (audit #397)
+                _timesfm_url = os.environ.get("TIMESFM_URL", "").strip() or "http://3.96.151.28:8080"
                 seeded = await seed_timesfm_buffer(
                     self._db._pool, _timesfm_url
                 )

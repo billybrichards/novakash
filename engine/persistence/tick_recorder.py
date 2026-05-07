@@ -1,18 +1,19 @@
 """
 TickRecorder — Comprehensive tick-level data recorder.
 
-Records ALL real-time data to RDS PostgreSQL for later analysis:
+Records ALL real-time data to the canonical RDS PostgreSQL (DATABASE_URL)
+for later analysis:
   - Binance aggTrades (buffered 1s, batch INSERT)
   - CoinGlass snapshots (every 10s)
   - Gamma/Polymarket prices (every window evaluation)
-  - TimesFM forecasts (every forecast)
+  - TimesFM forecasts (1 Hz, written by orchestrator._timesfm_forecast_recorder_loop)
   - v2/LightGBM scoring snapshots (every score_with_features call)
   - VPIN is included in the Binance ticks table
 
 Architecture:
   - Passive observation ONLY — never blocks the trading loop
   - All writes are fire-and-forget (errors logged and swallowed)
-  - Uses the existing asyncpg.Pool from DBClient (canonical DATABASE_URL)
+  - Uses the existing asyncpg.Pool from DBClient (canonical DATABASE_URL — no Railway fallback)
   - Binance ticks are buffered in memory and flushed every 1 second
   - ticks_v2_probability writer uses the SAME pool — no Railway fallback
 
