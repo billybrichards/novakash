@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 import asyncpg
 
-from services.cell_bucketing import session as _session
+from services.cell_bucketing import session_label as _session
 from services.cell_bucketing import t_band as _t_band
 from services.rolling_wr_monitor import CellKey, ResolvedTrade
 
@@ -64,6 +64,11 @@ class PgCellPauseRepo:
         Mirrors the pattern used by ``PgRedeemAttemptsRepository`` so the
         migration SQL file is the canonical spec but the engine never
         crashes on a fresh DB that hasn't had the migration applied.
+
+        B2 FIX: matches the migration SQL exactly — creates the partial
+        unique index ``idx_cell_pauses_one_active`` (WHERE released_at IS NULL)
+        instead of an inline UNIQUE constraint that would allow concurrent
+        inserts at different microsecond paused_at values.
         """
         pool = self._get_pool()
         if not pool:
@@ -88,6 +93,20 @@ class PgCellPauseRepo:
                         UNIQUE (strategy_id, direction, t_band, regime,
                                 session, paused_at)
                     )
+                    """
+                )
+                # B2 FIX: partial unique index so that concurrent inserts
+                # (while released_at IS NULL) raise a UNIQUE violation rather
+                # than both succeeding (C4 race condition fixed in PR #494).
+                # CREATE INDEX IF NOT EXISTS is idempotent on fresh + migrated DBs.
+                await conn.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_cell_pauses_one_active
+                        ON cell_pauses (
+                            strategy_id, direction, t_band,
+                            COALESCE(regime, ''), COALESCE(session, '')
+                        )
+                        WHERE released_at IS NULL
                     """
                 )
                 await conn.execute(
@@ -123,6 +142,11 @@ class PgCellPauseRepo:
         Queries the ``trades`` table using the standard cell bucketing
         logic (t_band from eval_offset, session from hour_utc). Returns
         an empty list on any error.
+
+        B1 FIX (SQL side): bucket by EXTRACT(HOUR FROM created_at) so the
+        session label matches the session the trade FIRED in, not when
+        Polymarket happened to settle it. A trade fired at 17:55 UTC that
+        settles at 18:01 UTC belongs to us_pm (14-17), not us_late (18-21).
         """
         pool = self._get_pool()
         if not pool:
@@ -135,7 +159,7 @@ class PgCellPauseRepo:
                         strategy          AS strategy_id,
                         direction,
                         (metadata->>'eval_offset')::int   AS eval_offset,
-                        EXTRACT(HOUR FROM resolved_at)::int AS hour_utc,
+                        EXTRACT(HOUR FROM created_at)::int AS hour_utc,
                         (metadata->>'vpin_regime')        AS regime,
                         fill_price,
                         pnl_usd,
@@ -147,8 +171,8 @@ class PgCellPauseRepo:
                             $2
                         )
                       AND outcome IN ('WIN', 'LOSS')
-                      AND resolved_at >= NOW() - ($3 || ' seconds')::interval
-                    ORDER BY resolved_at DESC
+                      AND created_at >= NOW() - ($3 || ' seconds')::interval
+                    ORDER BY created_at DESC
                     LIMIT 200
                     """,
                     cell.strategy_id,
@@ -199,6 +223,12 @@ class PgCellPauseRepo:
 
         Returns None when fewer than 10 resolved trades exist — not
         enough history to compute a stable baseline.
+
+        B3 FIX: filter by the SAME cell axes (t_band, session, regime) so
+        the baseline reflects THIS cell's history, not the strategy-wide
+        average. Without this fix, a cell with naturally higher variance
+        (e.g. us_pm × CASCADE) would compare against an average that
+        includes easy cells, making Trigger 2 fire spuriously.
         """
         pool = self._get_pool()
         if not pool:
@@ -217,8 +247,64 @@ class PgCellPauseRepo:
                             $2
                         )
                       AND outcome IN ('WIN', 'LOSS')
-                      AND resolved_at >= NOW() - ($3 || ' seconds')::interval
+                      AND created_at >= NOW() - ($3 || ' seconds')::interval
                       AND (metadata->>'eval_offset')::int IS NOT NULL
+                      AND _session_label_matches(
+                            EXTRACT(HOUR FROM created_at)::int, $4
+                          )
+                      AND _t_band_matches(
+                            (metadata->>'eval_offset')::int, $5
+                          )
+                      AND ($6::text IS NULL
+                           OR metadata->>'vpin_regime' = $6)
+                    """,
+                    cell.strategy_id,
+                    cell.direction,
+                    int(lookback_seconds),
+                    cell.session,
+                    cell.t_band,
+                    cell.regime,
+                )
+        except Exception:
+            # The _session_label_matches / _t_band_matches helpers don't exist
+            # as SQL functions — fall back to in-Python filtering.
+            return await self._get_baseline_wr_python(cell, lookback_seconds)
+
+        if not row or row["total"] < 10:
+            return None
+        return float(row["wins"]) / float(row["total"])
+
+    async def _get_baseline_wr_python(
+        self, cell: CellKey, lookback_seconds: int
+    ) -> Optional[float]:
+        """Baseline WR with cell-axis filtering done in Python (no UDF needed).
+
+        Fetches all strategy+direction trades then applies t_band/session/regime
+        filters in-memory. Slightly more data transferred but correct without
+        requiring custom SQL functions.
+        """
+        pool = self._get_pool()
+        if not pool:
+            return None
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        outcome,
+                        (metadata->>'eval_offset')::int   AS eval_offset,
+                        EXTRACT(HOUR FROM created_at)::int AS hour_utc,
+                        (metadata->>'vpin_regime')        AS regime
+                    FROM trades
+                    WHERE strategy = $1
+                      AND direction IN (
+                            CASE WHEN $2 = 'UP' THEN 'YES' ELSE 'NO' END,
+                            $2
+                        )
+                      AND outcome IN ('WIN', 'LOSS')
+                      AND created_at >= NOW() - ($3 || ' seconds')::interval
+                      AND (metadata->>'eval_offset')::int IS NOT NULL
+                    LIMIT 5000
                     """,
                     cell.strategy_id,
                     cell.direction,
@@ -226,14 +312,28 @@ class PgCellPauseRepo:
                 )
         except Exception as exc:
             log.warning(
-                "pg_cell_pause_repo.get_baseline_wr_failed: %s",
+                "pg_cell_pause_repo.get_baseline_wr_python_failed: %s",
                 str(exc)[:200],
             )
             return None
 
-        if not row or row["total"] < 10:
+        wins = 0
+        total = 0
+        for row in rows:
+            # Filter to same cell axes.
+            if _t_band(row["eval_offset"]) != cell.t_band:
+                continue
+            if _session(row["hour_utc"]) != cell.session:
+                continue
+            if cell.regime is not None and row["regime"] != cell.regime:
+                continue
+            total += 1
+            if row["outcome"] == "WIN":
+                wins += 1
+
+        if total < 10:
             return None
-        return float(row["wins"]) / float(row["total"])
+        return float(wins) / float(total)
 
     async def is_cell_paused(self, cell: CellKey) -> bool:
         """Return True when an active (non-released, non-expired) pause

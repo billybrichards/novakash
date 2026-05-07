@@ -371,11 +371,15 @@ class OrderManager:
                         eval_offset = int(eval_offset)
                     except (TypeError, ValueError):
                         eval_offset = None
+                # B1 FIX: use created_at (entry time) not resolved_at for
+                # session bucketing. A trade fired at 17:55 UTC that settles
+                # at 18:01 UTC belongs to us_pm (14-18), not us_late (18-21).
                 hour_utc = None
-                if order.resolved_at:
-                    import datetime as _dt
+                import datetime as _dt
+                entry_ts = order.created_at
+                if entry_ts:
                     hour_utc = _dt.datetime.fromtimestamp(
-                        order.resolved_at, _dt.timezone.utc
+                        float(entry_ts), _dt.timezone.utc
                     ).hour
                 regime = meta.get("vpin_regime")
                 fill = order.fill_price
@@ -384,6 +388,10 @@ class OrderManager:
                         fill = float(order.price)
                     except (TypeError, ValueError):
                         fill = None
+                # F4: wire polymarket_tx_hash into ResolvedTrade for Telegram
+                # alerts. Sourced from order.metadata (populated by the trade
+                # recorder when the CLOB fill is confirmed on-chain).
+                tx_hash = meta.get("polymarket_tx_hash")
                 rt = _ResolvedTrade(
                     strategy_id=order.strategy,
                     direction=direction_str,
@@ -394,6 +402,7 @@ class OrderManager:
                     pnl_usd=float(order.pnl_usd or 0.0),
                     is_win=(order.outcome == "WIN"),
                     resolved_at=order.resolved_at or time.time(),
+                    tx_hash=tx_hash,
                 )
                 await self._rolling_wr_monitor.on_trade_resolved(rt)
             except Exception as exc:

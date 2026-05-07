@@ -287,3 +287,126 @@ async def test_get_baseline_wr_none_when_insufficient_data():
     # FakeStore returns {wins: 0, total: 0} — below 10 threshold
     result = await repo.get_baseline_wr(cell, lookback_seconds=7 * 86400)
     assert result is None
+
+
+# ── B1 fix: session bucketed by entry time (created_at), not resolution time ──
+
+
+@pytest.mark.asyncio
+async def test_get_recent_trades_sql_uses_created_at():
+    """B1 fix: get_recent_trades_for_cell must SELECT EXTRACT(HOUR FROM created_at)
+    not resolved_at. Verified by inspecting the query string sent to the fake conn.
+    """
+    import re
+
+    captured_query = []
+
+    class CapturingConn:
+        async def fetch(self, query: str, *args):
+            captured_query.append(query)
+            return []
+
+    class CapturingPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield CapturingConn()
+
+    repo = PgCellPauseRepo(pool=CapturingPool())
+    cell = _make_cell()
+    await repo.get_recent_trades_for_cell(cell, lookback_seconds=3600)
+
+    assert captured_query, "no query was issued"
+    q = captured_query[0].lower()
+    # Must use created_at for hour extraction, not resolved_at
+    assert "extract(hour from created_at)" in q, (
+        "B1: get_recent_trades_for_cell must bucket session from created_at, "
+        f"not resolved_at. Query: {captured_query[0][:300]}"
+    )
+    assert "extract(hour from resolved_at)" not in q, (
+        "B1: resolved_at should NOT be used for session bucketing"
+    )
+
+
+# ── B3 fix: get_baseline_wr_python filters to same cell axes ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_baseline_wr_python_filters_by_cell_axes():
+    """B3 fix: _get_baseline_wr_python must filter to the same t_band, session,
+    regime as the cell — not aggregate all trades for the strategy.
+
+    Trade fired at hour 16 UTC (us_pm) with eval_offset=88 (T-61-90) and
+    regime CASCADE should match cell (us_pm, T-61-90, CASCADE) but NOT
+    a cell (us_pm, T-61-90, NORMAL) or (eu_am, T-61-90, CASCADE).
+    """
+    from datetime import datetime, timezone
+    from contextlib import asynccontextmanager
+
+    # Build a set of fake rows: mix of matching and non-matching cells.
+    fake_rows = [
+        # Matching: us_pm, T-61-90, CASCADE — 7 wins + 3 losses
+        *[{"outcome": "WIN", "eval_offset": 88, "hour_utc": 16, "regime": "CASCADE"}] * 7,
+        *[{"outcome": "LOSS", "eval_offset": 88, "hour_utc": 16, "regime": "CASCADE"}] * 3,
+        # Non-matching regime: should be excluded
+        *[{"outcome": "LOSS", "eval_offset": 88, "hour_utc": 16, "regime": "NORMAL"}] * 20,
+        # Non-matching t_band (eval_offset=50 => T-31-60): excluded
+        *[{"outcome": "LOSS", "eval_offset": 50, "hour_utc": 16, "regime": "CASCADE"}] * 10,
+        # Non-matching session (hour 10 = eu_am): excluded
+        *[{"outcome": "LOSS", "eval_offset": 88, "hour_utc": 10, "regime": "CASCADE"}] * 10,
+    ]
+
+    class FakeBaselineConn:
+        async def fetch(self, query: str, *args):
+            return fake_rows
+
+    class FakeBaselinePool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield FakeBaselineConn()
+
+    repo = PgCellPauseRepo(pool=FakeBaselinePool())
+    cell = CellKey(
+        strategy_id="v12_lgb_combo",
+        direction="DOWN",
+        t_band="T-61-90",
+        regime="CASCADE",
+        session="us_pm",
+    )
+
+    result = await repo._get_baseline_wr_python(cell, lookback_seconds=7 * 86400)
+    assert result is not None, "Should have enough matching trades (10)"
+    assert abs(result - 0.70) < 0.01, (
+        f"B3: baseline should be 7/10=0.70 (only matching cell trades), got {result}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_baseline_wr_python_none_below_threshold():
+    """B3: returns None when fewer than 10 trades match the cell."""
+    from contextlib import asynccontextmanager
+
+    # Only 5 matching trades
+    fake_rows = [
+        *[{"outcome": "WIN", "eval_offset": 88, "hour_utc": 16, "regime": "CASCADE"}] * 3,
+        *[{"outcome": "LOSS", "eval_offset": 88, "hour_utc": 16, "regime": "CASCADE"}] * 2,
+    ]
+
+    class FakeConn2:
+        async def fetch(self, query: str, *args):
+            return fake_rows
+
+    class FakePool2:
+        @asynccontextmanager
+        async def acquire(self):
+            yield FakeConn2()
+
+    repo = PgCellPauseRepo(pool=FakePool2())
+    cell = CellKey(
+        strategy_id="v12_lgb_combo",
+        direction="DOWN",
+        t_band="T-61-90",
+        regime="CASCADE",
+        session="us_pm",
+    )
+    result = await repo._get_baseline_wr_python(cell, lookback_seconds=7 * 86400)
+    assert result is None

@@ -187,3 +187,58 @@ async def test_resolve_order_not_called_for_expired():
         await om.resolve_order(order.order_id, "EXPIRED", payout_usd=0.0)
 
     mock_monitor.on_trade_resolved.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hour_utc_uses_entry_time_not_resolution_time():
+    """B1 fix: hour_utc must be derived from order.created_at (entry time),
+    NOT order.resolved_at. A trade fired at 17:55 UTC (us_pm, 14-17 UTC)
+    that resolves at 18:01 UTC (us_late, 18-21 UTC) must yield
+    session = us_pm, not us_late.
+    """
+    import datetime as _dt
+
+    mock_monitor = MagicMock()
+    mock_monitor.on_trade_resolved = AsyncMock(return_value=None)
+
+    om = OrderManager(db=None, paper_mode=True, rolling_wr_monitor=mock_monitor)
+
+    # created_at = 17:55 UTC (us_pm)
+    entry_ts = _dt.datetime(2026, 5, 6, 17, 55, 0, tzinfo=_dt.timezone.utc).timestamp()
+    order = _make_order()
+    object.__setattr__(order, "created_at", entry_ts) if hasattr(order, "__setattr__") else None
+    # Use regular attribute assignment
+    order.created_at = entry_ts
+    await om.register_order(order)
+
+    await om.resolve_order(order.order_id, "WIN", payout_usd=7.14)
+
+    rt: ResolvedTrade = mock_monitor.on_trade_resolved.call_args[0][0]
+    assert rt.hour_utc == 17, (
+        f"B1: hour_utc should be 17 (entry at 17:55 UTC), got {rt.hour_utc}. "
+        "Check that order_manager uses created_at not resolved_at."
+    )
+
+
+@pytest.mark.asyncio
+async def test_tx_hash_wired_from_metadata():
+    """F4: polymarket_tx_hash from order metadata should be forwarded to ResolvedTrade."""
+    mock_monitor = MagicMock()
+    mock_monitor.on_trade_resolved = AsyncMock(return_value=None)
+
+    om = OrderManager(db=None, paper_mode=True, rolling_wr_monitor=mock_monitor)
+    tx_hash_val = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+    order = _make_order(
+        metadata={
+            "eval_offset": 88,
+            "vpin_regime": "CASCADE",
+            "polymarket_tx_hash": tx_hash_val,
+        }
+    )
+    await om.register_order(order)
+    await om.resolve_order(order.order_id, "WIN", payout_usd=7.14)
+
+    rt: ResolvedTrade = mock_monitor.on_trade_resolved.call_args[0][0]
+    assert rt.tx_hash == tx_hash_val, (
+        f"F4: tx_hash should be wired from metadata, got {rt.tx_hash!r}"
+    )
