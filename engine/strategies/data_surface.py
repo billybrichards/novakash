@@ -354,7 +354,9 @@ class DataSurfaceManager:
         self._cached_cedar_ts: dict[str, float] = {}
         self._cedar_url = os.environ.get(
             "CEDAR_PROBABILITY_URL",
-            "http://16.52.14.182:8080/v2/probability/cedar",
+            # Legacy IP 16.52.14.182 retired 2026-05-07 (audit #397). Canonical
+            # ML box is now 3.96.151.28 (matches infrastructure/composition.py).
+            "http://3.96.151.28:8080/v2/probability/cedar",
         )
         # Sticky disable: once we see a hard negative (404/405/501, DNS
         # error, repeated timeout) we stop hammering the endpoint for the

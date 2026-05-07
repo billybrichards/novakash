@@ -54,6 +54,22 @@ from strategies.base import BaseStrategy
 log = structlog.get_logger(__name__)
 
 
+# Audit #396 review fix 396-1: shared done-callback for fire-and-forget
+# `record_v2_probability` create_task() calls. Logs unhandled exceptions at
+# WARNING so a failing RDS write surfaces in structured logs without blocking
+# the per-tick evaluator. Kept module-level so both call sites reuse one fn.
+def _log_v2_task_error(task: "asyncio.Task") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.warning(
+            "five_min_vpin.record_v2_probability_task_failed",
+            error_str=str(exc)[:160],
+            error_type=type(exc).__name__,
+        )
+
+
 # ── v8.1 Dynamic entry caps by eval offset ──────────────────────────────────
 # Max FOK price at each offset — set conservatively below breakeven WR.
 # T-240 (89.5% WR) → cap $0.55 | T-180 (86.4%) → $0.60
@@ -1736,6 +1752,24 @@ class FiveMinVPINStrategy(BaseStrategy):
                         window_snapshot["v2_quantiles_at_close"] = json.dumps(
                             _timesfm["quantiles_at_close"]
                         )
+                    # Audit #396: write scoring snapshot to ticks_v2_probability
+                    # (RDS, via canonical asyncpg pool). Pre-eval call site.
+                    # Review fix 396-1: fire-and-forget via create_task — was
+                    # `await`ing previously, which blocked the evaluator on RDS
+                    # latency despite the comment claiming non-blocking.
+                    if self._tick_recorder is not None:
+                        _v2_task_pre = asyncio.create_task(
+                            self._tick_recorder.record_v2_probability(
+                                result=_v2_pre,
+                                asset=window.asset,
+                                seconds_to_close=_eval_offset,
+                                features_dict=_pre_features.to_json_dict()
+                                if hasattr(_pre_features, "to_json_dict")
+                                else None,
+                                phase="pre_eval",  # review fix 396-2
+                            )
+                        )
+                        _v2_task_pre.add_done_callback(_log_v2_task_error)
             except Exception as e:
                 self._log.warning("v2.probability.fetch_failed", error_str=str(e)[:100])
 
@@ -2216,6 +2250,25 @@ class FiveMinVPINStrategy(BaseStrategy):
                             error=str(_snap_exc)[:80],
                             offset=eval_offset,
                         )
+
+                # Audit #396: write scoring snapshot to ticks_v2_probability
+                # (RDS, via canonical asyncpg pool). Decision-path call site.
+                # Review fix 396-1: fire-and-forget via create_task — was
+                # `await`ing previously, which blocked the evaluator on RDS
+                # latency despite the comment claiming non-blocking.
+                if self._tick_recorder is not None:
+                    _v2_task_dec = asyncio.create_task(
+                        self._tick_recorder.record_v2_probability(
+                            result=_v2_result,
+                            asset=window.asset,
+                            seconds_to_close=eval_offset,
+                            features_dict=_decision_features.to_json_dict()
+                            if hasattr(_decision_features, "to_json_dict")
+                            else None,
+                            phase="decision",  # review fix 396-2
+                        )
+                    )
+                    _v2_task_dec.add_done_callback(_log_v2_task_error)
 
                 self._log.info(
                     "v81.early_gate",
