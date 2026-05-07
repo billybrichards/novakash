@@ -1439,12 +1439,16 @@ class ExecuteTradeUseCase:
         # misconfigured override can never bust the absolute cap.
         try:
             from services.cell_size_scaler import apply_cell_size_multiplier
-            from services.session_label import session_label
+            # C2 FIX: use canonical 7-bucket session_label from cell_bucketing
+            # (not the defunct 5-bucket services.session_label module).
+            from services.cell_bucketing import session_label as _cell_session_label
+            import datetime as _dt_sess
             from strategies.runtime_override import (
                 get_runtime_override_manager,
             )
 
-            sess = session_label()
+            _now_utc = _dt_sess.datetime.now(_dt_sess.timezone.utc)
+            sess = _cell_session_label(_now_utc.hour)
             override_mgr = get_runtime_override_manager()
 
             # t_band: convert eval_offset (sec-to-close) from the decision.
@@ -1470,7 +1474,7 @@ class ExecuteTradeUseCase:
                 session=sess,
                 direction=decision.direction,
                 absolute_max_bet=runtime.max_position_usd,
-                min_bet_usd=min(MIN_BET_USD, runtime.min_bet_usd),
+                min_bet_usd=max(MIN_BET_USD, runtime.min_bet_usd),  # C2 FIX: max not min
                 override_provider=override_mgr,
                 t_band=_eval_offset_int,
                 regime=_regime,
@@ -1522,7 +1526,11 @@ class ExecuteTradeUseCase:
                 False,
                 f"drawdown {status.drawdown_pct:.1%} > {runtime.max_drawdown_kill:.0%}",
             )
-        min_bet = min(MIN_BET_USD, runtime.min_bet_usd)
+        # C2 FIX: use max() so the higher of the two floors wins (neither floor
+        # is breached). Using min() was a bug: if MIN_BET_USD=$2 and
+        # runtime.min_bet_usd=$5, we'd pass $2 as the floor — allowing stakes
+        # that violate the runtime config's minimum.
+        min_bet = max(MIN_BET_USD, runtime.min_bet_usd)
         if stake.adjusted_stake < min_bet:
             return (
                 False,

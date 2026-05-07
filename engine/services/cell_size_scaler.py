@@ -87,6 +87,24 @@ except Exception:  # pragma: no cover — tests without structlog
     import logging
     _log = logging.getLogger(__name__)
 
+# Import canonical bucketing helpers from cell_bucketing (PR #494).
+# This resolves the TODO comment from the original PR — the inline
+# _t_band() is replaced by the shared implementation so boundaries
+# never drift between the scaler and the auto-pause system.
+from services.cell_bucketing import t_band as _t_band_canonical
+from services.cell_bucketing import session_label as _session_label_canonical
+
+
+def _t_band(eval_offset: Optional[int]) -> Optional[str]:
+    """Wrapper that returns None for None (scaler skip-axis semantics).
+
+    cell_bucketing.t_band() returns "T-unknown" for None, but the scaler
+    uses None to mean "skip this axis entirely" in the lookup chain.
+    """
+    if eval_offset is None:
+        return None
+    return _t_band_canonical(eval_offset)
+
 
 _DEFAULT_MULTIPLIER_MAX = 2.0  # bumped from 1.5 to support up-to-2x sniper cells
 _DEFAULT_MULTIPLIER = 1.0
@@ -98,37 +116,6 @@ _DIR_SYNONYMS: dict[str, tuple[str, ...]] = {
     "YES": ("YES", "UP"),
     "NO": ("NO", "DOWN"),
 }
-
-
-# ── t_band inline helper ──────────────────────────────────────────────────
-# TODO: Remove this once PR #494 (feat/hour-blocks-source-agreement-cell-pause)
-# merges into this branch and deduplicate via:
-#   from services.cell_bucketing import t_band as _t_band
-#
-# Bucket boundaries and label format MUST match cell_bucketing.t_band() exactly.
-
-def _t_band(eval_offset: Optional[int]) -> Optional[str]:
-    """Return the t_band label for an eval_offset (sec-to-close, T-minus convention).
-
-    Returns None when eval_offset is None (allows callers to skip t_band axis).
-    Labels match cell_bucketing.t_band() from PR #494.
-    """
-    if eval_offset is None:
-        return None
-    eo = int(eval_offset)
-    if eo <= 30:
-        return "T-0-30"
-    if eo <= 60:
-        return "T-31-60"
-    if eo <= 90:
-        return "T-61-90"
-    if eo <= 120:
-        return "T-91-120"
-    if eo <= 180:
-        return "T-121-180"
-    if eo <= 240:
-        return "T-181-240"
-    return "T-241-300"
 
 
 # ── Lookup priority chain ────────────────────────────────────────────────

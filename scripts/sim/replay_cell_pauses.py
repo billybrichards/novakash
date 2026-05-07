@@ -91,12 +91,16 @@ class TradeRow:
 
     @property
     def cell_session(self) -> str:
-        from services.session_label import session_label
+        # B2 FIX: use the canonical 7-bucket session_label from cell_bucketing
+        # (not the defunct 5-bucket session_label.py). The 7-bucket vocabulary
+        # (asian_early/asian_late/eu_am/us_open/us_pm/us_late/off_hours) matches
+        # Hub note #350 and the RollingWRMonitor / CellPauseGate.
+        from services.cell_bucketing import session_label
 
         ts = self.created_at
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        return session_label(ts)
+        return session_label(ts.hour)
 
     @property
     def cell_key(self) -> Tuple[str, str, str]:
@@ -194,7 +198,7 @@ class ReplayResult:
 
 
 def _import_monitor():
-    """Best-effort import of RollingWrMonitor.
+    """Best-effort import of RollingWRMonitor (capital WR — not WrMonitor).
 
     The sister PR ``feat/hour-blocks-source-agreement-cell-pause`` adds
     this module. If absent, raise a clean SystemExit so reviewers see
@@ -202,10 +206,11 @@ def _import_monitor():
     """
     try:
         from services.rolling_wr_monitor import (  # type: ignore[import]
-            RollingWrMonitor,
+            RollingWRMonitor,  # B1 FIX: capital WR — class is RollingWRMonitor
+            ResolvedTrade,
         )
 
-        return RollingWrMonitor
+        return RollingWRMonitor, ResolvedTrade
     except ImportError as exc:
         raise SystemExit(
             "engine/services/rolling_wr_monitor.py not found. This validator "
@@ -216,26 +221,91 @@ def _import_monitor():
 
 
 def replay(trades: List[TradeRow]) -> ReplayResult:
-    """Walk ``trades`` chronologically through a fresh RollingWrMonitor
-    and accumulate the metrics.
+    """Walk ``trades`` chronologically through a fresh RollingWRMonitor
+    (capital WR) and accumulate the metrics.
 
-    Expected (duck-typed) ``RollingWrMonitor`` API (per spec)::
+    Uses the real ``RollingWRMonitor`` API from
+    ``engine/services/rolling_wr_monitor.py``:
 
-        monitor = RollingWrMonitor()
-        monitor.on_trade_resolved(
-            strategy=..., session=..., direction=..., outcome=...,
-            pnl=..., resolved_at=...,
-        )
-        monitor.is_cell_paused(strategy, session, direction, now=...)
-            -> bool
-        monitor.cell_pause_intervals
-            -> list of dicts {cell, start_at, end_at, reason}
+        monitor = RollingWRMonitor(repo=InMemoryRepo())
+        await monitor.on_trade_resolved(resolved_trade: ResolvedTrade)
+        # is_cell_paused is on the repo, not the monitor
 
-    If the real API differs we duck-type around it via getattr — the
-    monitor PR is in flight so this validator stays loose.
+    ``lift_delta`` sign convention:
+        lift_delta = -trade.fill_math_pnl
+        For a LOSS (fill_math_pnl = -10): lift_delta = +10  (saved $10)
+        For a WIN  (fill_math_pnl = +5):  lift_delta = -5   (cost $5, false pause)
+        total_pnl_lift = sum of lift_deltas over all paused trades.
+        Positive total = pause system net saved money.
+        Spec assertion: total_pnl_lift >= $50 over 14d history.
     """
-    monitor_cls = _import_monitor()
-    monitor = monitor_cls()
+    monitor_cls, resolved_trade_cls = _import_monitor()
+
+    # Use a simple in-memory repo for replay (no DB needed).
+    # Import from the same module to ensure protocol compliance.
+    try:
+        from services.rolling_wr_monitor import CellKey  # type: ignore[import]
+        from services.cell_bucketing import session_label as _session, t_band as _t_band  # type: ignore[import]
+    except ImportError as exc:
+        raise SystemExit(f"Cannot import cell_bucketing from engine: {exc}")
+
+    class _InMemoryRepo:
+        """Minimal in-memory CellPauseRepo for the replay simulation."""
+
+        def __init__(self):
+            self._pauses: dict = {}  # cell_key -> pause_until (datetime)
+            self._trades: List[Any] = []
+
+        async def get_recent_trades_for_cell(self, cell: Any, lookback_seconds: int) -> list:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+            result = []
+            for t in self._trades:
+                if (
+                    t.strategy_id == cell.strategy_id
+                    and t.direction == cell.direction
+                    and _t_band(t.eval_offset) == cell.t_band
+                    and _session(t.hour_utc) == cell.session
+                    and (cell.regime is None or t.regime == cell.regime)
+                    and t.resolved_at >= cutoff.timestamp()
+                ):
+                    result.append(t)
+            return result
+
+        async def get_baseline_wr(self, cell: Any, lookback_seconds: int) -> Optional[float]:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=lookback_seconds)
+            cell_trades = [
+                t for t in self._trades
+                if (
+                    t.strategy_id == cell.strategy_id
+                    and t.direction == cell.direction
+                    and _t_band(t.eval_offset) == cell.t_band
+                    and _session(t.hour_utc) == cell.session
+                    and (cell.regime is None or t.regime == cell.regime)
+                    and t.resolved_at >= cutoff.timestamp()
+                )
+            ]
+            if len(cell_trades) < 10:
+                return None
+            wins = sum(1 for t in cell_trades if t.is_win)
+            return float(wins) / len(cell_trades)
+
+        async def is_cell_paused(self, cell: Any) -> bool:
+            key = (cell.strategy_id, cell.direction, cell.t_band, cell.regime, cell.session)
+            pause_until = self._pauses.get(key)
+            if pause_until is None:
+                return False
+            return datetime.now(timezone.utc) < pause_until
+
+        async def insert_pause(self, cell: Any, pause_seconds: int, reason: str, trigger_metric: dict) -> Optional[int]:
+            key = (cell.strategy_id, cell.direction, cell.t_band, cell.regime, cell.session)
+            self._pauses[key] = datetime.now(timezone.utc) + timedelta(seconds=pause_seconds)
+            return 1
+
+        async def release_pause(self, pause_id: int, released_by: str) -> None:
+            pass
+
+    repo = _InMemoryRepo()
+    monitor = monitor_cls(repo=repo)
 
     result = ReplayResult()
 
@@ -252,9 +322,7 @@ def replay(trades: List[TradeRow]) -> ReplayResult:
         }
     )
 
-    # Last paused state per cell so we can detect "first trade after a
-    # pause" → counts toward false_pause_rate.
-    last_pause_seen: Dict[Tuple[str, str, str], bool] = {}
+    loop = asyncio.new_event_loop()
 
     for trade in trades:
         cell = trade.cell_key
@@ -265,37 +333,28 @@ def replay(trades: List[TradeRow]) -> ReplayResult:
         else:
             cell_stats["losses"] += 1
 
+        # Build the CellKey for this trade so we can query the repo.
+        trade_cell = CellKey(
+            strategy_id=trade.strategy,
+            direction="UP" if trade.direction in ("YES", "UP") else "DOWN",
+            t_band=_t_band(None),  # TradeRow doesn't carry eval_offset; fallback T-unknown
+            regime=None,
+            session=trade.cell_session,
+        )
+
         # 1. BEFORE recording, check whether the gate would have paused
         # this cell at trade-time. If so, this trade gets skipped in the
         # counterfactual world.
-        is_paused_now = False
-        check = getattr(monitor, "is_cell_paused", None)
-        if callable(check):
-            try:
-                is_paused_now = bool(
-                    check(
-                        strategy=trade.strategy,
-                        session=trade.cell_session,
-                        direction=trade.direction.upper(),
-                        now=trade.created_at,
-                    )
-                )
-            except TypeError:
-                # Try positional — different sig
-                is_paused_now = bool(
-                    check(
-                        trade.strategy,
-                        trade.cell_session,
-                        trade.direction.upper(),
-                        trade.created_at,
-                    )
-                )
+        is_paused_now = loop.run_until_complete(repo.is_cell_paused(trade_cell))
 
         if is_paused_now:
-            # Counterfactually skipped: we DON'T take this trade. Lift +=
-            # the negation of what we would have made (+stake on a loss,
-            # -winnings on a win — i.e. negative lift on missed wins).
-            lift_delta = -trade.fill_math_pnl  # avoiding a loss = positive lift
+            # Counterfactually skipped: we DON'T take this trade.
+            #
+            # lift_delta sign convention (see replay() docstring):
+            #   LOSS: fill_math_pnl = -10 → lift_delta = +10 (saved $10)
+            #   WIN:  fill_math_pnl = +5  → lift_delta = -5  (missed $5 win)
+            # Positive total = system net saved money.
+            lift_delta = -trade.fill_math_pnl
             result.total_pnl_lift += lift_delta
             cell_stats["paused_count"] += 1
             cell_stats["would_have_been_skipped_pnl"] += lift_delta
@@ -322,36 +381,32 @@ def replay(trades: List[TradeRow]) -> ReplayResult:
         # counterfactual) — the gate's job is to learn from history, and
         # we want the replay to mirror what the gate would actually have
         # seen in production.
-        on_resolved = getattr(monitor, "on_trade_resolved", None)
-        if callable(on_resolved):
-            try:
-                on_resolved(
-                    strategy=trade.strategy,
-                    session=trade.cell_session,
-                    direction=trade.direction.upper(),
-                    outcome=trade.outcome,
-                    pnl=trade.fill_math_pnl,
-                    resolved_at=trade.resolved_at or trade.created_at,
-                )
-            except TypeError:
-                on_resolved(
-                    trade.strategy,
-                    trade.cell_session,
-                    trade.direction.upper(),
-                    trade.outcome,
-                    trade.fill_math_pnl,
-                    trade.resolved_at or trade.created_at,
-                )
+        #
+        # RollingWRMonitor.on_trade_resolved(trade: ResolvedTrade) is the
+        # real API. Build a ResolvedTrade from the TradeRow.
+        created_ts = trade.created_at
+        if hasattr(created_ts, "timestamp"):
+            created_ts_float = created_ts.timestamp()
+        else:
+            created_ts_float = float(created_ts)
 
-        last_pause_seen[cell] = is_paused_now
+        rt = resolved_trade_cls(
+            strategy_id=trade.strategy,
+            direction="UP" if trade.direction in ("YES", "UP") else "DOWN",
+            eval_offset=None,  # not available in TradeRow
+            hour_utc=trade.created_at.hour if hasattr(trade.created_at, "hour") else None,
+            regime=None,
+            fill_price=trade.fill_price if trade.fill_price > 0 else None,
+            pnl_usd=trade.fill_math_pnl,
+            is_win=(trade.outcome == "WIN"),
+            resolved_at=created_ts_float,
+        )
+        # Record the trade in the in-memory repo so future calls to
+        # get_recent_trades_for_cell and get_baseline_wr see it.
+        repo._trades.append(rt)
+        loop.run_until_complete(monitor.on_trade_resolved(rt))
 
-    # Pull pause-intervals out of the monitor for the report.
-    intervals = getattr(monitor, "cell_pause_intervals", None)
-    if intervals:
-        try:
-            result.paused_intervals = list(intervals)  # may be a sequence
-        except TypeError:
-            result.paused_intervals = []
+    loop.close()
 
     result.per_cell = dict(per_cell)
     return result

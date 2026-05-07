@@ -19,7 +19,10 @@ from services.cell_size_scaler import (
     apply_cell_size_multiplier,
     cell_size_multiplier,
 )
-from services.session_label import session_for_hour, session_label
+# B2 FIX: import from cell_bucketing (7-bucket canonical), not session_label.py
+# (5-bucket defunct). The session_label.py tests below are replaced with
+# cell_bucketing.session_label tests to enforce the correct vocabulary.
+from services.cell_bucketing import session_label
 
 
 class _StubOverrideProvider:
@@ -202,43 +205,55 @@ def test_apply_envelope_normal_path_with_amp():
     assert env["clamp_reason"] is None
 
 
-# ─── session_label ───────────────────────────────────────────────────────
+# ─── session_label (7-bucket canonical from cell_bucketing, note #350) ───
+# B2 FIX: these tests now validate the cell_bucketing.session_label function
+# which uses the 7-bucket vocabulary matching Hub note #350. The old
+# services.session_label (5-bucket, wrong boundaries) is no longer used.
 
 
 @pytest.mark.parametrize(
     "hour, expected",
     [
+        # 7-bucket vocabulary (note #350)
         (0, "asian_early"),
         (1, "asian_early"),
-        (2, "asian_late"),
+        (3, "asian_early"),
+        (4, "asian_late"),
         (6, "asian_late"),
-        (7, "eu_open"),
-        (11, "eu_open"),
+        (7, "asian_late"),
+        (8, "eu_am"),
+        (11, "eu_am"),
         (12, "us_open"),
-        (16, "us_open"),
-        (17, "us_late"),
-        (20, "us_late"),
-        (21, "asian_early"),
-        (23, "asian_early"),
+        (13, "us_open"),
+        (14, "us_pm"),
+        (16, "us_pm"),
+        (17, "us_pm"),
+        (18, "us_late"),
+        (21, "us_late"),
+        (22, "off_hours"),
+        (23, "off_hours"),
     ],
 )
-def test_session_for_hour_boundaries(hour, expected):
-    assert session_for_hour(hour) == expected
+def test_session_label_hour_boundaries(hour, expected):
+    """B2: validates 7-bucket canonical vocabulary (cell_bucketing.session_label)."""
+    assert session_label(hour) == expected
 
 
-def test_session_for_hour_invalid_raises():
-    with pytest.raises(ValueError):
-        session_for_hour(-1)
-    with pytest.raises(ValueError):
-        session_for_hour(24)
+def test_session_label_none_returns_unknown():
+    assert session_label(None) == "unknown"
 
 
-def test_session_label_roundtrip():
-    from datetime import datetime, timezone
+def test_session_label_us_pm_14_to_17():
+    """us_pm (14-17 UTC) is a key cell — both directions bleed per note #350."""
+    for h in range(14, 18):
+        assert session_label(h) == "us_pm", f"hour {h} should be us_pm"
 
-    assert session_label(datetime(2026, 5, 6, 14, 30, tzinfo=timezone.utc)) == "us_open"
-    # Naive datetime is treated as UTC
-    assert session_label(datetime(2026, 5, 6, 8, 0)) == "eu_open"
+
+def test_session_label_us_open_only_12_13():
+    """us_open is only 2 hours (12-13 UTC) — narrower than old 5-bucket scheme."""
+    assert session_label(12) == "us_open"
+    assert session_label(13) == "us_open"
+    assert session_label(14) != "us_open", "hour 14 is us_pm, not us_open"
 
 
 # ─── Multi-axis lookup priority tests ────────────────────────────────────
@@ -345,13 +360,17 @@ def test_sniper_cell_asian_late_down_cascade():
 
 
 def test_workhorse_cell_fires_without_regime_key():
-    """eu_pm_us_am:UP:T-91-120 → 1.5 when eu_pm_us_am:UP:T-91-120:NORMAL not set."""
+    """us_pm:UP:T-91-120 → 1.5 when us_pm:UP:T-91-120:NORMAL not set.
+
+    B2 FIX: uses 7-bucket vocabulary (us_pm) not old eu_pm_us_am.
+    us_pm = 14-17 UTC per Hub note #350.
+    """
     p = _make_provider("v12_lgb_combo", {
-        "eu_pm_us_am:UP:T-91-120": 1.5,
-        "eu_pm_us_am:UP": 1.2,
+        "us_pm:UP:T-91-120": 1.5,
+        "us_pm:UP": 1.2,
     })
     # eval_offset=100 → T-91-120; regime=NORMAL (4-axis key absent)
-    result = cell_size_multiplier("v12_lgb_combo", "eu_pm_us_am", "UP", p, t_band=100, regime="NORMAL")
+    result = cell_size_multiplier("v12_lgb_combo", "us_pm", "UP", p, t_band=100, regime="NORMAL")
     assert result == 1.5
 
 
