@@ -19,9 +19,12 @@ Gate order (TRADE path):
    7. Disagreement veto      (R2 — bypassable by VHC)
    8. Direction agreement    (R3 — bypassable by VHC)
    9. T-minus blend          (R4 — compute pu, direction; VHC uses pc_dir)
+  9a. Per-direction utc_hour block (audit #380)
+  9b. Delta alignment gate
+  9c. Per-cell block predicates    (audit #382 — NOT bypassable by VHC)
   10. Hard LGB safety floor  (R6 — bypassable by VHC for all directions)
   11. TRANSITION regime      (R5 — bypassable by VHC)
- 11b. v4_regime direction    (NEW — NOT bypassable by VHC; note #347)
+ 11b. v4_regime direction    (NOT bypassable by VHC; note #347)
   12. Oracle direction       (shared — bypassable by VHC)
   13. Fill band              (R7 — shared, NOT bypassed by VHC)
   14. UP / DOWN fill floors  (R8 — shared, NOT bypassed by VHC)
@@ -43,6 +46,8 @@ if TYPE_CHECKING:
 
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
+from services.cell_bucketing import t_band as _t_band_label
+from strategies.gates.block_cells import check_block_cells_predicate as _check_block_cells
 
 # Reuse shared v8 helpers and cooldown state machine.
 from strategies.configs.v8_champion import (
@@ -974,8 +979,44 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             _gate("delta_gate", True, "chainlink delta unavailable, skip gate")
         )
 
-    # ── 10. Hard LGB safety floor (R6) ────────────────────────────────────
+    # ── 9c. Per-cell block predicates (audit #382) ─────────────────────────
+    # Surgically blocks specific (direction, t_band, conf_band, regime, session)
+    # cells identified as catastrophic bleeders in the 7d cross-tab analysis.
+    # Reads ``block_cells`` from runtime_overrides (JSONB array of predicate
+    # dicts). Evaluated AFTER direction is known, BEFORE VHC-bypassable gates.
+    # NOT bypassable by VHC — cell block is a structural alpha decision, not
+    # a conviction question. Default [] = gate is a no-op.
+    # See Hub note in PR description and reference_config_layering.md for how
+    # to set per-strategy overrides without restarting the engine.
+    # pl_dist = abs(pl - 0.5): LGB distance used as canonical confidence score
+    # (bleed-cell analysis used this metric) and reused by gate 10 below.
     pl_dist = abs(pl - 0.5)
+    _block_cells_predicates = _gp.get_list("block_cells", default=[])
+    if _block_cells_predicates:
+        _vpin_regime_for_block = getattr(surface, "regime", None)
+        _block_reason = _check_block_cells(
+            predicates=_block_cells_predicates,
+            direction=direction,
+            eval_offset=offset,
+            confidence_score=pl_dist,
+            regime=_vpin_regime_for_block,
+            window_ts=getattr(surface, "window_ts", None),
+        )
+        if _block_reason is not None:
+            gates.append(_gate("block_cells", False, _block_reason))
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip_v9(_block_reason, gates, direction=direction)
+        gates.append(
+            _gate(
+                "block_cells",
+                True,
+                f"no predicate matched {direction}/"
+                f"t_band={_t_band_label(offset)}/conf={pl_dist:.4f}",
+            )
+        )
+
+    # ── 10. Hard LGB safety floor (R6) ────────────────────────────────────
+    # pl_dist already computed above (gate 9c).
 
     # Check if classifier HC agrees — allows relaxed LGB floor
     pc_hc_agrees = False

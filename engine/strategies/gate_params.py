@@ -105,3 +105,21 @@ def get_str_list(name: str, env_var: str | None, default: list[str]) -> list[str
     if isinstance(raw, str):
         return [x.strip() for x in raw.split(",") if x.strip()]
     return list(default)
+
+
+def get_list(name: str, default: list) -> list:
+    """Resolve a list param (JSONB array of dicts, etc.). No env-var equivalent.
+
+    Looks up ``name`` in the active per-strategy gate-params bag (populated from
+    the DB runtime override or YAML). Returns ``default`` when the key is absent
+    or the value is not a list. Intended for structured params like ``block_cells``
+    whose values cannot be meaningfully serialised as a single env-var string.
+
+    If the stored value is not a list (e.g. a bare null or scalar from a
+    mis-formed override) this function fails OPEN (returns ``default``) so
+    a misconfigured override never blocks trading.
+    """
+    raw = _lookup(name, None, default)
+    if isinstance(raw, list):
+        return raw
+    return list(default)
