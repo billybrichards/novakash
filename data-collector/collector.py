@@ -441,25 +441,28 @@ async def fetch_resolved_market(session: aiohttp.ClientSession, slug: str) -> Op
             if not market.get("closed"):
                 return None
 
-            # audit #395: capture canonical priceToBeat / finalPrice from
-            # eventMetadata if still missing on the resolved row. This is the
-            # "second chance" path — even if the active-collection cycle missed
-            # it (rate-limit window, container restart, etc.), the resolution
-            # cycle backfills it.
+            # audit #395: capture canonical priceToBeat from eventMetadata if
+            # still missing on the resolved row. This is the "second chance"
+            # path — even if the active-collection cycle missed it (rate-limit
+            # window, container restart, etc.), the resolution cycle backfills
+            # it.
+            #
+            # Review fix 395-3: drop the `finalPrice` fallback. priceToBeat is
+            # the window OPEN price; finalPrice is the window CLOSE price.
+            # Mixing them silently writes close-as-open. If priceToBeat is
+            # missing on a resolved event, leave open_price as None — better
+            # NULL than wrong.
             event_meta = event.get("eventMetadata") or {}
             price_to_beat: Optional[float] = None
             if isinstance(event_meta, dict):
-                for key in ("priceToBeat", "finalPrice"):
-                    raw = event_meta.get(key)
-                    if raw is None:
-                        continue
+                raw = event_meta.get("priceToBeat")
+                if raw is not None:
                     try:
                         val = float(raw)
+                        if val > 0:
+                            price_to_beat = val
                     except (TypeError, ValueError):
-                        continue
-                    if val > 0:
-                        price_to_beat = val
-                        break
+                        pass
 
             # Get resolution
             outcome_prices_raw = market.get("outcomePrices", "[]")

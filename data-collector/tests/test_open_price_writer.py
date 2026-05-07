@@ -361,13 +361,17 @@ class TestFetchResolvedMarketOpenPrice(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(result)
         self.assertAlmostEqual(result["open_price"], 94000.0)
 
-    async def test_open_price_fallback_to_final_price(self):
-        """When priceToBeat absent, finalPrice used as fallback."""
+    async def test_no_fallback_to_final_price_when_ptb_absent(self):
+        """Review fix 395-3: finalPrice is the window CLOSE price; using it
+        as a fallback for open_price silently writes close-as-open. When
+        priceToBeat is absent from eventMetadata we keep open_price = None.
+        """
         result = await self._fetch(self._resolved_event(final_price="93500.75"))
-        self.assertAlmostEqual(result["open_price"], 93500.75)
+        self.assertIsNotNone(result)
+        self.assertIsNone(result["open_price"])
 
-    async def test_price_to_beat_takes_priority_over_final_price(self):
-        """priceToBeat wins when both keys present."""
+    async def test_price_to_beat_used_when_both_present(self):
+        """priceToBeat is canonical when present (finalPrice is ignored)."""
         result = await self._fetch(
             self._resolved_event(price_to_beat="94000", final_price="90000")
         )
