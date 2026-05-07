@@ -1,0 +1,179 @@
+name: v9_2_super_lgb_only
+strategy_id: v9_2_super_lgb_only
+version: "9.2.0-super-canary"
+# v9_2_super_lgb_only — 2026-05-07 — Sequoia v5 Optuna-tuned 78-feature booster.
+#
+# Reads `probability_lgb_v9_2` emitted by timesfm-service when the v9.2
+# Optuna booster is loaded (models/btc_5m/lgb_btc_v5_optuna.txt).
+#
+# Key new mechanic: NON-CONSECUTIVE ≥N-ticks-above-X conviction gate.
+# Replaces the "N consecutive ticks" semantics of v9.1 with "N qualifying
+# ticks anywhere in the eval band [t-300, t-60]". This is per-(vpin_regime
+# × direction) so different cohorts require different N to fire.
+#
+# CALM regime is excluded — too few samples at every conviction threshold
+# (n<15 fires across the test set).
+#
+# Hub note #356 — PR-B handover / production state.
+# timesfm-service docs/V9_2_GATE_CONFIG.html — full gate spec.
+# timesfm-service docs/ALPHA_MINING_v9_2_GATE.md — backing data.
+# timesfm-service docs/FORWARD_PASS_EVAL_v9_2.md — head-to-head vs prod.
+#
+# Honest forward-pass metrics (timesfm v9.2-optuna, 30d BTC corpus):
+#   accuracy:   72.91% (+1.52pp vs prod candidate_ab83564)
+#   ECE:        0.0251 (53% better than prod 0.053)
+#   disagreement test: 52.3% / 47.7% v9.2 wins on disagreements
+#   Optuna best params: leaves=37, depth=7, l2=0.77, lr=0.057
+#
+# DEPENDENCIES (all required before this strategy can contribute LIVE trades):
+#   1. timesfm-service: load v9.2 booster (models/btc_5m/lgb_btc_v5_optuna.txt)
+#   2. timesfm-service: emit `probability_lgb_v9_2` in /v4/snapshot response
+#   3. engine data_surface.py: probability_lgb_v9_2 field (added this PR)
+#   4. migrations/add_probability_lgb_v9_2.sql applied to prod DB
+#
+# Strategy SKIPs gracefully (skip_reason="v9_2_model_not_loaded") if
+# probability_lgb_v9_2 is None on the surface — mirrors v9_1's pattern.
+# Also silently skips with skip_reason="cohort_below_threshold" when
+# qualifying tick count < N for the (vpin_regime × direction) cohort.
+# CALM regime always skips with skip_reason="cohort_excluded_calm".
+#
+# Defaults to GHOST. Billy flips LIVE manually via runtime config
+# (no auto-promote per post-2026-04-17 rule). Promotion requires
+# ≥7d shadow with WR ≥ 90% per cohort (gate_min_wr_target).
+#
+status: GHOST  # canary — never LIVE without explicit Billy GO
+description: |
+  v9.2 Super canary. Reads probability_lgb_v9_2 (Optuna-tuned 78-feature
+  Sequoia v5). Uses non-consecutive ≥N-ticks-above-X conviction gate with
+  per-(vpin_regime × direction) thresholds and per-direction UTC hour
+  blocks.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_super_lgb_only.py
+pre_gate_hook: evaluate_v9_2_super_lgb_only
+
+gates:
+  # B2 (audit #374): Chainlink freshness — default 60s threshold.
+  - type: chainlink_freshness
+  # Rolling-WR auto-pause per cell (audits #379 + #385).
+  - type: cell_pause
+    params: { strategy_id: v9_2_super_lgb_only }
+
+gate_params:
+  # ── v9.2 super conviction gate (NON-CONSECUTIVE N-of-M ticks) ──────────
+  # Per-(vpin_regime × direction × conviction × N) gate. Replaces the
+  # current "N consecutive ticks" gate with "N anywhere in [t-300, t-60]".
+  # Each cohort: fire when ≥N qualifying ticks (conviction ≥ X) accumulate
+  # within the eval band.
+  conviction_x_thresholds:
+    TRANSITION_UP:    0.85
+    TRANSITION_DOWN:  0.85
+    CASCADE_UP:       0.85
+    CASCADE_DOWN:     0.85
+    NORMAL_UP:        0.85
+    NORMAL_DOWN:      0.85
+    CALM:             null  # exclude — n too small (<15 fires)
+
+  ticks_n_thresholds:
+    TRANSITION_UP:    8     # 95.3% WR (n=85)
+    TRANSITION_DOWN:  12    # 95.4% WR (n=130)
+    CASCADE_UP:       8     # 92.0% WR (n=50)
+    CASCADE_DOWN:     12    # 94.1% WR (n=101)
+    NORMAL_UP:        8     # 92.7% WR (n=55)
+    NORMAL_DOWN:      8     # 94.7% WR (n=38)
+
+  # Per-direction blocked UTC hours (audit #380 helpers from PR #494).
+  # v9.2 weak hours where WR < 85% with n≥50 fires at X≥0.80.
+  blocked_utc_hours_up:   [4, 9, 13, 19, 23]
+  blocked_utc_hours_down: [2, 9, 14, 15]
+
+  # Volume vs precision knob: 0.90 = strict (96-100% WR per cohort but
+  # ~30% windows fire), 0.87 = relaxed (88-95% WR, ~50% windows fire)
+  gate_min_wr_target: 0.90  # bias toward precision; flip to 0.87 for volume
+
+  # Eval band — same as analysis
+  eval_offset_min: 60
+  eval_offset_max: 300
+
+  # Delegate to existing v9_ensemble gate stack as a base.
+  # The cohort gate fires AFTER direction is determined in the v9_ensemble
+  # stack but BEFORE delta-alignment (mirrors PR #494 order).
+  delegate_to_v9_ensemble: true
+
+  # ── Inherited v9_lgb_only params (same base gate stack) ────────────────
+  min_offset_sec: 45
+  max_offset_sec: 200
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  # Disable legacy symmetric blocked_utc_hours (use per-direction above)
+  blocked_utc_hours: []
+
+  oracle_agreement_min_sources: 2
+  post_loss_cooldown_min: 20
+
+  # ── LGB safety floor ────────────────────────────────────────────────────
+  lgb_dist_min_up: 0.15
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up_with_hc_agree: 0.05
+  lgb_dist_min_down_with_hc_agree: 0.05
+
+  # ── v9 ensemble params (kept for compatibility, classifier always None) ──
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: true
+
+  pc_weight_t_60: 0.70
+  pc_weight_t_120: 0.55
+  pc_weight_t_180: 0.40
+  pc_weight_t_200: 0.25
+
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: true
+  vhc_bypass_oracle_direction: true
+  vhc_kelly_multiplier: 2.0
+
+  # ── PL VHC bypass ───────────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass ─────────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.20
+
+  # Conviction tiers
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.12
+  conviction_low_dist: 0.05
+
+  # ── Delta alignment gate ────────────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── Disable consecutive-ticks: v9.2 uses non-consecutive N-of-M gate ───
+  min_consecutive_pass_ticks: 0
+
+  # ── Post-fill exit monitoring (DISABLED — canary phase) ─────────────────
+  exit_monitor_enabled: false
+  exit_shadow_mode: false

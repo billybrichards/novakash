@@ -9,6 +9,7 @@ Predicate fields (all optional; all specified fields must match):
     conf_min   float                — match if confidence_score >= conf_min
     conf_max   float                — match if confidence_score < conf_max
     regime     str   "CASCADE" etc — match surface.regime (vpin regime)
+    hour_utc   int   0-23           — match hour-of-day from window_ts (UTC)
     session    str   "us_pm" etc   — match cell_bucketing.session_label(hour_utc)
 
 An empty predicate (no fields) matches NOTHING (defensive; prevents accidental
@@ -138,6 +139,20 @@ def check_block_cells_predicate(
                 matched = False
                 mismatch_reasons.append(f"regime={regime}!={pred['regime']}")
 
+        # hour_utc field — hour-precision blocks (preferred over session
+        # for single-hour weak cells where session_label's 4-hour bucket
+        # would over-block adjacent fine hours)
+        if matched and "hour_utc" in pred:
+            try:
+                pred_hour = int(pred["hour_utc"])
+            except (TypeError, ValueError):
+                pred_hour = None
+            if pred_hour is None or hour_utc != pred_hour:
+                matched = False
+                mismatch_reasons.append(
+                    f"hour_utc={hour_utc}!={pred.get('hour_utc')}"
+                )
+
         # session field
         if matched and "session" in pred:
             if pred["session"] != cell_session:
@@ -164,6 +179,8 @@ def check_block_cells_predicate(
                     parts.append(f"conf<{hi}")
             if "regime" in pred:
                 parts.append(f"regime={pred['regime']}")
+            if "hour_utc" in pred:
+                parts.append(f"hour_utc={pred['hour_utc']}")
             if "session" in pred:
                 parts.append(f"session={pred['session']}")
             predicate_desc = " ".join(parts) if parts else "empty-guard"

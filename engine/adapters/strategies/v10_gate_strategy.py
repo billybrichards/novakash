@@ -102,6 +102,10 @@ class V10GateStrategy:
             regime=ctx.regime,
             delta_source=ctx.delta_source,
             prev_v2_probability_up=ctx.prev_dune_probability_up,
+            # Audit #224/#233 Tier 1 (added 2026-05-07).
+            gamma_up_price=ctx.gamma_up_price,
+            gamma_down_price=ctx.gamma_down_price,
+            window_ts=ctx.window_ts,
         )
         return GateContext(
             delta_chainlink=ctx.delta_chainlink,

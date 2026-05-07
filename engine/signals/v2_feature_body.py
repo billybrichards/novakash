@@ -59,6 +59,7 @@ Anything not in the map becomes `None` (→ NaN), not a garbage value.
 
 from __future__ import annotations
 
+import datetime as _dt
 import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -163,6 +164,43 @@ def encode_delta_source(source: Optional[str]) -> Optional[float]:
     return DELTA_SOURCE_TO_NUM.get(source.lower())
 
 
+def compute_session_bucket(window_ts: Optional[int]) -> Optional[float]:
+    """Return the training-side `session_bucket` integer for a window timestamp.
+
+    Mirrors the SQL CASE expression in `training/queries.py:222-228` of
+    novakash-timesfm-repo (Sequoia v4 non-linear hour encoding):
+
+        00-03 UTC → 0   (Late Asian)
+        04-08 UTC → 1   (Early Asian)
+        09-11 UTC → 2   (London)
+        12-16 UTC → 3   (US)
+        17-23 UTC → 4   (Evening)
+
+    NB: This 5-bucket integer encoding is DIFFERENT from
+    `engine/services/cell_bucketing.py::session_label`, which is a
+    7-bucket string used for cell-based pause logic. Don't conflate them
+    — the v9.x booster was trained on the 5-bucket integer above.
+
+    Returns None for an unparseable / out-of-range timestamp, matching
+    the same-shape NaN policy as every other Optional[float] field.
+    """
+    if window_ts is None:
+        return None
+    try:
+        hour = _dt.datetime.fromtimestamp(int(window_ts), _dt.timezone.utc).hour
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+    if hour <= 3:
+        return 0.0
+    if hour <= 8:
+        return 1.0
+    if hour <= 11:
+        return 2.0
+    if hour <= 16:
+        return 3.0
+    return 4.0
+
+
 def prob_to_logit(p: Optional[float]) -> Optional[float]:
     """
     Convert a calibrated probability to logit (log-odds).
@@ -260,6 +298,39 @@ class V5FeatureBody:
     # flag is the cutover.
     polymarket_price_to_beat: Optional[float] = None
 
+    # ── Audit #224/#233 Tier 1 enrichments (added 2026-05-07) ───────
+    # Train/serve parity for the 12 features the v9.x boosters expect
+    # but the engine push contract previously omitted (they defaulted
+    # to NaN at scoring time per `app/v2_scorer.py:879-889`). All are
+    # Optional[float] = None so any caller that doesn't supply them
+    # still produces a valid body — the scorer falls back to its
+    # NaN-default behaviour, identical to today.
+    #
+    # Wired here (engine has the source data on develop):
+    #   gamma_up_price, gamma_down_price          — Polymarket Gamma API token prices
+    #   gamma_implied_up                          — up / (up + down)
+    #   gamma_market_vig                          — 1.0 - (up + down)
+    #   clob_imbalance                            — clob_up_ask - clob_down_ask
+    #   session_bucket                            — 5-bucket integer from window UTC hour
+    #   source_delta_divergence                   — abs(tiingo_vs_binance - chainlink_vs_binance)
+    #
+    # Pass-through only (engine does not yet maintain a 60s VPIN
+    # rolling buffer — these stay None until that buffer lands):
+    #   vpin_mean_60s, vpin_std_60s,
+    #   vpin_min_60s, vpin_max_60s, vpin_range_60s
+    gamma_up_price: Optional[float] = None
+    gamma_down_price: Optional[float] = None
+    gamma_implied_up: Optional[float] = None
+    gamma_market_vig: Optional[float] = None
+    clob_imbalance: Optional[float] = None
+    session_bucket: Optional[float] = None
+    vpin_mean_60s: Optional[float] = None
+    vpin_std_60s: Optional[float] = None
+    vpin_min_60s: Optional[float] = None
+    vpin_max_60s: Optional[float] = None
+    vpin_range_60s: Optional[float] = None
+    source_delta_divergence: Optional[float] = None
+
     def to_json_dict(self) -> dict[str, Optional[float]]:
         """
         Serialise to a dict suitable for JSON encoding.
@@ -300,6 +371,19 @@ class V5FeatureBody:
             "delta_source_num": self.delta_source_num,
             "v2_logit": self.v2_logit,
             "polymarket_price_to_beat": self.polymarket_price_to_beat,
+            # Audit #224/#233 Tier 1 (added 2026-05-07).
+            "gamma_up_price": self.gamma_up_price,
+            "gamma_down_price": self.gamma_down_price,
+            "gamma_implied_up": self.gamma_implied_up,
+            "gamma_market_vig": self.gamma_market_vig,
+            "clob_imbalance": self.clob_imbalance,
+            "session_bucket": self.session_bucket,
+            "vpin_mean_60s": self.vpin_mean_60s,
+            "vpin_std_60s": self.vpin_std_60s,
+            "vpin_min_60s": self.vpin_min_60s,
+            "vpin_max_60s": self.vpin_max_60s,
+            "vpin_range_60s": self.vpin_range_60s,
+            "source_delta_divergence": self.source_delta_divergence,
         }
 
     def coverage(self) -> float:
@@ -351,6 +435,25 @@ def build_v5_feature_body(
     delta_source: Optional[str] = None,       # raw string, encoded internally
     prev_v2_probability_up: Optional[float] = None,  # for v2_logit
     polymarket_price_to_beat: Optional[float] = None,  # Polymarket canonical reference (PR #464 sister)
+    # ── Audit #224/#233 Tier 1 inputs (added 2026-05-07) ────────────
+    # gamma_*_price are the Polymarket Gamma API token implied prices
+    # (engine attrs `_gamma_up_price` / `_gamma_down_price`). When BOTH
+    # are supplied, gamma_implied_up + gamma_market_vig are derived in
+    # the same shapes the training pipeline computes them.
+    gamma_up_price: Optional[float] = None,
+    gamma_down_price: Optional[float] = None,
+    # window_ts (epoch seconds, UTC) is used to derive session_bucket.
+    # Pass `window.window_ts` from the call site. None → session_bucket
+    # stays None (NaN at scoring), which is the safe fallback.
+    window_ts: Optional[int] = None,
+    # vpin rolling-window stats. Engine does not yet maintain a 60s
+    # vpin buffer; these stay None (→ NaN at scoring) until that lands.
+    # Wiring kwargs ahead of time so a future buffer doesn't need to
+    # bump the V5FeatureBody schema again.
+    vpin_mean_60s: Optional[float] = None,
+    vpin_std_60s: Optional[float] = None,
+    vpin_min_60s: Optional[float] = None,
+    vpin_max_60s: Optional[float] = None,
 ) -> V5FeatureBody:
     """
     Single source of truth for building a V5FeatureBody from engine state.
@@ -410,6 +513,61 @@ def build_v5_feature_body(
             _clob_mid = None
             _clob_spread = None
 
+    # ── Audit #224/#233 derivations ─────────────────────────────────
+    # All formulas mirror `training/build_dataset.py` and
+    # `training/queries.py` exactly so a v9.x booster trained on these
+    # features sees the same shape live as it did during training.
+
+    # Gamma implied probability + market vig — `build_dataset.py:323-326`.
+    # gamma_implied_up = gamma_up / (gamma_up + gamma_down)
+    # gamma_market_vig = 1.0 - (gamma_up + gamma_down)
+    # (vig is non-negative for "tight" books, near 0 when market sums to 1.)
+    _gamma_implied_up: Optional[float] = None
+    _gamma_market_vig: Optional[float] = None
+    _gamma_up_f = coerce_float(gamma_up_price)
+    _gamma_down_f = coerce_float(gamma_down_price)
+    if _gamma_up_f is not None and _gamma_down_f is not None:
+        _gamma_total = _gamma_up_f + _gamma_down_f
+        if _gamma_total > 0.0:
+            _gamma_implied_up = _gamma_up_f / _gamma_total
+        _gamma_market_vig = 1.0 - _gamma_total
+
+    # CLOB imbalance — `build_dataset.py:291`.
+    # clob_imbalance = clob_up_ask - clob_down_ask
+    _clob_imbalance: Optional[float] = None
+    _up_ask_f = coerce_float(clob_up_ask)
+    _dn_ask_f = coerce_float(clob_down_ask)
+    if _up_ask_f is not None and _dn_ask_f is not None:
+        _clob_imbalance = _up_ask_f - _dn_ask_f
+
+    # session_bucket — `queries.py:222-228` (5-bucket integer encoding).
+    _session_bucket = compute_session_bucket(window_ts)
+
+    # Source delta divergence — `build_dataset.py:268,272,329-332`.
+    # tiingo_vs_binance     = (tiingo - binance) / binance
+    # chainlink_vs_binance  = (chainlink - binance) / binance
+    # source_delta_divergence = abs(tiingo_vs_binance - chainlink_vs_binance)
+    # Requires all three prices; if any is missing or binance is 0,
+    # divergence stays None → NaN at scoring time.
+    _source_delta_divergence: Optional[float] = None
+    _bin_f = coerce_float(binance_price)
+    _tii_f = coerce_float(tiingo_close)
+    _chain_f = coerce_float(chainlink_price)
+    if _bin_f is not None and _bin_f != 0.0 and _tii_f is not None and _chain_f is not None:
+        _t_vs_b = (_tii_f - _bin_f) / _bin_f
+        _c_vs_b = (_chain_f - _bin_f) / _bin_f
+        _source_delta_divergence = abs(_t_vs_b - _c_vs_b)
+
+    # vpin_range_60s — `build_dataset.py:307`.
+    # vpin_range_60s = vpin_max_60s - vpin_min_60s
+    # Engine has no 60s vpin buffer on develop; both inputs typically
+    # arrive None and this stays None.
+    _vpin_range_60s: Optional[float] = None
+    _vmax_f = coerce_float(vpin_max_60s)
+    _vmin_f = coerce_float(vpin_min_60s)
+    if _vmax_f is not None and _vmin_f is not None:
+        _vpin_range_60s = _vmax_f - _vmin_f
+
     return V5FeatureBody(
         eval_offset=coerce_float(eval_offset),
         vpin=coerce_float(vpin),
@@ -437,6 +595,19 @@ def build_v5_feature_body(
         delta_source_num=encode_delta_source(delta_source),
         v2_logit=prob_to_logit(prev_v2_probability_up),
         polymarket_price_to_beat=coerce_float(polymarket_price_to_beat),
+        # Audit #224/#233 Tier 1 fields (added 2026-05-07).
+        gamma_up_price=_gamma_up_f,
+        gamma_down_price=_gamma_down_f,
+        gamma_implied_up=coerce_float(_gamma_implied_up),
+        gamma_market_vig=coerce_float(_gamma_market_vig),
+        clob_imbalance=coerce_float(_clob_imbalance),
+        session_bucket=_session_bucket,
+        vpin_mean_60s=coerce_float(vpin_mean_60s),
+        vpin_std_60s=coerce_float(vpin_std_60s),
+        vpin_min_60s=coerce_float(vpin_min_60s),
+        vpin_max_60s=coerce_float(vpin_max_60s),
+        vpin_range_60s=coerce_float(_vpin_range_60s),
+        source_delta_divergence=coerce_float(_source_delta_divergence),
     )
 
 

@@ -491,6 +491,10 @@ class EvaluateWindowUseCase:
             regime=_snap_regime,
             delta_source=_psu,
             polymarket_price_to_beat=_ptb,
+            # Audit #224/#233 Tier 1 (added 2026-05-07).
+            gamma_up_price=getattr(window, "up_price", None),
+            gamma_down_price=getattr(window, "down_price", None),
+            window_ts=getattr(window, "window_ts", None),
         )
         ctx = GateContext(
             delta_chainlink=delta_chainlink,
@@ -866,6 +870,10 @@ class EvaluateWindowUseCase:
                 delta_source=_price_source_used,
                 prev_v2_probability_up=window_snapshot.get("v2_probability_up"),
                 polymarket_price_to_beat=_ptb_2,
+                # Audit #224/#233 Tier 1 (added 2026-05-07).
+                gamma_up_price=getattr(window, "up_price", None),
+                gamma_down_price=getattr(window, "down_price", None),
+                window_ts=getattr(window, "window_ts", None),
             )
             r = await self._timesfm_v2.score_with_features(
                 asset=window.asset, seconds_to_close=eval_offset, features=f
