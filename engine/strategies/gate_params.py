@@ -123,3 +123,22 @@ def get_list(name: str, default: list) -> list:
     if isinstance(raw, list):
         return raw
     return list(default)
+
+
+def get_dict(name: str, default: dict) -> dict:
+    """Resolve a dict param (JSONB object, etc.). No env-var equivalent.
+
+    Looks up ``name`` in the active per-strategy gate-params bag (populated from
+    the DB runtime override or YAML). Returns ``default`` when the key is absent
+    or the value is not a dict. Intended for structured params like
+    ``param_overrides_by_cell`` whose values are keyed objects that cannot be
+    meaningfully serialised as a single env-var string.
+
+    If the stored value is not a dict (e.g. a bare null, scalar, or list from a
+    mis-formed override) this function fails OPEN (returns ``default``) so
+    a misconfigured override never blocks trading.
+    """
+    raw = _lookup(name, None, default)
+    if isinstance(raw, dict):
+        return raw
+    return dict(default)

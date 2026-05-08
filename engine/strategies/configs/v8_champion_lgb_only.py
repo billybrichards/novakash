@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
+from strategies.gates.cell_param_overrides import get_cell_param_overrides as _get_cell_param_overrides
 from strategies.configs.v8_champion import (
     _gate,
     _skip,
@@ -539,7 +540,24 @@ def evaluate_v8_champion_lgb_only(
         return _skip("lgb_bucket: probability_lgb unavailable", gates)
     dist = abs(p_up - 0.5)
     direction = "UP" if p_up > 0.5 else "DOWN"
-    min_dist = _lgb_dist_min_up() if direction == "UP" else _lgb_dist_min_down()
+    # ── 6a. Per-cell parameter override (hub #402) ─────────────────────────
+    # Reads ``param_overrides_by_cell`` from runtime_overrides (JSONB object).
+    # Key: "{direction}:{t_band}:{regime}:{session}". Resolves per-cell
+    # lgb_dist_min_{up,down}, falling back to strategy-level params when no
+    # matching key exists. Default {} = gate is a no-op (no cell overrides).
+    # NOT bypassable by VHC — cell tuning is a structural alpha decision.
+    _vpin_regime_v8 = getattr(surface, "regime", None)
+    _cell_overrides_v8 = _get_cell_param_overrides(
+        params=_gp.get_dict("param_overrides_by_cell", default={}),
+        direction=direction,
+        eval_offset=offset,
+        regime=_vpin_regime_v8,
+        window_ts=getattr(surface, "window_ts", None),
+    )
+    if direction == "UP":
+        min_dist = _cell_overrides_v8.get("lgb_dist_min_up", _lgb_dist_min_up())
+    else:
+        min_dist = _cell_overrides_v8.get("lgb_dist_min_down", _lgb_dist_min_down())
     if dist < min_dist:
         gates.append(
             _gate(
