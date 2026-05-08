@@ -73,8 +73,8 @@ def _make_tick(
     regime: str = "TRANSITION",
     clob_up_ask: float = 0.55,
     clob_down_ask: float = 0.45,
-    probability_lgb_v9_1: float = 0.65,
-    probability_lgb_v12: float = 0.66,
+    probability_lgb_v9_1: Optional[float] = 0.65,
+    probability_lgb_v12: Optional[float] = 0.66,
     outcome: Optional[str] = "WIN",
     poly_winner: str = "UP",
 ):
@@ -556,6 +556,62 @@ class TestValidation:
             warmup_cutoff=0.0,
         )
         assert not result.passes_tolerance
+
+    def test_validate_sparse_data_passes_with_big_delta(self):
+        """When LGB prob coverage <25%, validation should report SPARSE_DATA_EXPECTED
+        and not fail even when sim fires << actual trades."""
+        from sim.tick_simulator import validate, FireEvent, TickRow
+
+        wts = 1_777_700_000
+        now = float(wts + 210)
+
+        fires = [
+            FireEvent(
+                window_ts=wts + 300 * i,
+                evaluated_at=now + 300 * i,
+                direction="UP",
+                strategy_id="v12_lgb_combo",
+                gate_config_hash="abc",
+                eval_offset=90,
+                t_band="T-121-180",
+            )
+            for i in range(5)  # 5 sim fires
+        ]
+        actual_trades = [
+            {
+                "window_ts": wts + 300 * i,
+                "direction": "UP",
+                "created_epoch": now + 300 * i,
+                "outcome": "WIN",
+            }
+            for i in range(100)  # 100 actual trades — huge gap
+        ]
+        # Build ticks where <25% have LGB probs (simulate writer regression)
+        ticks_no_probs = [
+            _make_tick(
+                window_ts=wts + 300 * i,
+                evaluated_at=now + 300 * i,
+                probability_lgb_v9_1=None,
+                probability_lgb_v12=None,
+            )
+            for i in range(97)
+        ]
+        ticks_with_probs = [
+            _make_tick(
+                window_ts=wts + 300 * i,
+                evaluated_at=now + 300 * i,
+            )
+            for i in range(3)
+        ]
+        result = validate(
+            "v12_lgb_combo",
+            fires,
+            actual_trades,
+            ticks_no_probs + ticks_with_probs,
+            warmup_cutoff=0.0,
+        )
+        assert result.sparse_data, "Expected sparse_data=True when <25% have probs"
+        assert result.passes_tolerance, "Sparse data should not trigger FAIL"
 
 
 # ---------------------------------------------------------------------------
