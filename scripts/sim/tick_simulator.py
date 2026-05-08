@@ -51,13 +51,16 @@ Gates replayed from DB data:
   G13 ChainlinkFreshnessGate — NOT IMPLEMENTED (data not available per-tick)
   G14 OracleDisagreeGate    — NOT IMPLEMENTED (no per-tick oracle direction in DB)
   G15 CellPauseGate         — NOT IMPLEMENTED (rolling-WR state not replayable offline)
-  G16 BlockCellsGate        — NOT IMPLEMENTED (per-cell predicate, audit follow-up)
+  G16 BlockCellsGate        — IMPLEMENTED (audit #9c follow-up to PR #511)
+      Reads block_cells from cfg (list of predicate dicts); same format as
+      strategy_runtime_overrides.params.block_cells.  Uses engine's
+      check_block_cells_predicate() via DRY import; falls back to local
+      reimplementation for CI/macOS environments without full engine deps.
 
 Gates NOT replayed (data not available in signal_evaluations):
   - OracleDisagreeGate (oracle_direction from inline step — no per-tick oracle direction in DB)
   - CG confirmation (CG taker flow per tick — not in signal_evaluations per-tick)
   - DeltaMagnitudeGate (alignment_bps not stored per tick)
-  - BlockCellsGate (per-cell predicate — skipped, assumed minimal impact)
   - ChainlinkFreshnessGate (age not in signal_evaluations)
   - CellPauseGate (rolling-WR state, not replayable offline without full trade history)
 
@@ -129,6 +132,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as _dt
 import json
 import os
 import sys
@@ -138,6 +142,41 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+# ---------------------------------------------------------------------------
+# G16 BlockCellsGate — engine import (DRY principle)
+# ---------------------------------------------------------------------------
+# Import check_block_cells_predicate from the engine's block_cells module when
+# available.  This is the canonical implementation; using it directly ensures
+# the sim mirrors engine behaviour exactly (no re-implementation drift).
+#
+# On environments where the engine import tree is not available (Python <3.10
+# or missing engine deps on macOS dev machines), _CHECK_BLOCK_CELLS falls back
+# to None and the gate uses a local reimplementation that mirrors the engine
+# logic exactly.
+#
+# In practice the sim runs on Montreal (Python 3.11, full engine installed), so
+# the import will succeed there.  The fallback exists for CI/macOS unit tests.
+
+_ENGINE_ROOT_FOR_G16 = Path(__file__).resolve().parent.parent.parent / "engine"
+if str(_ENGINE_ROOT_FOR_G16) not in sys.path:
+    sys.path.insert(0, str(_ENGINE_ROOT_FOR_G16))
+
+_check_block_cells_predicate = None  # engine import result
+_engine_t_band = None                # engine cell_bucketing.t_band
+_engine_session_label = None         # engine cell_bucketing.session_label
+
+try:
+    from strategies.gates.block_cells import (  # type: ignore[import]
+        check_block_cells_predicate as _check_block_cells_predicate,
+    )
+    from services.cell_bucketing import (  # type: ignore[import]
+        t_band as _engine_t_band,
+        session_label as _engine_session_label,
+    )
+except Exception:
+    # Fallback: use local implementations defined below.
+    pass
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -190,7 +229,7 @@ ALL_GATE_IDS = {
 }
 
 # Gates not implemented — if user tries to disable them, warn but don't error
-_UNIMPLEMENTED_GATES = {"G13", "G14", "G15", "G16"}
+_UNIMPLEMENTED_GATES = {"G13", "G14", "G15"}
 
 # Session UTC hour mapping (derive from utc_hour)
 _SESSION_HOURS: List[Tuple[str, int, int]] = [
@@ -647,6 +686,233 @@ def _gate_unimplemented(gate_id: str) -> GateFn:
     return _fn
 
 
+# ---------------------------------------------------------------------------
+# G16 BlockCellsGate
+# ---------------------------------------------------------------------------
+# Fallback helpers — used when engine import is unavailable.
+# Mirror engine/strategies/gates/block_cells.py exactly.
+
+def _g16_t_band_local(eval_offset: Optional[int]) -> str:
+    """Engine T-minus t_band convention (mirrors services/cell_bucketing.py)."""
+    if eval_offset is None:
+        return "T-unknown"
+    eo = int(eval_offset)
+    if eo <= 30:
+        return "T-0-30"
+    if eo <= 60:
+        return "T-31-60"
+    if eo <= 90:
+        return "T-61-90"
+    if eo <= 120:
+        return "T-91-120"
+    if eo <= 180:
+        return "T-121-180"
+    if eo <= 240:
+        return "T-181-240"
+    return "T-241-300"
+
+
+def _g16_session_label_local(hour_utc: Optional[int]) -> str:
+    """Session label (mirrors services/cell_bucketing.py)."""
+    if hour_utc is None:
+        return "unknown"
+    h = int(hour_utc)
+    if 0 <= h <= 3:
+        return "asian_early"
+    if 4 <= h <= 7:
+        return "asian_late"
+    if 8 <= h <= 11:
+        return "eu_am"
+    if 12 <= h <= 13:
+        return "us_open"
+    if 14 <= h <= 17:
+        return "us_pm"
+    if 18 <= h <= 21:
+        return "us_late"
+    return "off_hours"
+
+
+def _g16_check_block_cells_local(
+    predicates: list,
+    direction: str,
+    eval_offset: Optional[int],
+    confidence_score: float,
+    regime: Optional[str],
+    window_ts: Optional[int],
+) -> Optional[str]:
+    """Fallback: inline block-cells predicate evaluator (no engine import needed).
+
+    Returns None (allow) or a skip-reason string (deny).
+    Mirrors check_block_cells_predicate() in engine/strategies/gates/block_cells.py.
+    An empty predicate dict (no fields) is treated as no-match (defensive guard).
+    """
+    if not predicates:
+        return None
+
+    # Compute context once
+    cell_t_band = _g16_t_band_local(eval_offset)
+
+    hour_utc: Optional[int] = None
+    if window_ts is not None:
+        try:
+            hour_utc = _dt.datetime.fromtimestamp(
+                int(window_ts), _dt.timezone.utc
+            ).hour
+        except (TypeError, ValueError, OSError):
+            hour_utc = None
+    cell_session = _g16_session_label_local(hour_utc)
+
+    for pred in predicates:
+        if not isinstance(pred, dict) or not pred:
+            # Empty predicate — engine treats as no-match (defensive guard).
+            continue
+
+        # direction
+        if "direction" in pred and pred["direction"] != direction:
+            continue
+        # t_band
+        if "t_band" in pred and pred["t_band"] != cell_t_band:
+            continue
+        # conf_min (inclusive)
+        if "conf_min" in pred:
+            try:
+                conf_min = float(pred["conf_min"])
+            except (TypeError, ValueError):
+                conf_min = None
+            if conf_min is not None and confidence_score < conf_min:
+                continue
+        # conf_max (exclusive)
+        if "conf_max" in pred:
+            try:
+                conf_max = float(pred["conf_max"])
+            except (TypeError, ValueError):
+                conf_max = None
+            if conf_max is not None and confidence_score >= conf_max:
+                continue
+        # regime — if predicate specifies regime but tick regime is None → no-match
+        if "regime" in pred:
+            if pred["regime"] != regime:
+                continue
+        # hour_utc
+        if "hour_utc" in pred:
+            try:
+                pred_hour = int(pred["hour_utc"])
+            except (TypeError, ValueError):
+                pred_hour = None
+            if pred_hour is None or hour_utc != pred_hour:
+                continue
+        # session
+        if "session" in pred and pred["session"] != cell_session:
+            continue
+
+        # All specified predicates matched.
+        # For size_multiplier > 0.0: not a hard block in this function
+        # (mirrors check_block_cells_predicate partial-size pass-through).
+        size_mult = pred.get("size_multiplier")
+        if size_mult is not None:
+            try:
+                size_mult_f = float(size_mult)
+            except (TypeError, ValueError):
+                size_mult_f = 0.0
+            if size_mult_f > 0.0:
+                continue  # partial-size predicate — not a hard block
+
+        # Build compact reason string
+        parts = []
+        if "direction" in pred:
+            parts.append(f"dir={pred['direction']}")
+        if "t_band" in pred:
+            parts.append(f"t_band={pred['t_band']}")
+        if "conf_min" in pred or "conf_max" in pred:
+            lo = pred.get("conf_min", "")
+            hi = pred.get("conf_max", "")
+            if lo != "" and hi != "":
+                parts.append(f"conf=[{lo},{hi})")
+            elif lo != "":
+                parts.append(f"conf>={lo}")
+            else:
+                parts.append(f"conf<{hi}")
+        if "regime" in pred:
+            parts.append(f"regime={pred['regime']}")
+        if "hour_utc" in pred:
+            parts.append(f"hour_utc={pred['hour_utc']}")
+        if "session" in pred:
+            parts.append(f"session={pred['session']}")
+
+        predicate_desc = " ".join(parts) if parts else "empty-guard"
+        reason_str = pred.get("reason", "")
+        suffix = f" [{reason_str}]" if reason_str else ""
+        return (
+            f"block_cells: matched predicate [{predicate_desc}] "
+            f"context: {direction}/{cell_t_band}/conf={confidence_score:.4f}"
+            f"/{regime or '*'}/{cell_session}{suffix}"
+        )
+
+    return None
+
+
+def _gate_G16_block_cells(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    """G16 BlockCellsGate — per-cell predicate evaluation.
+
+    Reads ``block_cells`` from cfg (list of predicate dicts, same format as
+    engine strategy_runtime_overrides.params.block_cells).  If any hard-block
+    predicate matches the current tick context, returns (False, "block_cells: ...").
+
+    Uses engine's check_block_cells_predicate() when available (DRY import).
+    Falls back to local reimplementation for CI/macOS environments without
+    the full engine import tree.
+
+    Cell context derived from tick:
+      direction      = the resolved direction passed to the gate (UP/DOWN)
+      eval_offset    = tick.eval_offset (sec-to-close, engine T-minus)
+      confidence     = combo_dist (abs(prob - 0.5))  -- may be None → 0.0
+      regime         = tick.regime (VPIN regime; may be None)
+      window_ts      = tick.window_ts (for UTC-hour derivation)
+
+    t_band uses engine's cell_bucketing.t_band convention (T-minus, e.g.
+    eval_offset=110 → "T-91-120"), NOT the sim's _t_band() (sec-from-open).
+    This mirrors the engine exactly.
+    """
+    predicates = cfg.get("block_cells") or []
+    if not predicates:
+        return True, None
+
+    confidence_score = combo_dist if combo_dist is not None else 0.0
+
+    if _check_block_cells_predicate is not None:
+        # Use engine's canonical implementation (DRY).
+        skip_reason = _check_block_cells_predicate(
+            predicates=predicates,
+            direction=direction,
+            eval_offset=tick.eval_offset,
+            confidence_score=confidence_score,
+            regime=tick.regime,
+            window_ts=tick.window_ts,
+        )
+    else:
+        # Fallback: local reimplementation (identical logic, no engine import).
+        skip_reason = _g16_check_block_cells_local(
+            predicates=predicates,
+            direction=direction,
+            eval_offset=tick.eval_offset,
+            confidence_score=confidence_score,
+            regime=tick.regime,
+            window_ts=tick.window_ts,
+        )
+
+    if skip_reason is not None:
+        # Normalise prefix: engine returns "block_cells: matched predicate [...]"
+        # which already starts with "block_cells:" — ensure consistent prefix.
+        if not skip_reason.startswith("block_cells:"):
+            skip_reason = f"block_cells: {skip_reason}"
+        return False, skip_reason
+
+    return True, None
+
+
 # Ordered gate pipeline: (gate_id, gate_fn)
 _BASE_GATE_PIPELINE: List[Tuple[str, GateFn]] = [
     ("G1",  _gate_G1_timing),
@@ -662,11 +928,12 @@ _BASE_GATE_PIPELINE: List[Tuple[str, GateFn]] = [
     ("G10", _gate_G10_cooldown),
     ("G11", _gate_G11_consec_ticks),
     ("G12", _gate_G12_dedup),
-    # G13-G16 not implemented
+    # G13-G15 not implemented (data not available per-tick in signal_evaluations)
     ("G13", _gate_unimplemented("G13")),
     ("G14", _gate_unimplemented("G14")),
     ("G15", _gate_unimplemented("G15")),
-    ("G16", _gate_unimplemented("G16")),
+    # G16 implemented (audit #9c follow-up to PR #511)
+    ("G16", _gate_G16_block_cells),
 ]
 
 
@@ -699,7 +966,7 @@ class GateStack:
             if unknown:
                 print(
                     f"[tick_simulator] WARNING: Unknown gate IDs in --disable-gates: {sorted(unknown)}. "
-                    "Known IDs: G1-G12 (implemented), G13-G16 (stubs).",
+                    "Known IDs: G1-G12,G16 (implemented), G13-G15 (stubs).",
                     file=sys.stderr,
                 )
 
@@ -1716,8 +1983,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         help=(
             "Comma-separated gate IDs to disable (EXPLORATION mode). "
             "Disabled gates always pass (default-open). "
-            "Examples: --disable-gates G10 (no cooldown), --disable-gates G3,G4 (raw signal). "
-            "Gate IDs: G1-G12 (implemented), G13-G16 (stubs — not yet implemented). "
+            "Examples: --disable-gates G10 (no cooldown), --disable-gates G3,G4 (raw signal), "
+            "--disable-gates G16 (lift block_cells — shows alpha cost of each block_cell). "
+            "Gate IDs: G1-G12,G16 (implemented), G13-G15 (stubs — not yet implemented). "
             "Use --no-seed-from-prod-state together for cleanest exploration. "
             "Output includes disabled_gates list for traceability."
         ),
