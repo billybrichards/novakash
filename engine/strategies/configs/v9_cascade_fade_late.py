@@ -32,7 +32,9 @@ if TYPE_CHECKING:
     from strategies.data_surface import FullDataSurface
 
 from domain.value_objects import StrategyDecision
+from strategies import gate_params as _gp
 from strategies.configs.v9_ensemble import evaluate_v9_ensemble as _evaluate_v9
+from strategies.gates.cell_param_overrides import get_cell_param_overrides as _get_cell_param_overrides
 from strategies.sister_veto_bus import publish_sister_fire
 
 _STRATEGY_ID = "v9_cascade_fade_late"
@@ -75,6 +77,20 @@ def evaluate_v9_cascade_fade_late(surface: "FullDataSurface") -> StrategyDecisio
     if _orig_regime is None:
         object.__setattr__(surface, "v4_regime", "volatile_trend")
 
+    # -- Per-cell parameter override (hub #402 / PR #506) -----------------
+    # Resolve param_overrides_by_cell from this strategy's gate_params context
+    # (set by the registry around this hook call -- scoped to v9_cascade_fade_late).
+    # v9_ensemble already enforces the resolved lgb_dist_min at gate 10; this
+    # call is here for explicit auditability and metadata stamping. Fails OPEN.
+    _cell_direction_cfl = "UP" if float(p_v9) > 0.5 else "DOWN"
+    _cell_overrides_v9_cfl = _get_cell_param_overrides(
+        params=_gp.get_dict("param_overrides_by_cell", default={}),
+        direction=_cell_direction_cfl,
+        eval_offset=getattr(surface, "eval_offset", None),
+        regime=getattr(surface, "regime", None),
+        window_ts=getattr(surface, "window_ts", None),
+    )
+
     try:
         decision = _evaluate_v9(surface)
     finally:
@@ -87,6 +103,9 @@ def evaluate_v9_cascade_fade_late(surface: "FullDataSurface") -> StrategyDecisio
     meta["probability_lgb"] = p_v9
     meta["lgb_only_forced"] = True
     meta["v9_cascade_fade_late_specialist"] = True
+    if _cell_overrides_v9_cfl:
+        meta["cell_param_overrides_active"] = _cell_overrides_v9_cfl
+        meta["cell_param_overrides_direction"] = _cell_direction_cfl
 
     entry_reason = decision.entry_reason or ""
     if entry_reason:
