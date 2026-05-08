@@ -144,7 +144,20 @@ _DEFAULT_GATE_CONFIG = {
 
 @dataclass
 class TickRow:
-    """One row from signal_evaluations JOIN window_snapshots."""
+    """One row from signal_evaluations JOIN window_snapshots.
+
+    LGB probability sourcing note:
+    - `probability_lgb_v9_1` is the v9.1 retrain served live by TimesFM via
+      /v4/snapshot. It is NOT persisted to `signal_evaluations` — it lives only
+      on the in-memory FullDataSurface at evaluation time.
+    - The closest persisted proxy is `probability_lgb_v9_2` (the v9.2 Optuna
+      retrain, written to signal_evaluations since PR #499). This is used as the
+      "v9-side" signal in replay. Accuracy caveat: v9.2 fires less frequently
+      (stricter cohort gate), so some ticks where v9.1 had a signal will have
+      NULL v9.2. This means the simulator UNDER-estimates fires relative to live.
+    - `probability_lgb_v12` is written by PR #441 and has 44-80% population
+      rate depending on the timeframe window.
+    """
     window_ts: int
     asset: str
     timeframe: str
@@ -169,8 +182,10 @@ class TickRow:
     clob_down_bid: Optional[float]
 
     # LGB probabilities
-    probability_lgb_v9_1: Optional[float]   # signal_evaluations column
-    probability_lgb_v12: Optional[float]    # signal_evaluations column
+    # Note: probability_lgb_v9_1 is NOT in signal_evaluations (only in live surface).
+    # We use probability_lgb_v9_2 as the closest persisted proxy for the "v9-side".
+    probability_lgb_v9_1: Optional[float]   # actually v9_2 from DB (proxy)
+    probability_lgb_v12: Optional[float]    # signal_evaluations.probability_lgb_v12
 
     # Resolved outcome (for validation)
     outcome: Optional[str]  # WIN/LOSS/VOID from window_snapshots
@@ -548,11 +563,11 @@ def _load_ticks_from_db(
             se.clob_down_ask,
             se.clob_up_bid,
             se.clob_down_bid,
-            se.probability_lgb_v9_1,
+            se.probability_lgb_v9_2  AS probability_lgb_v9_1,
             se.probability_lgb_v12,
             ws.outcome,
             ws.poly_winner,
-            ws.v2_direction        AS ws_v4_regime_proxy
+            ws.v2_direction          AS ws_v4_regime_proxy
         FROM signal_evaluations se
         LEFT JOIN window_snapshots ws
             ON ws.window_ts = se.window_ts
@@ -565,10 +580,10 @@ def _load_ticks_from_db(
           AND se.eval_offset IS NOT NULL
         ORDER BY se.window_ts ASC, se.eval_offset DESC
     """
-    # Note: eval_offset DESC because engine fires at LARGEST eval_offset first
-    # (largest = most time remaining = earliest in window); but we process
-    # chronologically so within a window we go from earliest eval to latest.
-    # Actually: eval_offset = sec-to-close, so DESCENDING = earliest eval first.
+    # eval_offset = sec-to-close (T-minus convention per engine).
+    # DESC = highest offset first = earliest in window first = chronological.
+    # Note: probability_lgb_v9_2 aliased as probability_lgb_v9_1 (closest proxy).
+    # v9.1 is NOT persisted to signal_evaluations (lives only in live surface).
 
     print(
         f"[tick_simulator] Loading ticks: strategy={strategy_id}, hours={hours}, "
@@ -623,7 +638,7 @@ def _load_ticks_from_db(
     null_pct_v9_1 = 100.0 * null_v9_1 / max(len(ticks), 1)
     null_pct_v12 = 100.0 * null_v12 / max(len(ticks), 1)
     print(
-        f"[tick_simulator] NULL rates: prob_v9_1={null_pct_v9_1:.1f}%, "
+        f"[tick_simulator] NULL rates: prob_v9_2(proxy)={null_pct_v9_1:.1f}%, "
         f"prob_v12={null_pct_v12:.1f}%",
         file=sys.stderr,
     )
