@@ -41,10 +41,10 @@ from SQL analysis are speculative.
 | G10 Post-loss cooldown | stateful (initialized to 0) | YES |
 | G11 3-tick confirmation | stateful | YES |
 | G12 Per-window dedup | stateful | YES |
-| ChainlinkFreshnessGate | age not in signal_evaluations | NO |
-| OracleDisagreeGate | oracle_direction not per-tick | NO |
-| CellPauseGate | rolling-WR state | NO |
-| BlockCellsGate | per-cell predicates | NO |
+| G16 BlockCellsGate | `cfg.block_cells` (from override or yaml) | YES (audit #9c) |
+| ChainlinkFreshnessGate (G13) | age not in signal_evaluations | NO |
+| OracleDisagreeGate (G14) | oracle_direction not per-tick | NO |
+| CellPauseGate (G15) | rolling-WR state | NO |
 
 ### Regime replay caveat
 
@@ -124,6 +124,98 @@ All keys with defaults (mirrors `v12_lgb_combo.yaml` gate_params):
 | `lgb_dist_min_down` | 0.10 | DOWN LGB safety floor |
 | `v12_contrarian_enabled` | true | Enable v12 contrarian path |
 | `v12_contrarian_min_dist` | 0.10 | Min v12 dist for contrarian |
+| `block_cells` | [] | G16 — list of per-cell block predicate dicts |
+
+### G16 BlockCellsGate — EXPLORATION mode use cases
+
+G16 reads `block_cells` from the gate config (same format as
+`strategy_runtime_overrides.params.block_cells` JSONB).  Each predicate is a
+dict with optional fields; a tick is denied when **all** specified fields match.
+
+**Predicate fields** (all optional — absent field = wildcard):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `direction` | str | `"UP"` or `"DOWN"` |
+| `regime` | str | VPIN regime, e.g. `"CASCADE"`, `"chop"` |
+| `t_band` | str | Engine T-minus band, e.g. `"T-91-120"` (eval_offset 91-120s before close) |
+| `hour_utc` | int | UTC hour 0-23 |
+| `session` | str | Session label (e.g. `"us_pm"`, `"asian_early"`) per `cell_bucketing.py` |
+| `conf_min` | float | Block when `abs(prob - 0.5) >= conf_min` |
+| `conf_max` | float | Block when `abs(prob - 0.5) < conf_max` |
+| `size_multiplier` | float | `> 0.0` → partial-stake (NOT a hard block in sim) |
+| `reason` | str | Metadata / human label — not evaluated |
+
+> **t_band convention note:** G16 uses the **engine's T-minus convention**
+> (`cell_bucketing.t_band(eval_offset)`) — `eval_offset=110` → `"T-91-120"`.
+> This is different from the sim's own `_t_band()` helper (sec-from-open
+> convention used in the cell breakdown output table).  Both conventions exist
+> in the codebase; G16 always uses engine T-minus to match prod behaviour
+> exactly.
+
+**block_cells merging:** yaml `block_cells` and runtime override `block_cells`
+are **merged additively** by the engine (both lists apply; any hard-block in
+either list denies the tick).  To replicate this in the sim, concatenate both
+lists in the `--gate-config-override` JSON under the `block_cells` key.
+
+#### Use case 1: What alpha would we capture if we lifted block_cells?
+
+```bash
+# v9_1_lgb_only has 5 active block_cells — run with G16 ON (default) vs OFF
+python3 scripts/sim/tick_simulator.py \
+    --strategy-id v9_1_lgb_only --hours 168 \
+    --no-seed-from-prod-state \
+    --output-ev-json /tmp/g16_on.json
+
+python3 scripts/sim/tick_simulator.py \
+    --strategy-id v9_1_lgb_only --hours 168 \
+    --disable-gates G16 \
+    --no-seed-from-prod-state \
+    --output-ev-json /tmp/g16_off.json
+
+# Delta = fires and EV added back by lifting block_cells
+```
+
+#### Use case 2: Compute alpha cost of a specific block_cell
+
+```bash
+# Block only CASCADE×DOWN cell, compare with no block_cells
+cat > /tmp/one_cell.json << 'EOF'
+{"block_cells": [{"regime": "CASCADE", "direction": "DOWN"}]}
+EOF
+
+python3 scripts/sim/tick_simulator.py \
+    --strategy-id v12_lgb_combo --hours 168 \
+    --gate-config-override /tmp/one_cell.json \
+    --output-ev-json /tmp/with_cascade_down_block.json
+
+python3 scripts/sim/tick_simulator.py \
+    --strategy-id v12_lgb_combo --hours 168 \
+    --output-ev-json /tmp/no_block.json
+
+# Compare /tmp/with_cascade_down_block.json vs /tmp/no_block.json
+# The fire_count delta is the cost of this single block_cell
+```
+
+#### Use case 3: Validate existing block_cells match expected suppression
+
+```bash
+# With G16 ON (default — uses production block_cells from cfg):
+python3 scripts/sim/tick_simulator.py \
+    --strategy-id v12_lgb_combo --hours 168 \
+    --seed-from-prod-state \
+    --validate
+
+# With G16 OFF (lift block_cells entirely):
+python3 scripts/sim/tick_simulator.py \
+    --strategy-id v12_lgb_combo --hours 168 \
+    --seed-from-prod-state \
+    --disable-gates G16 \
+    --validate
+
+# If G16 makes no difference (delta=0), block_cells are inactive / no-op
+# If delta is significant, block_cells are suppressing real signal
+```
 
 ### Validation tolerance (Hub #348)
 

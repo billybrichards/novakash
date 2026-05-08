@@ -706,8 +706,13 @@ class TestGateToggle:
                 f"Expected disabled_gates='G10', got {fires[0].disabled_gates!r}"
             )
 
-    def test_unimplemented_gate_disable_warns_but_does_not_error(self):
-        """Disabling G16 (not implemented) emits a warning but doesn't raise."""
+    def test_implemented_gate_disable_no_warning(self):
+        """Disabling G16 (now implemented) emits NO 'not yet implemented' warning.
+
+        G16 was moved from _UNIMPLEMENTED_GATES to fully implemented in
+        audit #9c (PR following #511).  --disable-gates G16 is a valid EXPLORATION
+        mode use case (lift block_cells to see alpha cost).
+        """
         import io, contextlib
         from sim.tick_simulator import GateStack, SimState, _DEFAULT_GATE_CONFIG
 
@@ -719,8 +724,32 @@ class TestGateToggle:
             stack = GateStack(cfg, disabled_gates={"G16"})
 
         warn_output = stderr_capture.getvalue()
-        assert "not yet implemented" in warn_output or "G16" in warn_output, (
-            f"Expected warning about G16, got: {warn_output!r}"
+        assert "not yet implemented" not in warn_output, (
+            f"G16 is now implemented — should not warn 'not yet implemented'. "
+            f"Got: {warn_output!r}"
+        )
+
+        # Should still evaluate without error, G16 is a no-op when disabled
+        state = SimState(strategy_id="v12_lgb_combo")
+        tick = _make_tick()
+        passed, _ = stack.evaluate(tick, "UP", state, combo_dist=0.15)
+        # Just verify it doesn't raise
+
+    def test_unimplemented_gate_disable_warns_but_does_not_error(self):
+        """Disabling G13 (still not implemented) emits a warning but doesn't raise."""
+        import io, contextlib
+        from sim.tick_simulator import GateStack, SimState, _DEFAULT_GATE_CONFIG
+
+        cfg = dict(_DEFAULT_GATE_CONFIG)
+        cfg["min_consecutive_pass_ticks"] = 1
+
+        stderr_capture = io.StringIO()
+        with contextlib.redirect_stderr(stderr_capture):
+            stack = GateStack(cfg, disabled_gates={"G13"})
+
+        warn_output = stderr_capture.getvalue()
+        assert "not yet implemented" in warn_output or "G13" in warn_output, (
+            f"Expected warning about G13 (unimplemented), got: {warn_output!r}"
         )
 
         # Should still evaluate without error
