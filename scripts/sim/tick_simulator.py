@@ -1,8 +1,23 @@
-"""Tick-by-tick gate replay simulator.
+"""Tick-by-tick gate replay simulator — v2.
 
 Replays historical per-tick signal_evaluations through the live gate stack to
 produce trustworthy config-tuning estimates.  Fixes the ~60x looseness of SQL
 gate simulations (see memory feedback_strategy_comparison_tband_convention.md).
+
+v2 additions (Hub #424/#425 follow-up):
+  * State seeding (--seed-from-prod-state, default ON) — queries trades +
+    strategy_decisions to seed post-loss cooldown, per-window dedup, daily-
+    loss counter, and 3-tick confirmation before replay starts.  Fixes the
+    7.5x over-fire ratio observed in 7d v12_lgb_combo cold-start runs.
+  * Gate toggle architecture (--disable-gates) — the gate stack is now a list
+    of (gate_id, gate_fn) tuples.  Pass comma-separated gate IDs to skip any
+    subset. Use-cases: G10 skip = cooldown cost, G3,G4 skip = raw-signal alpha.
+  * WIN/LOSS resolution + EV (per-fire and per-cell breakdowns) — joins
+    window_snapshots.outcome and uses fill-price math (feedback_payoff_math.md)
+    to compute hypothetical $ EV.  Aggregates: total, per-direction, per-regime,
+    per-t_band, per-session, per-cell (direction × regime × t_band × session).
+  * --output-cells-csv flag for cell-level EV export.
+  * --stake flag (default 5.0) configures simulated stake per fire.
 
 Architecture
 ------------
@@ -12,6 +27,7 @@ Architecture
   - per-strategy-window cooldown timer (post-loss cooldown)
   - per-strategy-window consecutive-pass counter (3-tick confirmation)
   - per-window dedup lock (one fire per window per direction)
+  - daily-loss counter (from seeded or accumulated losses)
 * Emits a synthetic ``would-fire`` event for each tick that passes all gates.
 * Compares against actual trades table to produce validation metrics.
 
@@ -32,6 +48,10 @@ Gates replayed from DB data:
   G10 Post-loss cooldown   time since last LOSS >= post_loss_cooldown_min
   G11 3-tick confirmation  N consecutive passing ticks (min_consecutive_pass_ticks)
   G12 Per-window dedup     only one fire per (window_ts, strategy_id, direction)
+  G13 ChainlinkFreshnessGate — NOT IMPLEMENTED (data not available per-tick)
+  G14 OracleDisagreeGate    — NOT IMPLEMENTED (no per-tick oracle direction in DB)
+  G15 CellPauseGate         — NOT IMPLEMENTED (rolling-WR state not replayable offline)
+  G16 BlockCellsGate        — NOT IMPLEMENTED (per-cell predicate, audit follow-up)
 
 Gates NOT replayed (data not available in signal_evaluations):
   - OracleDisagreeGate (oracle_direction from inline step — no per-tick oracle direction in DB)
@@ -50,20 +70,43 @@ signal_evaluations.regime as a v4_regime proxy ONLY when window_snapshots
 v4_regime data is absent.  All outputs include ``regime_replay_confidence: LOW``
 until audit #12 + writer fix lands.
 
+State seeding trade-off (--seed-from-prod-state)
+------------------------------------------------
+Default ON for VALIDATION runs.  Seeds stateful gate counters from prod DB
+before replay starts:
+  - post_loss_cooldown: seeds _last_loss_ts from trades table
+  - per-window dedup: loads fired windows from strategy_decisions lookback
+  - daily-loss: sums losses since UTC midnight of t0
+  - 3-tick consec: reads last 3 strategy_decisions rows, sets counter
+
+Disable with ``--no-seed-from-prod-state`` for EXPLORATION mode (alpha mining)
+where you want cold-start behaviour to explore gate-off scenarios cleanly.
+When disabled, all state starts at zero (may over-fire by ~7.5x vs real).
+
 Usage
 -----
 On Montreal (has DATABASE_URL pointing at RDS prod)::
 
     cd /home/novakash/novakash
+
+    # Validation with state seeding (default):
     python3 scripts/sim/tick_simulator.py \\
         --strategy-id v12_lgb_combo \\
         --hours 168 \\
         --validate
 
-Locally (requires DATABASE_URL env var)::
+    # EXPLORATION: disable cooldown gate, see how many wins were skipped:
+    python3 scripts/sim/tick_simulator.py \\
+        --strategy-id v12_lgb_combo --hours 168 \\
+        --disable-gates G10 \\
+        --no-seed-from-prod-state
 
-    DATABASE_URL=postgresql://... python3 scripts/sim/tick_simulator.py \\
-        --strategy-id v12_lgb_combo --hours 168 --validate
+    # Raw-signal alpha ceiling (disable regime + source-agreement):
+    python3 scripts/sim/tick_simulator.py \\
+        --strategy-id v9_1_lgb_only --hours 168 \\
+        --disable-gates G3,G4 \\
+        --no-seed-from-prod-state \\
+        --output-cells-csv /tmp/cells_G3G4off.csv
 
 Gate config override (JSON file)::
 
@@ -85,6 +128,7 @@ Audit task #381 (audit-2026-05-06-09).
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -93,7 +137,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -135,7 +179,35 @@ _DEFAULT_GATE_CONFIG = {
     "v12_contrarian_enabled": True,
     "v12_contrarian_min_dist": 0.10,
     "v12_contrarian_kelly_modifier": 0.5,
+    "daily_loss_limit_usd": None,  # None = no daily halt
 }
+
+# All gate IDs supported by --disable-gates
+ALL_GATE_IDS = {
+    "G1", "G2", "G2b", "G3", "G4", "G5",
+    "G6", "G7", "G8", "G9", "G10", "G11", "G12",
+    "G13", "G14", "G15", "G16",
+}
+
+# Gates not implemented — if user tries to disable them, warn but don't error
+_UNIMPLEMENTED_GATES = {"G13", "G14", "G15", "G16"}
+
+# Session UTC hour mapping (derive from utc_hour)
+_SESSION_HOURS: List[Tuple[str, int, int]] = [
+    ("asian_early",  0,  5),   # 00-05 UTC
+    ("asian_late",   5,  8),   # 05-08 UTC
+    ("eu_am",        8, 12),   # 08-12 UTC
+    ("us_open",     12, 16),   # 12-16 UTC
+    ("us_pm",       16, 20),   # 16-20 UTC
+    ("us_late",     20, 24),   # 20-24 UTC
+]
+
+
+def _session_label(hour_utc: int) -> str:
+    for label, h_start, h_end in _SESSION_HOURS:
+        if h_start <= hour_utc < h_end:
+            return label
+    return "us_late"
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +259,7 @@ class TickRow:
     probability_lgb_v9_1: Optional[float]   # actually v9_2 from DB (proxy)
     probability_lgb_v12: Optional[float]    # signal_evaluations.probability_lgb_v12
 
-    # Resolved outcome (for validation)
+    # Resolved outcome (for validation + EV)
     outcome: Optional[str]  # WIN/LOSS/VOID from window_snapshots
     poly_winner: Optional[str]  # UP/DOWN from window_snapshots
 
@@ -257,6 +329,12 @@ class FireEvent:
     v4_regime: Optional[str] = None
     eval_offset: int = 0
     t_band: str = ""
+    session: str = ""
+    # EV fields — populated post-replay if window_snapshots.outcome is available
+    outcome: Optional[str] = None       # WIN/LOSS (inferred)
+    poly_winner: Optional[str] = None
+    ev_usd: Optional[float] = None      # fill-math P&L
+    disabled_gates: str = ""            # comma-separated gate IDs that were disabled
 
 
 @dataclass
@@ -277,8 +355,13 @@ class SimState:
     # Per-window dedup: set of (window_ts, direction) that have already fired
     fired_windows: set = field(default_factory=set)
 
-    def record_loss(self, resolved_at_epoch: float) -> None:
+    # Daily-loss accumulator: {date_str: total_loss_usd}
+    daily_loss: Dict[str, float] = field(default_factory=dict)
+
+    def record_loss(self, resolved_at_epoch: float, loss_usd: float = 0.0) -> None:
         self.last_loss_epoch = resolved_at_epoch
+        day_key = datetime.fromtimestamp(resolved_at_epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+        self.daily_loss[day_key] = self.daily_loss.get(day_key, 0.0) + abs(loss_usd)
 
     def in_cooldown(self, now_epoch: float, cooldown_min: float) -> Tuple[bool, float]:
         if cooldown_min <= 0 or self.last_loss_epoch is None:
@@ -288,6 +371,12 @@ class SimState:
         if elapsed < cooldown_sec:
             return True, cooldown_sec - elapsed
         return False, 0.0
+
+    def daily_loss_halted(self, now_epoch: float, limit_usd: Optional[float]) -> bool:
+        if limit_usd is None or limit_usd <= 0:
+            return False
+        day_key = datetime.fromtimestamp(now_epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+        return self.daily_loss.get(day_key, 0.0) >= limit_usd
 
     def update_consec(
         self, window_ts: int, direction: str, now_epoch: float, max_gap: float = 5.0
@@ -351,6 +440,236 @@ def _t_band(eval_offset: int) -> str:
 # Gate logic (mirrors engine gate stack for v12_lgb_combo / v9_ensemble)
 # ---------------------------------------------------------------------------
 
+# Gate function signature: (tick, direction, state, combo_dist, cfg) -> (passed, skip_reason)
+GateFn = Callable[
+    ["TickRow", str, "SimState", Optional[float], Dict[str, Any]],
+    Tuple[bool, Optional[str]],
+]
+
+
+def _gate_G1_timing(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    min_off = cfg.get("min_offset_sec", _DEFAULT_GATE_CONFIG["min_offset_sec"])
+    max_off = cfg.get("max_offset_sec", _DEFAULT_GATE_CONFIG["max_offset_sec"])
+    if tick.eval_offset is None:
+        return False, "timing:eval_offset_none"
+    if not (min_off <= tick.eval_offset <= max_off):
+        return False, f"timing:offset={tick.eval_offset} outside [{min_off},{max_off}]"
+    return True, None
+
+
+def _gate_G2_hour(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    blocked_hours = set(cfg.get("blocked_utc_hours", []) or [])
+    if tick.utc_hour in blocked_hours:
+        return False, f"hour_block:hour={tick.utc_hour}"
+    return True, None
+
+
+def _gate_G2b_hour_dir(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    if direction == "UP":
+        blocked_dir = set(cfg.get("blocked_utc_hours_up", []) or [])
+    else:
+        blocked_dir = set(cfg.get("blocked_utc_hours_down", []) or [])
+    if tick.utc_hour in blocked_dir:
+        return False, f"hour_block_{direction.lower()}:hour={tick.utc_hour}"
+    return True, None
+
+
+def _gate_G3_regime(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    # NOTE: regime_replay_confidence=LOW (v4_regime 99.7% NULL in window_snapshots).
+    # When v4_regime is NULL (the common case), this gate passes by default.
+    if tick.v4_regime is not None:
+        tradeable = set(
+            r.lower() for r in (cfg.get("tradeable_v4_regimes", []) or [])
+        )
+        if tradeable and tick.v4_regime.lower() not in tradeable:
+            return False, f"regime:v4_regime={tick.v4_regime} not tradeable"
+    return True, None
+
+
+def _gate_G4_source_agreement(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    req_chainlink = cfg.get("source_agreement_require_chainlink", True)
+    req_tiingo = cfg.get("source_agreement_require_tiingo", True)
+    if req_chainlink and tick.delta_chainlink is None:
+        return False, "source_agreement:chainlink_null"
+    if req_tiingo and tick.delta_tiingo is None:
+        return False, "source_agreement:tiingo_null"
+    min_sources = cfg.get("oracle_agreement_min_sources", 2) or 2
+    sources: Dict[str, float] = {}
+    if tick.delta_tiingo is not None:
+        sources["tiingo"] = tick.delta_tiingo
+    if tick.delta_chainlink is not None:
+        sources["chainlink"] = tick.delta_chainlink
+    if tick.delta_binance is not None:
+        sources["binance"] = tick.delta_binance
+    if len(sources) >= min_sources:
+        up_count = sum(1 for v in sources.values() if v > 0)
+        dn_count = sum(1 for v in sources.values() if v < 0)
+        majority = "UP" if up_count >= dn_count else "DOWN"
+        max_agreement = max(up_count, dn_count)
+        if max_agreement < min_sources:
+            return False, f"source_agreement:only {max_agreement}/{len(sources)} agree"
+        if majority != direction:
+            return False, f"source_agreement:majority={majority} != strategy={direction}"
+    return True, None
+
+
+def _gate_G5_vpin(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    vpin_min = cfg.get("vpin_min", _DEFAULT_GATE_CONFIG["vpin_min"])
+    vpin_max = cfg.get("vpin_max", _DEFAULT_GATE_CONFIG["vpin_max"])
+    if tick.vpin is not None:
+        if not (vpin_min <= tick.vpin <= vpin_max):
+            return False, f"vpin:vpin={tick.vpin:.3f} outside [{vpin_min},{vpin_max}]"
+    return True, None
+
+
+def _gate_G6_lgb_signal(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    if combo_dist is None:
+        return False, "lgb:combo_dist_none (v9_1 or v12 prob missing)"
+    combo_min = cfg.get("combo_min_dist", _DEFAULT_GATE_CONFIG["combo_min_dist"])
+    if combo_dist < combo_min:
+        return False, f"lgb:combo_dist={combo_dist:.3f} < min={combo_min}"
+    return True, None
+
+
+def _gate_G7_direction_agree(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    # Direction agreement is enforced upstream via combo_direction() / contrarian_direction()
+    # selection.  By the time a candidate (direction, combo_dist) is constructed, the
+    # agreement/contrarian decision has already been made.  This gate is a no-op in
+    # the current architecture but preserved for selective disabling.
+    return True, None
+
+
+def _gate_G8_lgb_floor(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    if combo_dist is None:
+        return True, None  # G6 already handles None combo_dist
+    if direction == "UP":
+        lgb_floor = cfg.get("lgb_dist_min_up", _DEFAULT_GATE_CONFIG["lgb_dist_min_up"])
+    else:
+        lgb_floor = cfg.get("lgb_dist_min_down", _DEFAULT_GATE_CONFIG["lgb_dist_min_down"])
+    if combo_dist < lgb_floor:
+        return False, f"lgb_floor:{direction}:combo_dist={combo_dist:.3f} < floor={lgb_floor}"
+    return True, None
+
+
+def _gate_G9_fill_band(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    fill_max = cfg.get("fill_band_max", _DEFAULT_GATE_CONFIG["fill_band_max"])
+    fill_min = cfg.get("fill_band_min", _DEFAULT_GATE_CONFIG["fill_band_min"])
+    if direction == "UP":
+        fill_floor = cfg.get("up_min_fill_price", 0.20) or 0.20
+        fill_price = tick.clob_up_ask
+    else:
+        fill_floor = cfg.get("down_min_fill_price", 0.15) or 0.15
+        fill_price = tick.clob_down_ask
+    if fill_price is not None:
+        if fill_price < fill_floor:
+            return False, f"fill_band:{direction}:fill={fill_price:.3f} < floor={fill_floor}"
+        if fill_price > fill_max:
+            return False, f"fill_band:{direction}:fill={fill_price:.3f} > max={fill_max}"
+        if fill_price < fill_min:
+            return False, f"fill_band:{direction}:fill={fill_price:.3f} < min={fill_min}"
+    # When fill_price is None, we allow (same as require_clob=False in engine)
+    return True, None
+
+
+def _gate_G10_cooldown(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    cooldown_min = cfg.get("post_loss_cooldown_min", _DEFAULT_GATE_CONFIG["post_loss_cooldown_min"])
+    in_cd, remaining = state.in_cooldown(tick.evaluated_at, cooldown_min)
+    if in_cd:
+        return False, f"cooldown:{remaining:.0f}s remaining"
+    # Daily-loss halt check (incorporated here as part of risk gate)
+    limit_usd = cfg.get("daily_loss_limit_usd")
+    if state.daily_loss_halted(tick.evaluated_at, limit_usd):
+        return False, "daily_loss_halt:limit_reached"
+    return True, None
+
+
+def _gate_G11_consec_ticks(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    min_ticks = cfg.get("min_consecutive_pass_ticks", 1) or 1
+    if min_ticks > 0:
+        count = state.update_consec(tick.window_ts, direction, tick.evaluated_at)
+        if count < min_ticks:
+            return False, f"consec_ticks:{count}/{min_ticks}"
+    return True, None
+
+
+def _gate_G12_dedup(
+    tick: "TickRow", direction: str, state: "SimState",
+    combo_dist: Optional[float], cfg: Dict[str, Any],
+) -> Tuple[bool, Optional[str]]:
+    if state.has_fired(tick.window_ts, direction):
+        return False, "dedup:already_fired_this_window"
+    return True, None
+
+
+# Gates not implemented — always pass, with a note in output
+def _gate_unimplemented(gate_id: str) -> GateFn:
+    def _fn(
+        tick: "TickRow", direction: str, state: "SimState",
+        combo_dist: Optional[float], cfg: Dict[str, Any],
+    ) -> Tuple[bool, Optional[str]]:
+        return True, None  # pass-through; not implemented
+    return _fn
+
+
+# Ordered gate pipeline: (gate_id, gate_fn)
+_BASE_GATE_PIPELINE: List[Tuple[str, GateFn]] = [
+    ("G1",  _gate_G1_timing),
+    ("G2",  _gate_G2_hour),
+    ("G2b", _gate_G2b_hour_dir),
+    ("G3",  _gate_G3_regime),
+    ("G4",  _gate_G4_source_agreement),
+    ("G5",  _gate_G5_vpin),
+    ("G6",  _gate_G6_lgb_signal),
+    ("G7",  _gate_G7_direction_agree),
+    ("G8",  _gate_G8_lgb_floor),
+    ("G9",  _gate_G9_fill_band),
+    ("G10", _gate_G10_cooldown),
+    ("G11", _gate_G11_consec_ticks),
+    ("G12", _gate_G12_dedup),
+    # G13-G16 not implemented
+    ("G13", _gate_unimplemented("G13")),
+    ("G14", _gate_unimplemented("G14")),
+    ("G15", _gate_unimplemented("G15")),
+    ("G16", _gate_unimplemented("G16")),
+]
+
+
 class GateStack:
     """Evaluates the v12_lgb_combo gate stack against a tick.
 
@@ -359,14 +678,30 @@ class GateStack:
     without the engine's full import tree.
 
     For each tick + candidate direction, returns (passed, skip_reason).
+
+    Gate toggle: pass disabled_gates as a set of gate IDs to skip.
+    Disabled gates always pass (default-open).  This enables EXPLORATION
+    mode where we ask "what fires without gate G10 (cooldown)?"
     """
 
-    def __init__(self, cfg: Dict[str, Any]):
+    def __init__(self, cfg: Dict[str, Any], disabled_gates: Optional[Set[str]] = None):
         self.cfg = cfg
-
-    def _gc(self, key: str) -> Any:
-        """Get gate config value."""
-        return self.cfg.get(key, _DEFAULT_GATE_CONFIG.get(key))
+        self.disabled_gates: Set[str] = set(disabled_gates or set())
+        if self.disabled_gates:
+            unimpl_requested = self.disabled_gates & _UNIMPLEMENTED_GATES
+            if unimpl_requested:
+                print(
+                    f"[tick_simulator] NOTE: Gates {sorted(unimpl_requested)} are not yet "
+                    "implemented (always pass). Disabling them has no effect on fire counts.",
+                    file=sys.stderr,
+                )
+            unknown = self.disabled_gates - ALL_GATE_IDS
+            if unknown:
+                print(
+                    f"[tick_simulator] WARNING: Unknown gate IDs in --disable-gates: {sorted(unknown)}. "
+                    "Known IDs: G1-G12 (implemented), G13-G16 (stubs).",
+                    file=sys.stderr,
+                )
 
     def evaluate(
         self,
@@ -375,133 +710,208 @@ class GateStack:
         state: SimState,
         combo_dist: Optional[float] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """Evaluate all gates. Returns (passed, skip_reason)."""
+        """Evaluate all gates in order. Returns (passed, skip_reason).
 
-        # G1: Timing gate
-        min_off = self._gc("min_offset_sec")
-        max_off = self._gc("max_offset_sec")
-        if tick.eval_offset is None:
-            return False, "timing:eval_offset_none"
-        if not (min_off <= tick.eval_offset <= max_off):
-            return False, f"timing:offset={tick.eval_offset} outside [{min_off},{max_off}]"
-
-        # G2: Hour block (symmetric)
-        blocked_hours = set(self._gc("blocked_utc_hours") or [])
-        if tick.utc_hour in blocked_hours:
-            return False, f"hour_block:hour={tick.utc_hour}"
-
-        # G2b: Per-direction UTC hour block
-        if direction == "UP":
-            blocked_dir = set(self._gc("blocked_utc_hours_up") or [])
-        else:
-            blocked_dir = set(self._gc("blocked_utc_hours_down") or [])
-        if tick.utc_hour in blocked_dir:
-            return False, f"hour_block_{direction.lower()}:hour={tick.utc_hour}"
-
-        # G3: Regime (v4) gate — ONLY applies when v4_regime is available.
-        # NOTE: regime_replay_confidence=LOW (v4_regime 99.7% NULL in window_snapshots).
-        # signal_evaluations.regime is VPIN regime (CALM/NORMAL/TRANSITION/CASCADE),
-        # NOT v4 regime (calm_trend/volatile_trend/chop/risk_off). Do NOT use VPIN
-        # regime as a v4 regime proxy — they are different systems.
-        # When v4_regime is NULL (the common case), this gate passes by default
-        # (same as the live engine: regime=None → pass by default per RegimeGate).
-        if tick.v4_regime is not None:
-            tradeable = set(r.lower() for r in (self._gc("tradeable_v4_regimes") or []))
-            if tradeable and tick.v4_regime.lower() not in tradeable:
-                return False, f"regime:v4_regime={tick.v4_regime} not tradeable"
-
-        # G4: Source agreement gate
-        req_chainlink = self._gc("source_agreement_require_chainlink")
-        req_tiingo = self._gc("source_agreement_require_tiingo")
-        if req_chainlink and tick.delta_chainlink is None:
-            return False, "source_agreement:chainlink_null"
-        if req_tiingo and tick.delta_tiingo is None:
-            return False, "source_agreement:tiingo_null"
-
-        # Source direction agreement: at least oracle_agreement_min_sources agree
-        min_sources = self._gc("oracle_agreement_min_sources") or 2
-        sources: Dict[str, float] = {}
-        if tick.delta_tiingo is not None:
-            sources["tiingo"] = tick.delta_tiingo
-        if tick.delta_chainlink is not None:
-            sources["chainlink"] = tick.delta_chainlink
-        if tick.delta_binance is not None:
-            sources["binance"] = tick.delta_binance
-
-        if len(sources) >= min_sources:
-            up_count = sum(1 for v in sources.values() if v > 0)
-            dn_count = sum(1 for v in sources.values() if v < 0)
-            majority = "UP" if up_count >= dn_count else "DOWN"
-            max_agreement = max(up_count, dn_count)
-            if max_agreement < min_sources:
-                return False, f"source_agreement:only {max_agreement}/{len(sources)} agree"
-            # Direction must match strategy direction
-            if majority != direction:
-                return False, f"source_agreement:majority={majority} != strategy={direction}"
-
-        # G5: VPIN guard
-        vpin_min = self._gc("vpin_min")
-        vpin_max = self._gc("vpin_max")
-        if tick.vpin is not None:
-            if not (vpin_min <= tick.vpin <= vpin_max):
-                return False, f"vpin:vpin={tick.vpin:.3f} outside [{vpin_min},{vpin_max}]"
-
-        # G6+G7+G8: LGB probability + direction agreement + safety floor
-        # These are specific to v12_lgb_combo combo logic
-        if combo_dist is None:
-            return False, "lgb:combo_dist_none (v9_1 or v12 prob missing)"
-
-        combo_min = self._gc("combo_min_dist")
-        if combo_dist < combo_min:
-            return False, f"lgb:combo_dist={combo_dist:.3f} < min={combo_min}"
-
-        # LGB safety floor per direction
-        lgb_floor: float
-        if direction == "UP":
-            lgb_floor = self._gc("lgb_dist_min_up")
-        else:
-            lgb_floor = self._gc("lgb_dist_min_down")
-        if combo_dist < lgb_floor:
-            return False, f"lgb_floor:{direction}:combo_dist={combo_dist:.3f} < floor={lgb_floor}"
-
-        # G9: Fill band gate
-        fill_max = self._gc("fill_band_max")
-        fill_min = self._gc("fill_band_min")
-        if direction == "UP":
-            fill_floor = self._gc("up_min_fill_price") or 0.20
-            fill_price = tick.clob_up_ask
-        else:
-            fill_floor = self._gc("down_min_fill_price") or 0.15
-            fill_price = tick.clob_down_ask
-
-        if fill_price is not None:
-            if fill_price < fill_floor:
-                return False, f"fill_band:{direction}:fill={fill_price:.3f} < floor={fill_floor}"
-            if fill_price > fill_max:
-                return False, f"fill_band:{direction}:fill={fill_price:.3f} > max={fill_max}"
-            if fill_price < fill_min:
-                return False, f"fill_band:{direction}:fill={fill_price:.3f} < min={fill_min}"
-        # When fill_price is None, we allow (same as require_clob=False in engine)
-
-        # G10: Post-loss cooldown
-        cooldown_min = self._gc("post_loss_cooldown_min")
-        in_cd, remaining = state.in_cooldown(tick.evaluated_at, cooldown_min)
-        if in_cd:
-            return False, f"cooldown:{remaining:.0f}s remaining"
-
-        # G11: 3-tick consecutive pass confirmation
-        # Update counter AFTER all other gates pass
-        min_ticks = self._gc("min_consecutive_pass_ticks") or 1
-        if min_ticks > 0:
-            count = state.update_consec(tick.window_ts, direction, tick.evaluated_at)
-            if count < min_ticks:
-                return False, f"consec_ticks:{count}/{min_ticks}"
-
-        # G12: Per-window dedup — only one TRADE per (window_ts, direction)
-        if state.has_fired(tick.window_ts, direction):
-            return False, "dedup:already_fired_this_window"
+        Gates in self.disabled_gates are skipped (treated as always-pass).
+        G11 (consec_ticks) has a side effect: it updates the counter even when
+        disabled, so state remains consistent for other gates.
+        """
+        for gate_id, gate_fn in _BASE_GATE_PIPELINE:
+            if gate_id in self.disabled_gates:
+                # Special case: G11 must update state even when disabled
+                if gate_id == "G11":
+                    state.update_consec(tick.window_ts, direction, tick.evaluated_at)
+                continue
+            passed, reason = gate_fn(tick, direction, state, combo_dist, self.cfg)
+            if not passed:
+                # On non-timing/non-dedup/non-cooldown failures, reset consec counter
+                # (mirrors engine: any upstream gate failure resets consec)
+                if reason and not (
+                    reason.startswith("consec_ticks")
+                    or reason.startswith("dedup")
+                    or reason.startswith("cooldown")
+                    or reason.startswith("daily_loss")
+                ):
+                    state.consec_pass.pop(tick.window_ts, None)
+                return False, reason
 
         return True, None
+
+
+# ---------------------------------------------------------------------------
+# State seeding from prod DB
+# ---------------------------------------------------------------------------
+
+def _seed_state_from_db(
+    strategy_id: str,
+    t0_epoch: float,
+    cfg: Dict[str, Any],
+    db_url: str,
+) -> SimState:
+    """Query prod DB to seed SimState before replay starts at t0_epoch.
+
+    Seeded components:
+    1. post_loss_cooldown: last LOSS trade's created_at if within cooldown window
+    2. per-window dedup: any (window_ts, direction) fired in [t0 - 30min, t0]
+    3. daily-loss counter: total loss_usd since UTC midnight of t0
+    4. 3-tick confirmation: last 3 strategy_decisions rows to seed consec_pass
+
+    Returns pre-seeded SimState.
+    """
+    import psycopg2
+    import psycopg2.extras
+
+    sync_url = (
+        db_url
+        .replace("postgresql+asyncpg://", "postgresql://")
+        .replace("+asyncpg", "")
+    )
+
+    state = SimState(strategy_id=strategy_id)
+    cooldown_min = cfg.get("post_loss_cooldown_min", 20) or 20
+    cooldown_sec = cooldown_min * 60
+
+    # UTC midnight of t0 for daily-loss seeding
+    t0_dt = datetime.fromtimestamp(t0_epoch, tz=timezone.utc)
+    utc_midnight = t0_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    print(
+        f"[tick_simulator] Seeding state from prod DB for {strategy_id} at "
+        f"t0={t0_dt.isoformat()}",
+        file=sys.stderr,
+    )
+
+    conn = psycopg2.connect(sync_url, connect_timeout=10)
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+
+            # ── 1. Post-loss cooldown seed ──────────────────────────────────
+            # Find the most recent LOSS trade within cooldown window before t0
+            cur.execute(
+                """
+                SELECT EXTRACT(EPOCH FROM created_at)::bigint AS created_epoch,
+                       stake_usd
+                FROM trades
+                WHERE strategy_id = %s
+                  AND outcome = 'LOSS'
+                  AND created_at >= NOW() - INTERVAL '1 day'
+                  AND EXTRACT(EPOCH FROM created_at)::bigint BETWEEN %s AND %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (
+                    strategy_id,
+                    int(t0_epoch) - int(cooldown_sec),
+                    int(t0_epoch),
+                ),
+            )
+            row = cur.fetchone()
+            if row:
+                state.last_loss_epoch = float(row["created_epoch"])
+                print(
+                    f"[tick_simulator] Seeded: last_loss at "
+                    f"{datetime.fromtimestamp(state.last_loss_epoch, tz=timezone.utc).isoformat()} "
+                    f"(cooldown active: {cooldown_sec - (t0_epoch - state.last_loss_epoch):.0f}s remaining)",
+                    file=sys.stderr,
+                )
+
+            # ── 2. Per-window dedup seed ────────────────────────────────────
+            # Load any windows fired in [t0 - 30min, t0]
+            lookback_dedup = t0_epoch - 30 * 60
+            cur.execute(
+                """
+                SELECT DISTINCT
+                    (EXTRACT(EPOCH FROM created_at)::bigint / 300) * 300 AS window_ts,
+                    direction
+                FROM trades
+                WHERE strategy_id = %s
+                  AND action = 'TRADE'
+                  AND EXTRACT(EPOCH FROM created_at) BETWEEN %s AND %s
+                """,
+                (strategy_id, int(lookback_dedup), int(t0_epoch)),
+            )
+            dedup_rows = cur.fetchall()
+            for r in dedup_rows:
+                state.fired_windows.add((int(r["window_ts"]), r["direction"]))
+            if dedup_rows:
+                print(
+                    f"[tick_simulator] Seeded: {len(dedup_rows)} fired windows in dedup set",
+                    file=sys.stderr,
+                )
+
+            # ── 3. Daily-loss counter seed ──────────────────────────────────
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(stake_usd), 0) AS total_loss_usd
+                FROM trades
+                WHERE strategy_id = %s
+                  AND outcome = 'LOSS'
+                  AND created_at >= %s
+                  AND created_at < %s
+                """,
+                (
+                    strategy_id,
+                    utc_midnight,
+                    datetime.fromtimestamp(t0_epoch, tz=timezone.utc),
+                ),
+            )
+            loss_row = cur.fetchone()
+            daily_loss_usd = float(loss_row["total_loss_usd"]) if loss_row else 0.0
+            if daily_loss_usd > 0:
+                day_key = utc_midnight.strftime("%Y-%m-%d")
+                state.daily_loss[day_key] = daily_loss_usd
+                print(
+                    f"[tick_simulator] Seeded: daily_loss[{day_key}] = ${daily_loss_usd:.2f}",
+                    file=sys.stderr,
+                )
+
+            # ── 4. 3-tick confirmation seed (best effort) ───────────────────
+            # Read last 3 strategy_decisions rows from prod, infer pass/fail,
+            # seed consec_pass if all 3 were in same window+direction.
+            cur.execute(
+                """
+                SELECT
+                    (EXTRACT(EPOCH FROM evaluated_at)::bigint / 300) * 300 AS window_ts,
+                    direction,
+                    action,
+                    EXTRACT(EPOCH FROM evaluated_at)::bigint AS eval_epoch
+                FROM strategy_decisions
+                WHERE strategy_id = %s
+                  AND evaluated_at >= %s
+                  AND evaluated_at < %s
+                ORDER BY evaluated_at DESC
+                LIMIT 3
+                """,
+                (
+                    strategy_id,
+                    datetime.fromtimestamp(t0_epoch - 60, tz=timezone.utc),
+                    datetime.fromtimestamp(t0_epoch, tz=timezone.utc),
+                ),
+            )
+            tick_rows = cur.fetchall()
+            if tick_rows and len(tick_rows) >= 2:
+                # Check if last N decisions were same window + direction (all passed pre-consec gates)
+                first = tick_rows[0]
+                all_same = all(
+                    r["window_ts"] == first["window_ts"] and r["direction"] == first["direction"]
+                    for r in tick_rows
+                )
+                if all_same:
+                    wts = int(first["window_ts"])
+                    direction = first["direction"]
+                    count = len(tick_rows)
+                    epoch = float(first["eval_epoch"])
+                    state.consec_pass[wts] = (count, direction, epoch)
+                    print(
+                        f"[tick_simulator] Seeded: consec_pass[window_ts={wts}] = "
+                        f"{count} ticks ({direction})",
+                        file=sys.stderr,
+                    )
+
+    finally:
+        conn.close()
+
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +936,7 @@ def _load_ticks_from_db(
     Columns loaded:
     - All columns from signal_evaluations needed for gate replay
     - probability_lgb_v9_1, probability_lgb_v12 (sparse — NULL handling required)
-    - window_snapshots.outcome, poly_winner, v4_regime (for validation)
+    - window_snapshots.outcome, poly_winner, v4_regime (for validation + EV)
     """
     try:
         import psycopg2
@@ -715,6 +1125,8 @@ def run_replay(
     ticks: List[TickRow],
     cfg: Dict[str, Any],
     initial_state: Optional[SimState] = None,
+    disabled_gates: Optional[Set[str]] = None,
+    stake: float = 5.0,
 ) -> Tuple[List[FireEvent], SimState]:
     """Replay ticks through the gate stack chronologically.
 
@@ -724,13 +1136,30 @@ def run_replay(
     For v12_lgb_combo, each tick is evaluated for BOTH UP and DOWN directions
     (same as engine: v12_lgb_combo evaluates agreement+contrarian for both).
     The dedup gate ensures only one fire per (window_ts, direction).
+
+    EV is computed at fire-time by looking up window_snapshots.outcome from
+    the tick. Fires with NULL outcome are included in counts but excluded from
+    EV calculations (marked ev_usd=None).
+
+    Args:
+        disabled_gates: set of gate IDs to skip (EXPLORATION mode).
+        stake: simulated stake per fire in USD.
     """
-    stack = GateStack(cfg)
+    disabled = set(disabled_gates or set())
+    disabled_str = ",".join(sorted(disabled)) if disabled else ""
+
+    stack = GateStack(cfg, disabled_gates=disabled)
     state = initial_state or SimState(strategy_id=strategy_id)
     fire_events: List[FireEvent] = []
 
     contrarian_enabled = cfg.get("v12_contrarian_enabled", True)
     contrarian_min_dist = cfg.get("v12_contrarian_min_dist", 0.10)
+
+    # Build window_ts → (outcome, poly_winner) lookup from loaded ticks
+    window_outcomes: Dict[int, Tuple[Optional[str], Optional[str]]] = {}
+    for t in ticks:
+        if t.window_ts not in window_outcomes and (t.outcome or t.poly_winner):
+            window_outcomes[t.window_ts] = (t.outcome, t.poly_winner)
 
     for tick in ticks:
         # Determine candidate directions and their combo_dist
@@ -753,8 +1182,28 @@ def run_replay(
         for direction, combo_dist in candidates:
             passed, skip_reason = stack.evaluate(tick, direction, state, combo_dist)
             if passed:
-                # Determine fill price for output
+                # Determine fill price
                 fill = tick.clob_up_ask if direction == "UP" else tick.clob_down_ask
+
+                # Resolve outcome + EV for this fire
+                ws_outcome, ws_poly_winner = window_outcomes.get(tick.window_ts, (None, None))
+                ev = _fill_math_pnl(
+                    outcome=ws_outcome,
+                    fill_price=fill,
+                    direction=direction,
+                    poly_winner=ws_poly_winner,
+                    stake=stake,
+                )
+
+                # Infer WIN/LOSS label for the event
+                fire_outcome: Optional[str] = None
+                if ev is not None:
+                    fire_outcome = "WIN" if ev > 0 else "LOSS"
+
+                # Update daily loss state for resolved LOSS events
+                if fire_outcome == "LOSS":
+                    state.record_loss(tick.evaluated_at, abs(ev) if ev else stake)
+
                 event = FireEvent(
                     window_ts=tick.window_ts,
                     evaluated_at=tick.evaluated_at,
@@ -767,20 +1216,14 @@ def run_replay(
                     v4_regime=tick.v4_regime,
                     eval_offset=tick.eval_offset,
                     t_band=_t_band(tick.eval_offset),
+                    session=_session_label(tick.utc_hour),
+                    outcome=fire_outcome,
+                    poly_winner=ws_poly_winner,
+                    ev_usd=ev,
+                    disabled_gates=disabled_str,
                 )
                 fire_events.append(event)
                 state.mark_fired(tick.window_ts, direction)
-            else:
-                # On non-timing/non-dedup failures, reset consec counter
-                # (mirrors engine: any upstream gate failure resets consec)
-                if skip_reason and not (
-                    skip_reason.startswith("consec_ticks")
-                    or skip_reason.startswith("dedup")
-                    or skip_reason.startswith("cooldown")
-                ):
-                    # Reset consec pass for this window+direction
-                    key = (tick.window_ts, direction)
-                    state.consec_pass.pop(tick.window_ts, None)
 
     return fire_events, state
 
@@ -794,7 +1237,7 @@ def _fill_math_pnl(
     fill_price: Optional[float],
     direction: Optional[str],
     poly_winner: Optional[str],
-    stake: float = 3.0,  # default $3 stake for sim
+    stake: float = 5.0,
 ) -> Optional[float]:
     """Compute fill-math P&L for a simulated fire event.
 
@@ -802,6 +1245,10 @@ def _fill_math_pnl(
     Per memory feedback_payoff_math.md:
         WIN  = (1 - fill) * (stake / fill) - 0.072 * stake
         LOSS = -stake
+
+    Returns None when outcome is unknown (window not yet resolved or
+    writer regression — audit #351).  These fires are counted in n_fires
+    but excluded from EV/WR calculations.
     """
     if fill_price is None or fill_price <= 0:
         return None
@@ -811,8 +1258,6 @@ def _fill_math_pnl(
     if outcome in ("WIN", "LOSS"):
         resolved_outcome = outcome
     elif poly_winner is not None and direction is not None:
-        # Infer from poly_winner vs direction
-        # poly_winner = "UP" means market resolved UP
         if poly_winner.upper() == direction.upper():
             resolved_outcome = "WIN"
         else:
@@ -824,6 +1269,86 @@ def _fill_math_pnl(
         return (1.0 - fill_price) * (stake / fill_price) - 0.072 * stake
     else:
         return -stake
+
+
+# ---------------------------------------------------------------------------
+# EV aggregation
+# ---------------------------------------------------------------------------
+
+def _ev_aggregate(events: List[FireEvent]) -> Dict[str, Any]:
+    """Build EV summary aggregated by direction, regime, t_band, session, cell."""
+    n_fires = len(events)
+    resolved = [e for e in events if e.ev_usd is not None]
+    n_resolved = len(resolved)
+    n_wins = sum(1 for e in resolved if e.ev_usd is not None and e.ev_usd > 0)
+    n_losses = n_resolved - n_wins
+    wr_pct = (n_wins / n_resolved * 100) if n_resolved > 0 else None
+    total_ev = sum(e.ev_usd for e in resolved if e.ev_usd is not None)
+
+    def _cell_stats(subset: List[FireEvent]) -> Dict[str, Any]:
+        n = len(subset)
+        res = [e for e in subset if e.ev_usd is not None]
+        nr = len(res)
+        nw = sum(1 for e in res if e.ev_usd is not None and e.ev_usd > 0)
+        nl = nr - nw
+        wr = (nw / nr * 100) if nr > 0 else None
+        ev = sum(e.ev_usd for e in res if e.ev_usd is not None)
+        return {
+            "n_fires": n, "n_resolved": nr, "n_wins": nw, "n_losses": nl,
+            "wr_pct": round(wr, 1) if wr is not None else None,
+            "total_ev_usd": round(ev, 2),
+        }
+
+    # Per-direction
+    by_dir: Dict[str, Dict] = {}
+    for d in ("UP", "DOWN"):
+        by_dir[d] = _cell_stats([e for e in events if e.direction == d])
+
+    # Per-regime
+    regimes = sorted(set(e.regime or "unknown" for e in events))
+    by_regime: Dict[str, Dict] = {}
+    for r in regimes:
+        by_regime[r] = _cell_stats([e for e in events if (e.regime or "unknown") == r])
+
+    # Per-t_band
+    tbands = ["T-1-60", "T-61-120", "T-121-180", "T-181-240", "T-241-300"]
+    by_tband: Dict[str, Dict] = {}
+    for tb in tbands:
+        by_tband[tb] = _cell_stats([e for e in events if e.t_band == tb])
+
+    # Per-session
+    sessions = [s for s, _, _ in _SESSION_HOURS]
+    by_session: Dict[str, Dict] = {}
+    for s in sessions:
+        by_session[s] = _cell_stats([e for e in events if e.session == s])
+
+    # Per-cell (direction × regime × t_band × session)
+    cells: Dict[str, Dict] = {}
+    for e in events:
+        key = f"{e.direction}|{e.regime or 'unknown'}|{e.t_band}|{e.session}"
+        if key not in cells:
+            cells[key] = []
+        cells[key].append(e)
+    by_cell: Dict[str, Dict] = {}
+    for key, evs in cells.items():
+        by_cell[key] = _cell_stats(evs)
+
+    return {
+        "total": {
+            "n_fires": n_fires,
+            "n_resolved": n_resolved,
+            "n_wins": n_wins,
+            "n_losses": n_losses,
+            "wr_pct": round(wr_pct, 1) if wr_pct is not None else None,
+            "total_ev_usd": round(total_ev, 2),
+        },
+        "by_direction": by_dir,
+        "by_regime": by_regime,
+        "by_t_band": by_tband,
+        "by_session": by_session,
+        "by_cell": by_cell,
+        "disabled_gates": events[0].disabled_gates if events else "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +1526,7 @@ def _build_cell_df(
     ticks: List[TickRow],
     warmup_cutoff: float,
 ) -> List[Dict[str, Any]]:
-    """Build per-cell summary: strategy_id × direction × t_band × regime."""
+    """Build per-cell summary: strategy_id × direction × t_band × regime × session."""
     events_post = [e for e in fire_events if e.evaluated_at >= warmup_cutoff]
 
     # Map window_ts -> outcome, poly_winner from ticks
@@ -1010,26 +1535,17 @@ def _build_cell_df(
         if t.window_ts not in window_outcomes and (t.outcome or t.poly_winner):
             window_outcomes[t.window_ts] = (t.outcome, t.poly_winner)
 
-    # Group by cell key
+    # Group by cell key (include session)
     cells: Dict[Tuple, List[FireEvent]] = defaultdict(list)
     for e in events_post:
-        key = (e.strategy_id, e.direction, e.t_band, e.regime or "unknown")
+        key = (e.strategy_id, e.direction, e.t_band, e.regime or "unknown", e.session)
         cells[key].append(e)
 
     rows = []
-    for (sid, direction, t_band, regime), evs in sorted(cells.items()):
+    for (sid, direction, t_band, regime, session), evs in sorted(cells.items()):
         n_fires = len(evs)
-        # Compute simulated WR using resolved outcomes
-        resolved = [
-            _fill_math_pnl(
-                outcome=window_outcomes.get(e.window_ts, (None, None))[0],
-                fill_price=e.fill_price,
-                direction=direction,
-                poly_winner=window_outcomes.get(e.window_ts, (None, None))[1],
-            )
-            for e in evs
-        ]
-        resolved_pnl = [p for p in resolved if p is not None]
+        # Use pre-computed EV from FireEvent if available, otherwise recompute
+        resolved_pnl = [e.ev_usd for e in evs if e.ev_usd is not None]
         n_resolved = len(resolved_pnl)
         n_wins = sum(1 for p in resolved_pnl if p > 0)
         wr = n_wins / n_resolved if n_resolved > 0 else None
@@ -1043,11 +1559,15 @@ def _build_cell_df(
             "direction": direction,
             "t_band": t_band,
             "vpin_regime": regime,
+            "session": session,
             "n_would_fire": n_fires,
             "n_resolved": n_resolved,
+            "n_wins": n_wins,
+            "n_losses": n_resolved - n_wins,
             "simulated_WR": f"{wr:.1%}" if wr is not None else "N/A",
             "fill_adj_EV": f"{total_pnl:.2f}" if resolved_pnl else "N/A",
             "avg_fill": f"{avg_fill:.3f}" if avg_fill else "N/A",
+            "disabled_gates": evs[0].disabled_gates,
             "regime_replay_confidence": "LOW",
         })
     return rows
@@ -1076,13 +1596,60 @@ def _print_table(rows: List[Dict[str, Any]]) -> None:
         print("  ".join(str(r.get(k, "")).ljust(widths[k]) for k in keys))
 
 
+def _print_ev_summary(agg: Dict[str, Any]) -> None:
+    """Print EV aggregation summary in human-readable format."""
+    total = agg.get("total", {})
+    disabled = agg.get("disabled_gates", "")
+    gate_note = f" (disabled_gates={disabled})" if disabled else ""
+    print(f"\n=== WR/EV Summary{gate_note} ===")
+    print(
+        f"  Total:   n_fires={total.get('n_fires',0)}  n_resolved={total.get('n_resolved',0)}  "
+        f"n_wins={total.get('n_wins',0)}  n_losses={total.get('n_losses',0)}  "
+        f"WR={total.get('wr_pct','N/A')}%  total_EV=${total.get('total_ev_usd','N/A')}"
+    )
+
+    print("\n  By direction:")
+    for d, s in agg.get("by_direction", {}).items():
+        print(
+            f"    {d:4s}: n={s['n_fires']:3d}  resolved={s['n_resolved']:3d}  "
+            f"WR={s.get('wr_pct','N/A')}%  EV=${s.get('total_ev_usd','N/A')}"
+        )
+
+    print("\n  By regime:")
+    for r, s in sorted(agg.get("by_regime", {}).items()):
+        if s["n_fires"] > 0:
+            print(
+                f"    {r:12s}: n={s['n_fires']:3d}  WR={s.get('wr_pct','N/A')}%  "
+                f"EV=${s.get('total_ev_usd','N/A')}"
+            )
+
+    print("\n  By t_band:")
+    for tb, s in agg.get("by_t_band", {}).items():
+        if s["n_fires"] > 0:
+            print(
+                f"    {tb:12s}: n={s['n_fires']:3d}  WR={s.get('wr_pct','N/A')}%  "
+                f"EV=${s.get('total_ev_usd','N/A')}"
+            )
+
+    print("\n  By session:")
+    for sess, s in agg.get("by_session", {}).items():
+        if s["n_fires"] > 0:
+            print(
+                f"    {sess:12s}: n={s['n_fires']:3d}  WR={s.get('wr_pct','N/A')}%  "
+                f"EV=${s.get('total_ev_usd','N/A')}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------------
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Tick-by-tick gate replay simulator (Hub #348 / audit #381)"
+        description=(
+            "Tick-by-tick gate replay simulator v2 "
+            "(Hub #348 / audit #381 — state seeding + gate toggles + WR/EV)"
+        )
     )
     parser.add_argument(
         "--strategy-id",
@@ -1121,6 +1688,61 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help="Path to write cell DataFrame as JSON (optional)",
     )
+
+    # ── v2 flags ──────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--seed-from-prod-state",
+        action="store_true",
+        default=True,
+        help=(
+            "Seed replay state from prod DB before t0 (post-loss cooldown, dedup, "
+            "daily-loss, 3-tick). Default ON. Reduces cold-start over-fire. "
+            "Disable with --no-seed-from-prod-state for EXPLORATION mode."
+        ),
+    )
+    parser.add_argument(
+        "--no-seed-from-prod-state",
+        dest="seed_from_prod_state",
+        action="store_false",
+        help=(
+            "Disable prod-state seeding. Useful for EXPLORATION (alpha mining) "
+            "where you want clean cold-start behaviour to study gate-off scenarios. "
+            "Without seeding the simulator may over-fire by ~7.5x vs real."
+        ),
+    )
+    parser.add_argument(
+        "--disable-gates",
+        default=None,
+        help=(
+            "Comma-separated gate IDs to disable (EXPLORATION mode). "
+            "Disabled gates always pass (default-open). "
+            "Examples: --disable-gates G10 (no cooldown), --disable-gates G3,G4 (raw signal). "
+            "Gate IDs: G1-G12 (implemented), G13-G16 (stubs — not yet implemented). "
+            "Use --no-seed-from-prod-state together for cleanest exploration. "
+            "Output includes disabled_gates list for traceability."
+        ),
+    )
+    parser.add_argument(
+        "--stake",
+        type=float,
+        default=5.0,
+        help="Simulated stake per fire in USD for EV calculations (default: 5.0)",
+    )
+    parser.add_argument(
+        "--output-cells-csv",
+        default=None,
+        help=(
+            "Path to write per-cell EV breakdown as CSV "
+            "(direction × regime × t_band × session). "
+            "Useful for alpha mining in EXPLORATION mode."
+        ),
+    )
+    parser.add_argument(
+        "--output-ev-json",
+        default=None,
+        help="Path to write full EV aggregation JSON (total + per-dimension + per-cell)",
+    )
+
     args = parser.parse_args(argv)
 
     # Resolve DB URL
@@ -1141,6 +1763,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         cfg.update(overrides)
         print(f"[tick_simulator] Applied {len(overrides)} gate config overrides", file=sys.stderr)
 
+    # Parse --disable-gates
+    disabled_gates: Optional[Set[str]] = None
+    if args.disable_gates:
+        disabled_gates = {g.strip().upper() for g in args.disable_gates.split(",")}
+        print(
+            f"[tick_simulator] EXPLORATION MODE: Disabling gates: {sorted(disabled_gates)}",
+            file=sys.stderr,
+        )
+
     # Load ticks
     ticks = _load_ticks_from_db(args.strategy_id, args.hours, db_url)
     if not ticks:
@@ -1156,24 +1787,89 @@ def main(argv: Optional[List[str]] = None) -> int:
         file=sys.stderr,
     )
 
+    # ── State seeding ──────────────────────────────────────────────────────
+    initial_state: Optional[SimState] = None
+    if args.seed_from_prod_state:
+        print(
+            "[tick_simulator] Seeding state from prod DB (--seed-from-prod-state ON)...",
+            file=sys.stderr,
+        )
+        try:
+            initial_state = _seed_state_from_db(
+                strategy_id=args.strategy_id,
+                t0_epoch=first_ts,
+                cfg=cfg,
+                db_url=db_url,
+            )
+        except Exception as exc:
+            print(
+                f"[tick_simulator] WARNING: State seeding failed ({exc}). "
+                "Continuing with cold-start state (may over-fire).",
+                file=sys.stderr,
+            )
+            initial_state = None
+    else:
+        print(
+            "[tick_simulator] State seeding DISABLED (--no-seed-from-prod-state). "
+            "Cold-start — may over-fire vs real.",
+            file=sys.stderr,
+        )
+
     # Run replay
     t0 = time.monotonic()
-    fire_events, final_state = run_replay(args.strategy_id, ticks, cfg)
+    fire_events, final_state = run_replay(
+        args.strategy_id,
+        ticks,
+        cfg,
+        initial_state=initial_state,
+        disabled_gates=disabled_gates,
+        stake=args.stake,
+    )
     elapsed = time.monotonic() - t0
     print(
         f"[tick_simulator] Replay complete: {len(fire_events)} fires in {elapsed:.2f}s",
         file=sys.stderr,
     )
 
-    # Build cell summary
+    # Build cell summary (includes EV)
     cell_df = _build_cell_df(fire_events, ticks, warmup_cutoff)
     print("\n=== Simulated fires per cell ===")
     _print_table(cell_df)
 
+    # EV aggregation
+    events_post_warmup = [e for e in fire_events if e.evaluated_at >= warmup_cutoff]
+    ev_agg = _ev_aggregate(events_post_warmup)
+    _print_ev_summary(ev_agg)
+
+    # Outputs
     if args.output_json:
         with open(args.output_json, "w") as f:
             json.dump(cell_df, f, indent=2)
         print(f"\nCell DataFrame written to {args.output_json}")
+
+    if args.output_ev_json:
+        # JSON-serialise the nested dict (some values are None)
+        def _to_serializable(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: _to_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_to_serializable(v) for v in obj]
+            return obj
+
+        with open(args.output_ev_json, "w") as f:
+            json.dump(_to_serializable(ev_agg), f, indent=2)
+        print(f"EV aggregation written to {args.output_ev_json}")
+
+    if args.output_cells_csv:
+        if cell_df:
+            keys = list(cell_df[0].keys())
+            with open(args.output_cells_csv, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=keys)
+                writer.writeheader()
+                writer.writerows(cell_df)
+            print(f"Per-cell CSV written to {args.output_cells_csv}")
+        else:
+            print("No cell data to write to CSV (no fires post-warmup).")
 
     if args.validate:
         print("\n=== Loading actual trades for validation ===")
