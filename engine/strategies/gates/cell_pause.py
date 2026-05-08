@@ -155,6 +155,7 @@ class CellPauseGate(Gate):
         # when present (matches v9_ensemble's pl_dir computation).
         for fld in (
             "probability_lgb",
+            "probability_lgb_v9_2",
             "probability_lgb_v9_1",
             "probability_lgb_v12",
         ):

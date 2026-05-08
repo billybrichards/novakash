@@ -71,6 +71,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 from strategies.configs.v9_ensemble import evaluate_v9_ensemble as _evaluate_v9
+from strategies.gates.cell_param_overrides import get_cell_param_overrides as _get_cell_param_overrides
 from strategies.sister_veto_bus import is_sister_pair_veto_active
 
 _STRATEGY_ID = "v9_2_super_lgb_only"
@@ -239,7 +240,8 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
     6.  Check per-direction blocked_utc_hours (UP and DOWN separately).
     7.  Increment qualifying-tick counter for this (window_ts, direction, conviction ≥ X).
     8.  Swap probability_lgb_v9_2 → probability_lgb slot; delegate to v9_ensemble.
-    9.  If base gates SKIP, reset qualifying counter; return SKIP.
+    9.  If base gates SKIP, return SKIP — counter PERSISTS across base SKIPs
+        per "N qualifying ticks anywhere in the eval band" YAML spec.
     10. If base gates TRADE, apply cohort gate: count ≥ N → TRADE; else SKIP.
     11. Sister-pair veto (NEW — hub notes #394 / #395): if BOTH
         v9_1_cascade_fade_late AND v9_cascade_fade_late fired OPPOSITE within
@@ -309,6 +311,19 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
                 },
             )
 
+    # ── Per-cell parameter override (hub #402 / PR #506 — sibling parity) ─
+    # Resolve param_overrides_by_cell from this strategy's gate_params context.
+    # v9_ensemble's gate 10 will re-resolve & enforce the same lgb_dist_min
+    # override during delegation; this lookup is here for explicit auditability
+    # and metadata stamping on v9_2 decisions. Fails OPEN.
+    _cell_overrides_v9_2 = _get_cell_param_overrides(
+        params=_gp.get_dict("param_overrides_by_cell", default={}),
+        direction=pred_direction,
+        eval_offset=getattr(surface, "eval_offset", None),
+        regime=vpin_regime,
+        window_ts=window_ts,
+    )
+
     # ── Non-consecutive qualifying-tick accumulation ───────────────────────
     conviction_x = _conviction_x_for_cohort(cohort_key)
     if conviction_x is None:
@@ -349,9 +364,17 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
         if _orig_regime is None:
             object.__setattr__(surface, "v4_regime", None)
 
-    # ── Base gate SKIP → pass through, reset tick counter ─────────────────
+    # ── Base gate SKIP → pass through; DO NOT reset tick counter ─────────
+    # The qualifying-tick counter must persist across base-gate SKIPs so
+    # qualifying ticks accumulate across the entire eval band per the YAML
+    # spec: "N qualifying ticks anywhere in [t-300, t-60]". A previous
+    # implementation reset on every base SKIP, which silently turned the
+    # gate into a near-consecutive-ticks gate (any oracle/delta/fill flap
+    # zeroed the accumulator). Reset is now only triggered on:
+    #   - explicit blocked_utc_hour SKIP (above) — direction is excluded
+    #   - successful cohort fire (below) — counter clears for next opportunity
+    #   - new window_ts or direction flip — natural via the keyed dict
     if base_decision.action != "TRADE":
-        reset_qualifying_ticks_v9_2(_wts, pred_direction)
         meta = dict(base_decision.metadata or {})
         meta.update({
             "probability_lgb_v9_2": p_v9_2,
@@ -365,6 +388,9 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
             "lgb_only_forced": True,
             "v9_2_active": True,
         })
+        if _cell_overrides_v9_2:
+            meta["cell_param_overrides_active"] = _cell_overrides_v9_2
+            meta["cell_param_overrides_direction"] = pred_direction
         return StrategyDecision(
             action=base_decision.action,
             direction=base_decision.direction,
@@ -382,23 +408,24 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
     # ── Cohort gate: ≥N qualifying ticks? ────────────────────────────────
     if tick_count < ticks_n:
         # Not yet enough qualifying ticks — keep accumulating; SKIP this tick.
-        return _skip_v9_2(
-            "cohort_below_threshold",
-            metadata={
-                "probability_lgb_v9_2": p_v9_2,
-                "probability_lgb_prod": _orig_lgb,
-                "v9_2_conviction": conviction,
-                "v9_2_pred_direction": pred_direction,
-                "v9_2_cohort": cohort_key,
-                "v9_2_gate_fired": False,
-                "v9_2_tick_count": tick_count,
-                "v9_2_tick_threshold": ticks_n,
-                "v9_2_conviction_x": conviction_x,
-                "vpin_regime": vpin_regime,
-                "lgb_only_forced": True,
-                "v9_2_active": True,
-            },
-        )
+        _below_meta: dict = {
+            "probability_lgb_v9_2": p_v9_2,
+            "probability_lgb_prod": _orig_lgb,
+            "v9_2_conviction": conviction,
+            "v9_2_pred_direction": pred_direction,
+            "v9_2_cohort": cohort_key,
+            "v9_2_gate_fired": False,
+            "v9_2_tick_count": tick_count,
+            "v9_2_tick_threshold": ticks_n,
+            "v9_2_conviction_x": conviction_x,
+            "vpin_regime": vpin_regime,
+            "lgb_only_forced": True,
+            "v9_2_active": True,
+        }
+        if _cell_overrides_v9_2:
+            _below_meta["cell_param_overrides_active"] = _cell_overrides_v9_2
+            _below_meta["cell_param_overrides_direction"] = pred_direction
+        return _skip_v9_2("cohort_below_threshold", metadata=_below_meta)
 
     # -- Cohort gate FIRED -- check sister-pair veto BEFORE committing ------
     # Reset counter so it doesn't bleed into the next window/opportunity.
@@ -419,25 +446,26 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
             v9_2_direction=pred_direction,
             agreement_window_seconds=_veto_window,
         ):
-            return _skip_v9_2(
-                "sister_pair_veto",
-                metadata={
-                    "probability_lgb_v9_2": p_v9_2,
-                    "probability_lgb_prod": _orig_lgb,
-                    "v9_2_conviction": conviction,
-                    "v9_2_pred_direction": pred_direction,
-                    "v9_2_cohort": cohort_key,
-                    "v9_2_gate_fired": False,
-                    "v9_2_tick_count": tick_count,
-                    "v9_2_tick_threshold": ticks_n,
-                    "v9_2_conviction_x": conviction_x,
-                    "vpin_regime": vpin_regime,
-                    "lgb_only_forced": True,
-                    "v9_2_active": True,
-                    "sister_veto_pair": _veto_pair,
-                    "sister_veto_window_sec": _veto_window,
-                },
-            )
+            _veto_meta: dict = {
+                "probability_lgb_v9_2": p_v9_2,
+                "probability_lgb_prod": _orig_lgb,
+                "v9_2_conviction": conviction,
+                "v9_2_pred_direction": pred_direction,
+                "v9_2_cohort": cohort_key,
+                "v9_2_gate_fired": False,
+                "v9_2_tick_count": tick_count,
+                "v9_2_tick_threshold": ticks_n,
+                "v9_2_conviction_x": conviction_x,
+                "vpin_regime": vpin_regime,
+                "lgb_only_forced": True,
+                "v9_2_active": True,
+                "sister_veto_pair": _veto_pair,
+                "sister_veto_window_sec": _veto_window,
+            }
+            if _cell_overrides_v9_2:
+                _veto_meta["cell_param_overrides_active"] = _cell_overrides_v9_2
+                _veto_meta["cell_param_overrides_direction"] = pred_direction
+            return _skip_v9_2("sister_pair_veto", metadata=_veto_meta)
 
     meta = dict(base_decision.metadata or {})
     meta.update({
@@ -456,6 +484,9 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
         "sister_veto_checked": True,
         "sister_veto_fired": False,
     })
+    if _cell_overrides_v9_2:
+        meta["cell_param_overrides_active"] = _cell_overrides_v9_2
+        meta["cell_param_overrides_direction"] = pred_direction
 
     direction = base_decision.direction
     entry_reason = (
