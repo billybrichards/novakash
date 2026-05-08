@@ -57,6 +57,29 @@ MIN_BET_USD = 1.0  # floor; runtime.min_bet_usd overrides this if lower
 DEFAULT_BET_FRACTION = 0.025
 FEE_MULTIPLIER = 0.072  # Polymarket binary options fee
 
+# ── Per-strategy sizing override (audit #410, 2026-05-08) ──────────────────
+#
+# DISABLE_PER_STRATEGY_SIZING=true short-circuits _resolve_sizing_for_strategy
+# back to legacy global-singleton behaviour. Toggle via engine .env + restart.
+# Logged at startup so operators can confirm which mode is active.
+_DISABLE_PER_STRATEGY_SIZING: bool = (
+    os.environ.get("DISABLE_PER_STRATEGY_SIZING", "").lower()
+    in ("1", "true", "yes")
+)
+_DISABLE_BLOCK_CELL_SIZE_MULT: bool = (
+    os.environ.get("DISABLE_BLOCK_CELL_SIZE_MULTIPLIER", "").lower()
+    in ("1", "true", "yes")
+)
+
+# Log rollback-flag states at import time so the engine log shows which mode
+# is active immediately after boot (grep "per_strategy_sizing_mode").
+_startup_log = structlog.get_logger(__name__)
+_startup_log.info(
+    "per_strategy_sizing_mode",
+    per_strategy_sizing_enabled=not _DISABLE_PER_STRATEGY_SIZING,
+    block_cell_size_mult_enabled=not _DISABLE_BLOCK_CELL_SIZE_MULT,
+)
+
 # Guardrail constants
 MIN_ORDER_INTERVAL_S = 30
 MAX_ORDERS_PER_HOUR = 20
@@ -1392,6 +1415,103 @@ class ExecuteTradeUseCase:
 
     # ─── Stake Calculation ─────────────────────────────────────────────
 
+    @staticmethod
+    def _resolve_sizing_for_strategy(strategy_id: str) -> dict:
+        """Return effective sizing params for strategy_id (audit #410).
+
+        Checks ``strategy_runtime_overrides.params`` for per-strategy sizing
+        fields and returns them merged with global ``runtime.*`` defaults.
+        If ``DISABLE_PER_STRATEGY_SIZING=true`` is set, always returns global
+        values (rollback path).
+
+        Sizing fields checked (in priority order, first present wins):
+          bet_fraction    : override aliases -- "bet_fraction"
+          max_position_usd: override aliases -- "max_position_usd", "absolute_max_bet"
+          min_bet_usd     : override alias   -- "min_bet_usd"
+          vhc_kelly_multiplier: override alias -- "vhc_kelly_multiplier"
+
+        Returns a dict with keys:
+          bet_fraction, max_position_usd, min_bet_usd, vhc_kelly_multiplier,
+          stake_source ("override" or "global")
+
+        Never raises -- any exception falls through to global defaults.
+        """
+        # Fast rollback path
+        if _DISABLE_PER_STRATEGY_SIZING:
+            return {
+                "bet_fraction": runtime.bet_fraction,
+                "max_position_usd": runtime.max_position_usd,
+                "min_bet_usd": max(MIN_BET_USD, runtime.min_bet_usd),
+                "vhc_kelly_multiplier": None,
+                "stake_source": "global",
+            }
+
+        eff_bet_fraction = runtime.bet_fraction
+        eff_max_position = runtime.max_position_usd
+        eff_min_bet = max(MIN_BET_USD, runtime.min_bet_usd)
+        eff_vhc_kelly: Optional[float] = None
+        stake_source = "global"
+
+        try:
+            from strategies.runtime_override import get_runtime_override_manager
+            mgr = get_runtime_override_manager()
+            ov = mgr.get_runtime_override(strategy_id)
+            ov_params: dict = {}
+            if ov is not None and ov.params:
+                ov_params = ov.params
+
+            if ov_params:
+                # bet_fraction aliases -- highest specificity first
+                for key in ("bet_fraction",):
+                    if key in ov_params:
+                        try:
+                            eff_bet_fraction = float(ov_params[key])
+                            stake_source = "override"
+                        except (TypeError, ValueError):
+                            pass
+                        break
+
+                # max_position_usd aliases
+                for key in ("max_position_usd", "absolute_max_bet"):
+                    if key in ov_params:
+                        try:
+                            eff_max_position = float(ov_params[key])
+                            stake_source = "override"
+                        except (TypeError, ValueError):
+                            pass
+                        break
+
+                # min_bet_usd -- override may RAISE the floor; global floor is
+                # absolute minimum (never let override lower it below MIN_BET_USD)
+                if "min_bet_usd" in ov_params:
+                    try:
+                        eff_min_bet = max(MIN_BET_USD, float(ov_params["min_bet_usd"]))
+                    except (TypeError, ValueError):
+                        pass
+
+                # vhc_kelly_multiplier (gate_params field consumed separately,
+                # exposed here so _calculate_stake can log it)
+                if "vhc_kelly_multiplier" in ov_params:
+                    try:
+                        eff_vhc_kelly = float(ov_params["vhc_kelly_multiplier"])
+                    except (TypeError, ValueError):
+                        pass
+
+        except Exception as _exc:  # pragma: no cover -- defensive
+            log.warning(
+                "per_strategy_sizing.override_lookup_error",
+                strategy_id=strategy_id,
+                error=str(_exc)[:200],
+            )
+
+        return {
+            "bet_fraction": eff_bet_fraction,
+            "max_position_usd": eff_max_position,
+            "min_bet_usd": eff_min_bet,
+            "vhc_kelly_multiplier": eff_vhc_kelly,
+            "stake_source": stake_source,
+        }
+
     def _calculate_stake(
         self,
         decision: StrategyDecision,
@@ -1405,6 +1525,11 @@ class ExecuteTradeUseCase:
           - 50c token -> 1.0x multiplier (base stake)
           - 40c token -> 1.2x multiplier (better R/R, bet more)
           - 65c token -> 0.7x multiplier (worse R/R, bet less)
+
+        Per-strategy override (audit #410): sizing fields in
+        ``strategy_runtime_overrides.params`` take precedence over the global
+        ``RuntimeConfig`` singleton. Set DISABLE_PER_STRATEGY_SIZING=true to
+        revert to legacy global-only behaviour.
         """
         risk = self._risk.get_status()
         bankroll = (
@@ -1412,9 +1537,17 @@ class ExecuteTradeUseCase:
             if isinstance(risk, dict)
             else risk.current_bankroll
         )
-        # Always use runtime.bet_fraction (operator-set). YAML collateral_pct was
-        # designed for $500 bankroll and overrides runtime on smaller wallets.
-        bet_fraction = runtime.bet_fraction
+
+        # ── Per-strategy sizing resolution (audit #410) ──────────────────
+        # Looks up strategy_runtime_overrides.params for this strategy and
+        # merges sizing fields on top of global runtime. Strategies with NO
+        # override (or override missing sizing fields) continue to use
+        # runtime.bet_fraction / runtime.max_position_usd unchanged.
+        _sizing = self._resolve_sizing_for_strategy(decision.strategy_id)
+        bet_fraction = _sizing["bet_fraction"]
+        max_position_usd = _sizing["max_position_usd"]
+        min_bet_floor = _sizing["min_bet_usd"]
+        stake_source = _sizing["stake_source"]
 
         base_stake = bankroll * bet_fraction
 
@@ -1425,18 +1558,63 @@ class ExecuteTradeUseCase:
 
         adjusted = base_stake * price_multiplier
 
-        # Hard caps: enforce the runtime-configured absolute max bet.
-        hard_cap = min(runtime.max_position_usd, bankroll * bet_fraction * 0.95)
+        # Hard caps: enforce the per-strategy (or global) absolute max bet.
+        hard_cap = min(max_position_usd, bankroll * bet_fraction * 0.95)
         adjusted = min(adjusted, hard_cap)
         adjusted = round(adjusted, 2)
 
+        # ── Block-cell size_multiplier (audit #410 Goal 2) ───────────────
+        # After the hard-cap clamp, apply any partial-size multiplier from
+        # block_cells predicates that matched with size_multiplier > 0.0.
+        # Full blocks (size_multiplier == 0.0 or missing) are already handled
+        # upstream in v9_ensemble BEFORE the decision reaches here; this path
+        # handles the NEW partial-sizing predicates that fire but don't skip.
+        # Note: we do NOT re-evaluate the full predicate from scratch here
+        # (that would require eval_offset, regime, etc. which may not always
+        # be available). Instead, callers (e.g. v9_ensemble._evaluate_one)
+        # attach "block_cell_size_multiplier" to decision.metadata when a
+        # partial-size predicate matched. We read and apply it here.
+        meta = getattr(decision, "metadata", None) or {}
+        _block_cell_mult: float = 1.0
+        if not _DISABLE_BLOCK_CELL_SIZE_MULT:
+            try:
+                _raw_mult = meta.get("block_cell_size_multiplier")
+                if _raw_mult is not None:
+                    _cand = float(_raw_mult)
+                    if 0.0 < _cand < 1.0:
+                        _block_cell_mult = _cand
+            except (TypeError, ValueError):
+                pass
+
+        if _block_cell_mult < 1.0:
+            adjusted = round(adjusted * _block_cell_mult, 2)
+            log.info(
+                "block_cell_size_scale",
+                strategy_id=decision.strategy_id,
+                size_multiplier=_block_cell_mult,
+                stake_before=round(adjusted / _block_cell_mult, 2),
+                stake_after=adjusted,
+                matched_predicate=meta.get("block_cell_matched_predicate"),
+            )
+
+        # Log stake_source on every TRADE so Billy can verify in 30s post-deploy
+        # that the override is taking effect (grep "stake_source=override" in log).
+        log.debug(
+            "stake_resolved",
+            strategy_id=decision.strategy_id,
+            stake_source=stake_source,
+            bet_fraction=bet_fraction,
+            max_position_usd=max_position_usd,
+            adjusted=adjusted,
+        )
+
         # ── Per-cell bet-size multiplier (cell_size_scaler) ─────────────
         # Strategies whose runtime overrides declare cell_size_multipliers
-        # get a per-(session, direction, t_band, regime) stake amp via a
+        # get a per-(session, direction, t_band, regime) stake AMP via a
         # most-specific-key-wins fallback chain. Defaults to 1.0 (no
         # behaviour change) for any strategy that hasn't opted in. The
-        # scaler clamps to [MIN_BET_USD, runtime.max_position_usd] so a
-        # misconfigured override can never bust the absolute cap.
+        # scaler clamps to [min_bet_floor, max_position_usd] so a
+        # misconfigured override can never bust the per-strategy cap.
         try:
             from services.cell_size_scaler import apply_cell_size_multiplier
             # C2 FIX: use canonical 7-bucket session_label from cell_bucketing
@@ -1452,9 +1630,8 @@ class ExecuteTradeUseCase:
             override_mgr = get_runtime_override_manager()
 
             # t_band: convert eval_offset (sec-to-close) from the decision.
-            # Falls back to None when eval_offset is unavailable → scaler
+            # Falls back to None when eval_offset is unavailable -> scaler
             # skips t_band axis (backward-compatible).
-            meta = getattr(decision, "metadata", None) or {}
             _eval_offset = meta.get("eval_offset")
             if _eval_offset is None:
                 # Also try decision.eval_offset for strategies that set it
@@ -1473,8 +1650,9 @@ class ExecuteTradeUseCase:
                 strategy_id=decision.strategy_id,
                 session=sess,
                 direction=decision.direction,
-                absolute_max_bet=runtime.max_position_usd,
-                min_bet_usd=max(MIN_BET_USD, runtime.min_bet_usd),  # C2 FIX: max not min
+                # AUDIT #410: use per-strategy cap, not global runtime
+                absolute_max_bet=max_position_usd,
+                min_bet_usd=min_bet_floor,
                 override_provider=override_mgr,
                 t_band=_eval_offset_int,
                 regime=_regime,
@@ -1493,7 +1671,7 @@ class ExecuteTradeUseCase:
                     clamp_reason=cell_envelope["clamp_reason"],
                 )
             adjusted = round(cell_envelope["final_stake"], 2)
-        except Exception as exc:  # pragma: no cover — defensive
+        except Exception as exc:  # pragma: no cover -- defensive
             # Cell-scaler failure must never block a trade; fall through
             # to the un-amped stake (current behaviour).
             log.debug(

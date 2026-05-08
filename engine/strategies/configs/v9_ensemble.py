@@ -47,7 +47,10 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 from services.cell_bucketing import t_band as _t_band_label
-from strategies.gates.block_cells import check_block_cells_predicate as _check_block_cells
+from strategies.gates.block_cells import (
+    check_block_cells_predicate as _check_block_cells,
+    resolve_block_cells_size_multiplier as _resolve_block_cells_size_mult,
+)
 
 # Reuse shared v8 helpers and cooldown state machine.
 from strategies.configs.v8_champion import (
@@ -979,39 +982,65 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             _gate("delta_gate", True, "chainlink delta unavailable, skip gate")
         )
 
-    # ── 9c. Per-cell block predicates (audit #382) ─────────────────────────
+    # ── 9c. Per-cell block predicates (audit #382 + partial-size audit #410) ──
     # Surgically blocks specific (direction, t_band, conf_band, regime, session)
     # cells identified as catastrophic bleeders in the 7d cross-tab analysis.
     # Reads ``block_cells`` from runtime_overrides (JSONB array of predicate
     # dicts). Evaluated AFTER direction is known, BEFORE VHC-bypassable gates.
-    # NOT bypassable by VHC — cell block is a structural alpha decision, not
+    # NOT bypassable by VHC -- cell block is a structural alpha decision, not
     # a conviction question. Default [] = gate is a no-op.
     # See Hub note in PR description and reference_config_layering.md for how
     # to set per-strategy overrides without restarting the engine.
     # pl_dist = abs(pl - 0.5): LGB distance used as canonical confidence score
     # (bleed-cell analysis used this metric) and reused by gate 10 below.
+    #
+    # audit #410: predicates with size_multiplier > 0.0 do NOT hard-block --
+    # they let the trade proceed at a reduced stake. The multiplier is stored
+    # in _block_cell_size_mult and attached to the decision.metadata so that
+    # _calculate_stake() can apply it after the hard-cap clamp.
     pl_dist = abs(pl - 0.5)
+    _block_cell_size_mult: float = 1.0     # default: no scaling
+    _block_cell_pred_desc: Optional[str] = None
     _block_cells_predicates = _gp.get_list("block_cells", default=[])
     if _block_cells_predicates:
         _vpin_regime_for_block = getattr(surface, "regime", None)
+        _block_cells_wts = getattr(surface, "window_ts", None)
+        # Hard-block check (existing API -- only returns hard-block reasons)
         _block_reason = _check_block_cells(
             predicates=_block_cells_predicates,
             direction=direction,
             eval_offset=offset,
             confidence_score=pl_dist,
             regime=_vpin_regime_for_block,
-            window_ts=getattr(surface, "window_ts", None),
+            window_ts=_block_cells_wts,
         )
         if _block_reason is not None:
             gates.append(_gate("block_cells", False, _block_reason))
             reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip_v9(_block_reason, gates, direction=direction)
+        # Partial-size check (audit #410 -- may return size_multiplier < 1.0)
+        _bc_result = _resolve_block_cells_size_mult(
+            predicates=_block_cells_predicates,
+            direction=direction,
+            eval_offset=offset,
+            confidence_score=pl_dist,
+            regime=_vpin_regime_for_block,
+            window_ts=_block_cells_wts,
+        )
+        if _bc_result.size_multiplier < 1.0:
+            _block_cell_size_mult = _bc_result.size_multiplier
+            _block_cell_pred_desc = _bc_result.matched_predicate_desc
         gates.append(
             _gate(
                 "block_cells",
                 True,
-                f"no predicate matched {direction}/"
-                f"t_band={_t_band_label(offset)}/conf={pl_dist:.4f}",
+                (
+                    f"size_mult={_block_cell_size_mult:.2f} "
+                    f"matched=[{_block_cell_pred_desc}]"
+                    if _block_cell_size_mult < 1.0
+                    else f"no predicate matched {direction}/"
+                         f"t_band={_t_band_label(offset)}/conf={pl_dist:.4f}"
+                ),
             )
         )
 
@@ -1583,6 +1612,9 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 "exit_max_retries": _exit_max_retries(),
                 "exit_retry_timeout_seconds": _exit_retry_timeout_seconds(),
             },
+            # audit #410: block-cell partial-size multiplier (1.0 = no scaling)
+            "block_cell_size_multiplier": _block_cell_size_mult,
+            "block_cell_matched_predicate": _block_cell_pred_desc,
         },
     )
 
