@@ -496,6 +496,51 @@ def test_normal_down_fires_at_n_ticks():
     assert final.metadata.get("v9_2_cohort") == "NORMAL_DOWN"
 
 
+def test_counter_persists_across_base_skip():
+    """Counter must NOT reset when v9_ensemble base gates SKIP.
+
+    Per YAML spec ("N qualifying ticks anywhere in [t-300, t-60]"), the
+    qualifying-tick counter must accumulate across the entire eval band
+    regardless of whether base gates pass on intermediate ticks. A prior
+    implementation reset on every base-gate SKIP, which silently turned
+    the gate into a near-consecutive gate and was the dominant cause of
+    cohort_below_threshold dominating production skips.
+    """
+    from strategies.configs.v9_2_super_lgb_only import (
+        get_qualifying_tick_count_v9_2,
+    )
+    wts = 950001
+    reset_all_qualifying_ticks_v9_2()
+
+    # Tick 1: high conviction, base gates pass → counter=1
+    d1 = evaluate_v9_2_super_lgb_only(_make_surface(
+        window_ts=wts, regime="NORMAL", probability_lgb_v9_2=0.10,
+    ))
+    assert d1.action == "SKIP" and d1.skip_reason == "cohort_below_threshold"
+    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 1
+
+    # Tick 2: high conviction, but vpin below floor → v9_ensemble base SKIP.
+    # Counter MUST still advance to 2 — not reset.
+    d2 = evaluate_v9_2_super_lgb_only(_make_surface(
+        window_ts=wts, regime="NORMAL", probability_lgb_v9_2=0.10, vpin=0.10,
+    ))
+    assert d2.action == "SKIP", f"Expected base SKIP, got {d2.action}"
+    assert d2.skip_reason != "cohort_below_threshold", (
+        f"Expected base-gate SKIP not cohort SKIP; got {d2.skip_reason!r}"
+    )
+    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 2, (
+        "Base-gate SKIP must NOT reset the qualifying-tick counter"
+    )
+
+    # Tick 3: high conviction, base gates pass → counter=3 (cumulative).
+    d3 = evaluate_v9_2_super_lgb_only(_make_surface(
+        window_ts=wts, regime="NORMAL", probability_lgb_v9_2=0.10,
+    ))
+    assert d3.action == "SKIP" and d3.skip_reason == "cohort_below_threshold"
+    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 3
+    assert d3.metadata.get("v9_2_tick_count") == 3
+
+
 def test_transition_down_requires_12_ticks():
     """TRANSITION_DOWN requires N=12; tick 11 SKIPS, tick 12 TRADES."""
     wts = 888002
@@ -580,8 +625,10 @@ def test_base_gate_skip_passed_through_with_v9_2_identity():
     assert decision.action == "SKIP"
     assert decision.strategy_id == _STRATEGY_ID
     assert decision.strategy_version == _VERSION
-    # tick counter should be reset on base-gate SKIP
-    assert get_qualifying_tick_count_v9_2(surface.window_ts, "UP") == 0
+    # The qualifying tick was counted (conviction 0.92 ≥ 0.85) BEFORE the base
+    # gate ran, and base-gate SKIPs no longer reset the counter — so it
+    # persists at 1, matching the YAML "any N ticks anywhere in the band" spec.
+    assert get_qualifying_tick_count_v9_2(surface.window_ts, "UP") == 1
 
 
 def test_base_gate_skip_includes_v9_2_fields_in_metadata():
@@ -671,8 +718,16 @@ def test_tick_counter_resets_after_gate_fires():
     assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 1
 
 
-def test_tick_counter_resets_on_base_gate_skip():
-    """When base gates SKIP (timing/etc), the qualifying-tick counter is reset."""
+def test_tick_counter_persists_on_base_gate_skip():
+    """When base gates SKIP (timing/etc), the qualifying-tick counter MUST persist.
+
+    Per YAML spec ("N qualifying ticks anywhere in [t-300, t-60]") the counter
+    accumulates across the entire eval band. Base-gate SKIPs (oracle disagree,
+    delta flap, fill band, timing) do not invalidate v9.2's qualifying tick.
+    The previous reset-on-base-SKIP behavior silently turned this into a
+    near-consecutive-ticks gate and was the dominant cause of cohort_below_threshold
+    dominating production skips.
+    """
     wts = 901002
     reset_all_qualifying_ticks_v9_2()
 
@@ -683,12 +738,13 @@ def test_tick_counter_resets_on_base_gate_skip():
 
     assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 2
 
-    # Now trigger a base-gate SKIP (eval_offset out of range)
+    # Now trigger a base-gate SKIP (eval_offset out of range). The increment
+    # at the top of the hook still runs (qualifying conviction → +1), so the
+    # counter advances to 3 and is NOT reset by the base SKIP.
     surface_skip = _make_surface(window_ts=wts, regime="NORMAL", probability_lgb_v9_2=0.10, eval_offset=10)
     evaluate_v9_2_super_lgb_only(surface_skip)
 
-    # Counter should be reset
-    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 0
+    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 3
 
 
 # ── 13. Persistence writer tests ──────────────────────────────────────────
