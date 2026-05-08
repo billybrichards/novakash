@@ -93,6 +93,16 @@ gate_params:
   # ~30% windows fire), 0.87 = relaxed (88-95% WR, ~50% windows fire)
   gate_min_wr_target: 0.90  # bias toward precision; flip to 0.87 for volume
 
+  # ── Sister-pair veto (hub notes #394 / #395 — ratified 2026-05-08) ─────
+  # BOTH cascade-fade sisters must fire OPPOSITE to v9.2 to trigger a skip.
+  # Contrarian delta: +24.5pp (#394) / +16.4pp (#395) — all-regimes.
+  # Set enabled: false to disable without restart (overrideable at runtime).
+  sister_pair_veto:
+    enabled: true
+    pair: ['v9_1_cascade_fade_late', 'v9_cascade_fade_late']
+    agreement_window_seconds: 20
+    veto_when_both_oppose: true
+
   # Eval band — same as analysis
   eval_offset_min: 60
   eval_offset_max: 300
