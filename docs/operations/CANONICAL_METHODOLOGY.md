@@ -329,7 +329,9 @@ ORDER BY total_stake DESC LIMIT 10;
 | #361 | Safe shadow-mining plan v2 (canonical) | **4-tier safety framework** |
 | #359 | Analytics offload stack — design + recommendation | **Long-term replica plan** |
 | #357 / #358 | Handover 2026-05-07 + access reference | **Handover** |
-| #372 | Block_cells refinement 14d cell-mining 2026-05-08 | **Latest cell refinement** |
+| #372 | Block_cells refinement 14d cell-mining 2026-05-08 | **Cell refinement v1** |
+| #375 | Stake-up + relaxation cell mining 2026-05-08 | **Amp cells (4) + Q2 relaxation deferred** |
+| #376 | Action plan + runbook 2026-05-08 (PR-A SQL + Tier 3 runbook + daily ops) | **Live action plan** |
 
 ---
 
@@ -369,7 +371,62 @@ ssh -i /tmp/ec2ic_key novakash@15.222.138.228 'tail -f /home/novakash/engine.log
 
 ---
 
-## 12. Update protocol for this doc
+## 12. Daily/weekly ops sequence
+
+### Daily (post any config change, or at-shift-start)
+
+```bash
+# 1. Wallet truth (canonical P&L)
+ssh -i /tmp/ec2ic_key novakash@15.222.138.228 \
+  'cd /home/novakash/novakash && python3 scripts/ops/wallet_truth.py 2>&1 | tail -120'
+
+# 2. Active cell pauses (auto-pause history)
+ssh -i /tmp/ec2ic_key novakash@15.222.138.228 \
+  'PGPASSWORD="<DBP>" psql -h novakash-pg-prod.cpmisy2asv71.ca-central-1.rds.amazonaws.com \
+    -U postgres -d novakash -c \
+    "SELECT strategy_id, direction, t_band, regime, paused_at, pause_until - NOW() AS remaining
+     FROM cell_pauses WHERE released_at IS NULL ORDER BY paused_at DESC;"'
+
+# 3. Today trade summary (fill-math corrected)
+# Use query in §7, scoped to last 24h.
+
+# 4. Engine alive + log spot check
+ssh -i /tmp/ec2ic_key novakash@15.222.138.228 \
+  'ps -ef | grep "python3 main.py" | grep -v grep | head -3; \
+   tail -50 /home/novakash/engine.log'
+```
+
+### Weekly
+
+- `scripts/ops/shadow_analysis.py` — cell-level WR drift detection
+- Sidecar writer freshness (query in §7)
+- Wallet_truth.py 7d total — cross-check vs DB pnl_usd
+- Audit-task triage: `SELECT id, title, severity, status FROM audit_tasks_dev WHERE status='OPEN' ORDER BY priority DESC LIMIT 20;`
+
+### Pre-config-flip safety procedure
+
+ALWAYS before applying SQL UPDATEs to `strategy_runtime_overrides`:
+
+1. Backup current state:
+   ```sql
+   CREATE TABLE IF NOT EXISTS strategy_runtime_overrides_backup_$(date +%Y_%m_%d) AS
+   SELECT * FROM strategy_runtime_overrides
+   WHERE strategy_id IN (<targeted strats>);
+   ```
+2. Apply UPDATE in single transaction (BEGIN ... COMMIT)
+3. Verify with `SELECT jsonb_pretty(params) WHERE strategy_id = ...`
+4. Watch first 24h: wallet_truth.py 4h cadence, drawdown threshold ≥ -$200/24h triggers rollback
+5. Rollback template:
+   ```sql
+   BEGIN;
+   UPDATE strategy_runtime_overrides s SET params = b.params
+   FROM strategy_runtime_overrides_backup_<date> b WHERE s.strategy_id = b.strategy_id;
+   COMMIT;
+   ```
+
+---
+
+## 13. Update protocol for this doc
 
 When you discover a new convention trap / writer regression / data-source quirk:
 1. Add a row to **§8 Known traps** + cite memory file
