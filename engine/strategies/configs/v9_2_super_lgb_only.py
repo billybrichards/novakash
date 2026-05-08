@@ -38,10 +38,26 @@ This ensures the non-consecutive gate never fires BEFORE the base gates have
 passed — it's strictly a refinement on top. Any base-gate SKIP passes through
 unchanged (so dashboards see the original skip reason, not a v9.2 override).
 
+Sister-pair veto (hub notes #394 / #395 — ratified 2026-05-08):
+    After the cohort gate qualifies a fire, the sister-pair veto checks
+    whether BOTH v9_1_cascade_fade_late AND v9_cascade_fade_late fired
+    OPPOSITE to v9.2 within ±20s of the current window_ts. If so, v9.2
+    skips with reason=sister_pair_veto. Backtests show contrarian cases
+    (sisters oppose v9.2) produce WR 64-70% vs consensus WR 86-89%,
+    delta +16.4pp to +24.5pp — both above the 10pp ratify threshold
+    with n≥30 in each bucket. Applies all-regimes.
+
+    Gate order after this PR:
+      cohort gate (≥N ticks ≥X conviction) — already existed
+      block_cells (hour-of-day) — already existed
+      sister_pair_veto — NEW (this PR)
+      oracle_agreement_min_sources — already existed (via v9_ensemble)
+
 If `probability_lgb_v9_2` is None on the surface, SKIP with
 reason=`v9_2_model_not_loaded` (mirrors v9_1's pattern from PR #466).
 
 Hub note #356 — PR-B handover.
+Hub notes #394 / #395 — sister-pair veto ratification.
 timesfm-service docs/V9_2_GATE_CONFIG.html — full gate spec + data.
 """
 from __future__ import annotations
@@ -55,6 +71,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 from strategies.configs.v9_ensemble import evaluate_v9_ensemble as _evaluate_v9
+from strategies.sister_veto_bus import is_sister_pair_veto_active
 
 _STRATEGY_ID = "v9_2_super_lgb_only"
 _VERSION = "9.2.0-super-canary"
@@ -163,23 +180,71 @@ def _blocked_utc_hours_dn_v9_2() -> list[int]:
     return _gp.get_int_list("blocked_utc_hours_down", "V9_2_BLOCKED_HOURS_DN", [2, 9, 14, 15])
 
 
+# ── Sister-pair veto config ───────────────────────────────────────────────
+# Defaults match the YAML sister_pair_veto block. Config is read live from
+# gate_params so Billy can tune via strategy_runtime_overrides without restart.
+
+_SISTER_VETO_DEFAULT_PAIR = ["v9_1_cascade_fade_late", "v9_cascade_fade_late"]
+_SISTER_VETO_DEFAULT_WINDOW_SEC = 20
+
+
+def _sister_veto_enabled() -> bool:
+    """Return True if the sister-pair veto is active (default: True)."""
+    params = _gp._ACTIVE.get()
+    cfg = params.get("sister_pair_veto", {})
+    if isinstance(cfg, dict):
+        return bool(cfg.get("enabled", True))
+    # Flat-params style (strategy_runtime_overrides JSON):
+    return bool(params.get("sister_veto_enabled", True))
+
+
+def _sister_veto_pair() -> list[str]:
+    """Return the pair of sister strategy IDs to check."""
+    params = _gp._ACTIVE.get()
+    cfg = params.get("sister_pair_veto", {})
+    if isinstance(cfg, dict) and "pair" in cfg:
+        v = cfg["pair"]
+        return list(v) if isinstance(v, (list, tuple)) else _SISTER_VETO_DEFAULT_PAIR
+    # Flat-params style:
+    v = params.get("sister_veto_pair")
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    return _SISTER_VETO_DEFAULT_PAIR
+
+
+def _sister_veto_window_sec() -> int:
+    """Return the agreement window in seconds (default: 20)."""
+    params = _gp._ACTIVE.get()
+    cfg = params.get("sister_pair_veto", {})
+    if isinstance(cfg, dict) and "agreement_window_seconds" in cfg:
+        return int(cfg["agreement_window_seconds"])
+    # Flat-params style:
+    v = params.get("sister_veto_agreement_window_seconds")
+    if v is not None:
+        return int(v)
+    return _SISTER_VETO_DEFAULT_WINDOW_SEC
+
+
 # ── Main entry point ──────────────────────────────────────────────────────
 
 def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
-    """Score with v9.2-optuna booster + non-consecutive cohort gate.
+    """Score with v9.2-optuna booster + non-consecutive cohort gate + sister-pair veto.
 
     Surface flow:
-    1. Read `probability_lgb_v9_2` from surface.
-    2. SKIP if None (model not loaded).
-    3. Compute conviction = max(p, 1−p) and predicted direction.
-    4. Determine cohort = "{vpin_regime}_{direction}".
-    5. SKIP if cohort is CALM (excluded).
-    6. Check per-direction blocked_utc_hours (UP and DOWN separately).
-    7. Increment qualifying-tick counter for this (window_ts, direction, conviction ≥ X).
-    8. Swap probability_lgb_v9_2 → probability_lgb slot; delegate to v9_ensemble.
-    9. If base gates SKIP, reset qualifying counter; return SKIP.
+    1.  Read `probability_lgb_v9_2` from surface.
+    2.  SKIP if None (model not loaded).
+    3.  Compute conviction = max(p, 1−p) and predicted direction.
+    4.  Determine cohort = "{vpin_regime}_{direction}".
+    5.  SKIP if cohort is CALM (excluded).
+    6.  Check per-direction blocked_utc_hours (UP and DOWN separately).
+    7.  Increment qualifying-tick counter for this (window_ts, direction, conviction ≥ X).
+    8.  Swap probability_lgb_v9_2 → probability_lgb slot; delegate to v9_ensemble.
+    9.  If base gates SKIP, reset qualifying counter; return SKIP.
     10. If base gates TRADE, apply cohort gate: count ≥ N → TRADE; else SKIP.
-    11. Stamp v9.2 metadata and relabel strategy identity.
+    11. Sister-pair veto (NEW — hub notes #394 / #395): if BOTH
+        v9_1_cascade_fade_late AND v9_cascade_fade_late fired OPPOSITE within
+        ±agreement_window_seconds → SKIP sister_pair_veto.
+    12. Stamp v9.2 metadata and relabel strategy identity.
     """
     p_v9_2 = getattr(surface, "probability_lgb_v9_2", None)
     if p_v9_2 is None:
@@ -335,9 +400,44 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
             },
         )
 
-    # ── Cohort gate FIRED — TRADE ─────────────────────────────────────────
+    # -- Cohort gate FIRED -- check sister-pair veto BEFORE committing ------
     # Reset counter so it doesn't bleed into the next window/opportunity.
     reset_qualifying_ticks_v9_2(_wts, pred_direction)
+
+    # -- Sister-pair veto (hub notes #394 / #395) --------------------------
+    # If BOTH cascade-fade sisters fired OPPOSITE to v9.2 within the
+    # agreement window, skip. Applies all-regimes (backtests validated).
+    # Enabled by default; disable via gate_params sister_pair_veto.enabled=false.
+    if _sister_veto_enabled():
+        _veto_pair = _sister_veto_pair()
+        _veto_window = _sister_veto_window_sec()
+        _asset = getattr(surface, "asset", "BTC")
+        if is_sister_pair_veto_active(
+            pair=_veto_pair,
+            asset=_asset,
+            current_window_ts=_wts,
+            v9_2_direction=pred_direction,
+            agreement_window_seconds=_veto_window,
+        ):
+            return _skip_v9_2(
+                "sister_pair_veto",
+                metadata={
+                    "probability_lgb_v9_2": p_v9_2,
+                    "probability_lgb_prod": _orig_lgb,
+                    "v9_2_conviction": conviction,
+                    "v9_2_pred_direction": pred_direction,
+                    "v9_2_cohort": cohort_key,
+                    "v9_2_gate_fired": False,
+                    "v9_2_tick_count": tick_count,
+                    "v9_2_tick_threshold": ticks_n,
+                    "v9_2_conviction_x": conviction_x,
+                    "vpin_regime": vpin_regime,
+                    "lgb_only_forced": True,
+                    "v9_2_active": True,
+                    "sister_veto_pair": _veto_pair,
+                    "sister_veto_window_sec": _veto_window,
+                },
+            )
 
     meta = dict(base_decision.metadata or {})
     meta.update({
@@ -353,6 +453,8 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
         "vpin_regime": vpin_regime,
         "lgb_only_forced": True,
         "v9_2_active": True,
+        "sister_veto_checked": True,
+        "sister_veto_fired": False,
     })
 
     direction = base_decision.direction
