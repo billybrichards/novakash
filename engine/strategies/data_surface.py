@@ -232,6 +232,16 @@ class FullDataSurface:
     # Hub note #356 — PR-B handover. timesfm docs/V9_2_GATE_CONFIG.html — spec.
     probability_lgb_v9_2: Optional[float] = None
 
+    # v9.1 meta-v2 Stage-A calibrated P(WIN) — fire-context meta booster,
+    # served via probability_meta_v9_1 on /v4/snapshot when timesfm-service
+    # has V9_1_META_ENABLED=true. The engine's v9_1_meta_kelly strategy reads
+    # this field and applies deterministic fractional Kelly sizing (k=0.25).
+    # None when V9_1_META_ENABLED=false (default) or meta scoring fails.
+    # AUC 0.7705, ECE 0.021 worst n≥20 bucket. Deployed GHOST/canary only.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # timesfm-service feat/v9_1_meta_wireup — full context + honest verdict.
+    probability_meta_v9_1: Optional[float] = None
+
     # ── Audit #374 — Chainlink delta-source freshness (2026-05-06) ────────
     # Seconds since the last on-chain Chainlink Aggregator V3 round update for
     # the surface's asset. Populated from ChainlinkFeed.latest_updated_at[asset]
@@ -1322,6 +1332,11 @@ class DataSurfaceManager:
             probability_lgb_v9_2=(
                 float(ts_data["probability_lgb_v9_2"])
                 if ts_data.get("probability_lgb_v9_2") is not None
+                else None
+            ),
+            probability_meta_v9_1=(
+                float(ts_data["probability_meta_v9_1"])
+                if ts_data.get("probability_meta_v9_1") is not None
                 else None
             ),
             probability_classifier=(
