@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from domain.value_objects import StrategyDecision
 from strategies.configs.v9_ensemble import evaluate_v9_ensemble as _evaluate_v9
+from strategies.sister_veto_bus import publish_sister_fire
 
 _STRATEGY_ID = "v9_1_cascade_fade_late"
 _VERSION = "9.1.0-cascade-fade-late"
@@ -98,7 +99,7 @@ def evaluate_v9_1_cascade_fade_late(surface: "FullDataSurface") -> StrategyDecis
             "v9_1_lgb_only", _STRATEGY_ID
         )
 
-    return StrategyDecision(
+    final = StrategyDecision(
         action=decision.action,
         direction=decision.direction,
         confidence=decision.confidence,
@@ -111,3 +112,15 @@ def evaluate_v9_1_cascade_fade_late(surface: "FullDataSurface") -> StrategyDecis
         skip_reason=decision.skip_reason,
         metadata=meta,
     )
+
+    # Publish to sister-veto bus so v9.2 can read this fire in the same tick.
+    # Hub notes #394 / #395: this strategy is one of the two veto sentinels.
+    if final.action == "TRADE" and final.direction is not None:
+        publish_sister_fire(
+            strategy_id=_STRATEGY_ID,
+            asset=getattr(surface, "asset", "BTC"),
+            window_ts=int(getattr(surface, "window_ts", 0) or 0),
+            direction=final.direction,
+        )
+
+    return final
