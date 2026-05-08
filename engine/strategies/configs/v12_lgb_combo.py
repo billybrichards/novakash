@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 from strategies.configs.v9_ensemble import evaluate_v9_ensemble as _evaluate_v9
+from strategies.gates.cell_param_overrides import get_cell_param_overrides as _get_cell_param_overrides
 
 _STRATEGY_ID = "v12_lgb_combo"
 _VERSION = "12.0.0-combo-v9_1"
@@ -118,8 +119,8 @@ def evaluate_v12_lgb_combo(surface: "FullDataSurface") -> StrategyDecision:
     Decision logic:
     1. Read p_v9_1 (probability_lgb_v9_1, retrained) and p_v12
        (probability_lgb_v12).
-    2. If either is None → SKIP. v9.1 None means timesfm V9_1_ENABLED=false
-       or v9.1 model failed to load — clean SKIP rather than fall-back to
+    2. If either is None -> SKIP. v9.1 None means timesfm V9_1_ENABLED=false
+       or v9.1 model failed to load -- clean SKIP rather than fall-back to
        v9 PROD, since the whole point of this swap is to validate the
        retrain forward-pass on shadow before LIVE.
     3. **Agreement path (A)**: if both directions match AND
@@ -131,9 +132,9 @@ def evaluate_v12_lgb_combo(surface: "FullDataSurface") -> StrategyDecision:
        halve the returned collateral_pct (0.5x kelly).
     5. Otherwise SKIP with an explicit reason.
     """
-    # ── Read both probabilities ──────────────────────────────────────────
+    # -- Read both probabilities ------------------------------------------
     # v9.1 retrain (priceToBeat-aligned) replaces v9 PROD as the "v9-side"
-    # of the combo. Hub note #313 — +5.92pp weighted lift on 7d holdout.
+    # of the combo. Hub note #313 -- +5.92pp weighted lift on 7d holdout.
     p_v9_1 = getattr(surface, "probability_lgb_v9_1", None)
     p_v12 = getattr(surface, "probability_lgb_v12", None)
 
@@ -156,7 +157,7 @@ def evaluate_v12_lgb_combo(surface: "FullDataSurface") -> StrategyDecision:
         )
 
     if p_v9_1 is None:
-        # Clean SKIP — do NOT fall back to v9 PROD. The point of this
+        # Clean SKIP -- do NOT fall back to v9 PROD. The point of this
         # combo variant is to validate v9.1 forward-pass; falling back
         # would silently mix v9.1 / v9 signal across the shadow window.
         return StrategyDecision(
@@ -177,7 +178,7 @@ def evaluate_v12_lgb_combo(surface: "FullDataSurface") -> StrategyDecision:
             },
         )
 
-    # ── Direction split ──────────────────────────────────────────────────
+    # -- Direction split --------------------------------------------------
     dir_v9_1 = "UP" if p_v9_1 > 0.5 else "DOWN"
     dir_v12 = "UP" if p_v12 > 0.5 else "DOWN"
     dist_v9_1 = abs(p_v9_1 - 0.5)
@@ -188,7 +189,7 @@ def evaluate_v12_lgb_combo(surface: "FullDataSurface") -> StrategyDecision:
             surface, p_v9_1, p_v12, dist_v9_1, dist_v12, dir_v9_1
         )
 
-    # Directions disagree — Option C contrarian path.
+    # Directions disagree -- Option C contrarian path.
     return _evaluate_disagreement_path(
         surface, p_v9_1, p_v12, dist_v9_1, dist_v12, dir_v9_1, dir_v12
     )
@@ -202,11 +203,23 @@ def _evaluate_agreement_path(
     dist_v12: float,
     direction: str,
 ) -> StrategyDecision:
-    """Option A — both models agree direction. Trade averaged probability."""
+    """Option A -- both models agree direction. Trade averaged probability."""
     combo_dist = min(dist_v9_1, dist_v12)
-    combo_min_dist = _combo_min_dist()
 
-    if combo_dist < combo_min_dist:
+    # -- Per-cell parameter override (hub #402 / PR #506) -----------------
+    # Resolve combo_min_dist on a per-cell basis before applying the
+    # strategy-level floor. Falls back to _combo_min_dist() when no cell
+    # key matches (fail-open). NOT bypassable by VHC.
+    _cell_overrides_v12 = _get_cell_param_overrides(
+        params=_gp.get_dict("param_overrides_by_cell", default={}),
+        direction=direction,
+        eval_offset=getattr(surface, "eval_offset", None),
+        regime=getattr(surface, "regime", None),
+        window_ts=getattr(surface, "window_ts", None),
+    )
+    effective_combo_min = _cell_overrides_v12.get("combo_min_dist", _combo_min_dist())
+
+    if combo_dist < effective_combo_min:
         return StrategyDecision(
             action="SKIP",
             direction=None,
@@ -224,7 +237,7 @@ def _evaluate_agreement_path(
                 "dist_v9_1": round(dist_v9_1, 4),
                 "dist_v12": round(dist_v12, 4),
                 "combo_dist": round(combo_dist, 4),
-                "combo_min_dist": combo_min_dist,
+                "combo_min_dist": effective_combo_min,
                 "direction_agree": True,
                 "v12_contrarian_mode": False,
             },
@@ -277,7 +290,7 @@ def _evaluate_disagreement_path(
     dir_v9_1: str,
     dir_v12: str,
 ) -> StrategyDecision:
-    """Option C — v9.1 and v12 disagree direction. Trust v12 at half kelly.
+    """Option C -- v9.1 and v12 disagree direction. Trust v12 at half kelly.
 
     Per hub note #299 + 3-day replay: when v9 PROD + v12 disagreed direction,
     v12 was right 51.5% on AVERAGE-bigger-stake trades. Net +$398/3d swing
@@ -338,7 +351,7 @@ def _evaluate_disagreement_path(
             },
         )
 
-    # ── Trade v12's direction at 0.5x kelly ──────────────────────────────
+    # -- Trade v12's direction at 0.5x kelly ----------------------------------
     # Swap probability_lgb=p_v12 so the v9_ensemble stack derives v12's
     # direction. After delegation we halve collateral_pct.
     decision = _delegate_with_swapped_lgb(surface, p_v12)
@@ -367,7 +380,7 @@ def _evaluate_disagreement_path(
 
     return StrategyDecision(
         action=decision.action,
-        direction=decision.direction,  # follows p_v12 → v12's direction
+        direction=decision.direction,  # follows p_v12 -> v12's direction
         confidence=decision.confidence,
         confidence_score=min(dist_v12 * 2, 1.0),
         entry_cap=decision.entry_cap,

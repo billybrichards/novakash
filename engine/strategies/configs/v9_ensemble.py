@@ -51,6 +51,7 @@ from strategies.gates.block_cells import (
     check_block_cells_predicate as _check_block_cells,
     resolve_block_cells_size_multiplier as _resolve_block_cells_size_mult,
 )
+from strategies.gates.cell_param_overrides import get_cell_param_overrides as _get_cell_param_overrides
 
 # Reuse shared v8 helpers and cooldown state machine.
 from strategies.configs.v8_champion import (
@@ -1054,18 +1055,31 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         _pc_hc = abs(pc - 0.5) >= 0.15
         pc_hc_agrees = _pc_hc and _pc_dir_for_hc == direction
 
+    # Per-cell parameter override (hub #402) — resolve lgb_dist_min on a
+    # per-cell basis before applying the strategy-level floor. Falls back to
+    # strategy-level params (with HC-agree relaxation) when no cell key matches.
+    # Default {} = gate is a no-op. NOT bypassable by VHC.
+    _cell_overrides_v9 = _get_cell_param_overrides(
+        params=_gp.get_dict("param_overrides_by_cell", default={}),
+        direction=direction,
+        eval_offset=offset,
+        regime=getattr(surface, "regime", None),
+        window_ts=getattr(surface, "window_ts", None),
+    )
     if direction == "UP":
-        min_dist_pl = (
+        _strategy_floor_up = (
             _gp.get_float("lgb_dist_min_up_with_hc_agree", "V9_LGB_DIST_MIN_UP_HC", 0.05)
             if pc_hc_agrees
             else _lgb_dist_min_up()
         )
+        min_dist_pl = _cell_overrides_v9.get("lgb_dist_min_up", _strategy_floor_up)
     else:
-        min_dist_pl = (
+        _strategy_floor_down = (
             _gp.get_float("lgb_dist_min_down_with_hc_agree", "V9_LGB_DIST_MIN_DOWN_HC", 0.05)
             if pc_hc_agrees
             else _lgb_dist_min_down()
         )
+        min_dist_pl = _cell_overrides_v9.get("lgb_dist_min_down", _strategy_floor_down)
 
     # VHC bypass for LGB safety floor — UP uses existing flag, full
     # bypass (both directions) uses the new vhc_bypass_lgb_safety_floor.
