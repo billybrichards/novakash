@@ -1615,6 +1615,22 @@ class ExecuteTradeUseCase:
         # behaviour change) for any strategy that hasn't opted in. The
         # scaler clamps to [min_bet_floor, max_position_usd] so a
         # misconfigured override can never bust the per-strategy cap.
+        #
+        # IMPORTANT: skip the scaler entirely when the post-cap stake is
+        # already below the per-strategy min_bet_floor. The scaler floors
+        # to min_bet_usd, which would mask the legitimate "too small"
+        # rejection in _check_risk for low-bankroll trades. Preserve the
+        # original adjusted value so risk_manager can correctly reject it.
+        if adjusted < min_bet_floor:
+            return StakeCalculation(
+                base_stake=base_stake,
+                price_multiplier=price_multiplier,
+                adjusted_stake=adjusted,
+                bankroll=bankroll,
+                bet_fraction=bet_fraction,
+                hard_cap=hard_cap,
+            )
+
         try:
             from services.cell_size_scaler import apply_cell_size_multiplier
             # C2 FIX: use canonical 7-bucket session_label from cell_bucketing
