@@ -675,7 +675,13 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         # This is the same direction v8_champion_lgb_only will use internally.
         # This is a hard structural block — NOT bypassable by VHC (same policy
         # as gate 9c).  Empty predicates = gate is a no-op (no performance cost).
+        #
+        # PR #522 added the hard-block check; this PR (#<next>) extends it with
+        # the partial-size resolver so that predicates with size_multiplier > 0.0
+        # scale the stake rather than being silently ignored.
         _fb_block_predicates = _gp.get_list("block_cells", default=[])
+        _fb_size_mult: float = 1.0          # default: no scaling
+        _fb_size_pred_desc: Optional[str] = None
         if _fb_block_predicates:
             _fb_direction = "UP" if pl > 0.5 else "DOWN"
             _fb_pl_dist = abs(pl - 0.5)
@@ -699,12 +705,31 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     gates,
                     direction=_fb_direction,
                 )
+            # Hard-block passed — now resolve partial-size predicates.
+            # Predicates with size_multiplier > 0.0 scale the stake instead
+            # of blocking. We mirror the normal gate-9c pattern exactly.
+            _fb_bc_result = _resolve_block_cells_size_mult(
+                predicates=_fb_block_predicates,
+                direction=_fb_direction,
+                eval_offset=offset,
+                confidence_score=_fb_pl_dist,
+                regime=_fb_regime,
+                window_ts=_fb_wts,
+            )
+            if _fb_bc_result.size_multiplier < 1.0:
+                _fb_size_mult = _fb_bc_result.size_multiplier
+                _fb_size_pred_desc = _fb_bc_result.matched_predicate_desc
             gates.append(
                 _gate(
                     "block_cells",
                     True,
-                    f"fallback: no predicate matched {_fb_direction}/"
-                    f"t_band={_t_band_label(offset)}/conf={_fb_pl_dist:.4f}",
+                    (
+                        f"fallback: size_mult={_fb_size_mult:.2f} "
+                        f"matched=[{_fb_size_pred_desc}]"
+                        if _fb_size_mult < 1.0
+                        else f"fallback: no predicate matched {_fb_direction}/"
+                             f"t_band={_t_band_label(offset)}/conf={_fb_pl_dist:.4f}"
+                    ),
                 )
             )
 
@@ -717,6 +742,17 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         fallback_meta = dict(fallback_decision.metadata or {})
         fallback_meta["fallback_reason"] = "pc_null"
         fallback_meta["delegated_to"] = "v8_champion_lgb_only"
+        # Propagate the block-cell size multiplier so _calculate_stake can
+        # apply it.  We OVERWRITE any stale block_cell_size_multiplier that
+        # v8_champion may have emitted (v8 runs its own block_cells gate but
+        # does NOT have access to the v9-strategy overrides; our inference here
+        # is the authoritative value for the v9 strategy identity).
+        # Cap note: absolute_max_bet clamp in _calculate_stake still applies
+        # after the multiplier — 1.5× of $10 → $15, but the per-strategy
+        # absolute_max_bet cap clips to $10. This is intentional: size_multiplier
+        # is an intent signal; the hard cap is a risk guard.
+        fallback_meta["block_cell_size_multiplier"] = _fb_size_mult
+        fallback_meta["block_cell_matched_predicate"] = _fb_size_pred_desc
         # Also append our v9 gates log for traceability.
         existing_gates = fallback_meta.get("gate_results", [])
         fallback_meta["gate_results"] = gates + list(existing_gates)
