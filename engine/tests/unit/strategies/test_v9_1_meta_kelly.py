@@ -386,6 +386,76 @@ class TestOncePerWindow:
         assert d2.action == "TRADE", "After reset, window should not be blocked"
 
 
+# Regression: entry_cap must be a CLOB price (0..1), NOT a USD value.
+#
+# Original bug (2026-05-09): the strategy returned `entry_cap=abs_max_stake_usd`
+# (e.g. $5.0 USD) which the executor passed straight through to the Polymarket
+# order placement as the price-cap field. Polymarket prices are in [0, 1] per
+# share, so a $5.0 cap was rejected and every fire hit FAILED_EXECUTION.
+#
+# The fix: entry_cap is the max acceptable CLOB price; it must equal fill_price
+# (the direction-aware CLOB ask), matching the v9_ensemble convention. The USD
+# cap is enforced separately via strategy_runtime_overrides.params (max_position_usd
+# / abs_max_stake_usd) inside execute_trade._resolve_sizing_for_strategy.
+
+class TestEntryCapIsPriceNotUsd:
+    """Regression for the 2026-05-09 fill_price/entry_cap swap that ghosted
+    v9_1_meta_kelly with FAILED_EXECUTION on every fire."""
+
+    def test_entry_cap_is_in_unit_interval_down(self):
+        """entry_cap on a TRADE must be a CLOB price in [0, 1], not USD."""
+        surface = _make_surface()
+        d = evaluate_v9_1_meta_kelly(surface)
+        assert d.action == "TRADE"
+        assert d.entry_cap is not None
+        assert 0.0 <= d.entry_cap <= 1.0, (
+            f"entry_cap must be a CLOB price in [0, 1], got {d.entry_cap}. "
+            "If this is > 1.0 the executor will send a USD value to "
+            "Polymarket as a price-per-share and every order will fail."
+        )
+
+    def test_entry_cap_is_in_unit_interval_up(self):
+        """Same regression check for UP direction."""
+        surface = _make_surface_up()
+        d = evaluate_v9_1_meta_kelly(surface)
+        assert d.action == "TRADE"
+        assert d.entry_cap is not None
+        assert 0.0 <= d.entry_cap <= 1.0, (
+            f"entry_cap must be in [0, 1], got {d.entry_cap}"
+        )
+
+    def test_entry_cap_equals_fill_price(self):
+        """entry_cap MUST be the direction-aware CLOB ask used for Kelly,
+        matching v9_ensemble's _ENTRY_CAP convention."""
+        surface = _make_surface(clob_down_ask=0.42, probability_meta_v9_1=0.95)
+        d = evaluate_v9_1_meta_kelly(surface)
+        assert d.action == "TRADE"
+        assert d.entry_cap == pytest.approx(0.42, abs=1e-9)
+        # And it must equal the fill_price recorded in metadata.
+        assert d.entry_cap == pytest.approx(d.metadata["fill_price"], abs=1e-9)
+
+    def test_entry_cap_not_equal_abs_max_stake_usd(self):
+        """Pin the original bug: entry_cap must NOT equal abs_max_stake_usd
+        (which is a USD value, typically $5-$10, well outside [0, 1])."""
+        # Set abs_max_stake_usd to a value that is also a plausible CLOB price
+        # band would be too forgiving; use the prod-observed $5.0 to assert
+        # the swap is impossible.
+        params = _gp._ACTIVE.get().copy()
+        params["abs_max_stake_usd"] = 5.0
+        token = _gp._ACTIVE.set(params)
+        try:
+            surface = _make_surface()
+            d = evaluate_v9_1_meta_kelly(surface)
+            assert d.action == "TRADE"
+            assert d.entry_cap != 5.0, (
+                "entry_cap must NOT be set to abs_max_stake_usd. This is the "
+                "exact bug that ghosted v9_1_meta_kelly on 2026-05-09."
+            )
+            assert d.entry_cap is not None and d.entry_cap < 1.0
+        finally:
+            _gp._ACTIVE.reset(token)
+
+
 # Isolation test: v9_1_lgb_only must not be modified
 
 class TestV9_1LgbOnlyUntouched:

@@ -307,12 +307,20 @@ def evaluate_v9_1_meta_kelly(surface: "FullDataSurface") -> StrategyDecision:
         "sister_veto_fired": False,
     }
 
+    # entry_cap is the MAX ACCEPTABLE CLOB PRICE (e.g. 0.65), NOT a USD cap.
+    # The USD cap (abs_max_stake_usd / max_position_usd) is enforced via
+    # strategy_runtime_overrides.params -> _resolve_sizing_for_strategy in
+    # execute_trade.py, NOT via entry_cap. Setting entry_cap=$5.0 (USD) was
+    # the original bug that caused FAILED_EXECUTION for every fire because
+    # Polymarket interpreted $5.0 as a price-per-share (out of 0-1 range).
+    # Use fill_price (CLOB ask, in [0, 1]) as the cap — same convention as
+    # v9_ensemble._ENTRY_CAP=0.80.
     return StrategyDecision(
         action="TRADE",
         direction=direction,
         confidence="HIGH" if p_meta >= 0.90 else ("MEDIUM" if p_meta >= 0.80 else "LOW"),
         confidence_score=stake_fraction,
-        entry_cap=float(abs_max),
+        entry_cap=fill_price,
         collateral_pct=stake_fraction,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
