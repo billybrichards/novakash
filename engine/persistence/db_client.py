@@ -983,7 +983,9 @@ class DBClient:
         if not self._pool:
             return
         try:
-            async with self._pool.acquire() as conn:
+            # timeout=30 prevents hanging forever if pool connections are held
+            # by zombie transactions from a prior engine crash (PR #515 fix).
+            async with self._pool.acquire(timeout=30) as conn:
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS window_snapshots (
                         id SERIAL PRIMARY KEY,
@@ -1735,7 +1737,11 @@ class DBClient:
         if eval_offset is None:
             return 0
         try:
-            async with self._pool.acquire() as conn:
+            # timeout=5 prevents pool queue buildup when v9_2 fires frequently
+            # under lock contention (PR #515 fix — counter persists across SKIPs
+            # so fires are more frequent; without timeout, queued acquires can
+            # exhaust the pool and cause zombie connections on next engine start).
+            async with self._pool.acquire(timeout=5) as conn:
                 result = await conn.execute(
                     """
                     INSERT INTO signal_evaluations (

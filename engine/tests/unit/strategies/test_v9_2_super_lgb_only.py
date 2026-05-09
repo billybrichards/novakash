@@ -763,7 +763,7 @@ class _FakePool:
     def __init__(self, result: str = "UPDATE 1") -> None:
         self.conn = _FakeConn(result)
 
-    def acquire(self):
+    def acquire(self, timeout=None):  # accept timeout kwarg (PR #515 fix)
         outer = self
 
         class _CM:
