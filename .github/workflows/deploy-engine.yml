@@ -229,6 +229,12 @@ jobs:
           BACKUP_DIR=/home/novakash/novakash/.rollback
           if [ -d /home/novakash/novakash/engine ] && [ "$(ls -A /home/novakash/novakash/engine 2>/dev/null)" ]; then
             rm -rf "$BACKUP_DIR/engine.prev"
+            # Stale .env.bak.* from prior reset incidents (.env wipe 2026-04-21,
+            # dd_reset 2026-05-05) may be root-owned and unreadable by novakash,
+            # which aborts cp -a with permission denied. novakash has write on
+            # the parent dir so it CAN delete them. The .rollback/ tree handles
+            # real rollback; these in-repo backups are not load-bearing.
+            find /home/novakash/novakash/engine -maxdepth 1 -name '.env.bak.*' ! -readable -delete 2>/dev/null || true
             cp -a /home/novakash/novakash/engine "$BACKUP_DIR/engine.prev"
             cp /home/novakash/novakash/engine/.env /home/novakash/.rollback/engine.env.bak 2>/dev/null || true
             echo "Backed up engine/ to .rollback/engine.prev"
