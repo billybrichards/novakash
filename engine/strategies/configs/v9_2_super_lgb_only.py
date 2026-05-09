@@ -240,7 +240,8 @@ def evaluate_v9_2_super_lgb_only(surface: "FullDataSurface") -> StrategyDecision
     6.  Check per-direction blocked_utc_hours (UP and DOWN separately).
     7.  Increment qualifying-tick counter for this (window_ts, direction, conviction ≥ X).
     8.  Swap probability_lgb_v9_2 → probability_lgb slot; delegate to v9_ensemble.
-    9.  If base gates SKIP, reset qualifying counter; return SKIP.
+    9.  If base gates SKIP, return SKIP — counter PERSISTS across base SKIPs
+        per "N qualifying ticks anywhere in the eval band" YAML spec.
     10. If base gates TRADE, apply cohort gate: count ≥ N → TRADE; else SKIP.
     11. Sister-pair veto (NEW — hub notes #394 / #395): if BOTH
         v9_1_cascade_fade_late AND v9_cascade_fade_late fired OPPOSITE within
