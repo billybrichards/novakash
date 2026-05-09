@@ -665,9 +665,53 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 "probability_classifier=None; fallback to v8_lgb_only",
             )
         )
+
+        # ── block_cells gate applied BEFORE pc-null fallback (fix Hub #434) ──
+        # We must enforce block_cells HERE, before delegating to
+        # evaluate_v8_champion_lgb_only, because the normal gate-9c call site
+        # (line ~1005) is unreachable from this return path.
+        #
+        # Direction is inferred from pl alone (pc is None so we can't blend).
+        # This is the same direction v8_champion_lgb_only will use internally.
+        # This is a hard structural block — NOT bypassable by VHC (same policy
+        # as gate 9c).  Empty predicates = gate is a no-op (no performance cost).
+        _fb_block_predicates = _gp.get_list("block_cells", default=[])
+        if _fb_block_predicates:
+            _fb_direction = "UP" if pl > 0.5 else "DOWN"
+            _fb_pl_dist = abs(pl - 0.5)
+            _fb_regime = getattr(surface, "regime", None)
+            _fb_wts = getattr(surface, "window_ts", None)
+            _fb_block_reason = _check_block_cells(
+                predicates=_fb_block_predicates,
+                direction=_fb_direction,
+                eval_offset=offset,
+                confidence_score=_fb_pl_dist,
+                regime=_fb_regime,
+                window_ts=_fb_wts,
+            )
+            if _fb_block_reason is not None:
+                gates.append(_gate("block_cells", False, _fb_block_reason))
+                reset_confirmation_v9(
+                    _STRATEGY_ID, getattr(surface, "window_ts", 0)
+                )
+                return _skip_v9(
+                    _fb_block_reason,
+                    gates,
+                    direction=_fb_direction,
+                )
+            gates.append(
+                _gate(
+                    "block_cells",
+                    True,
+                    f"fallback: no predicate matched {_fb_direction}/"
+                    f"t_band={_t_band_label(offset)}/conf={_fb_pl_dist:.4f}",
+                )
+            )
+
         # Delegate to v8_lgb_only. Its decision is returned as-is so the
         # shadow log shows v9 ran but the decision is the LGB-only one.
         fallback_decision = evaluate_v8_champion_lgb_only(surface)
+
         # Overlay v9 identity + fallback flag on the returned decision so
         # the hub/shadow log knows which strategy emitted the row.
         fallback_meta = dict(fallback_decision.metadata or {})

@@ -399,3 +399,137 @@ def test_v9_ensemble_skip_reason_contains_predicate_details():
     assert decision.action == "SKIP"
     reason = decision.skip_reason or ""
     assert "T-61-90" in reason
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regression: block_cells must fire on the pc-null fallback path (fix Hub #434)
+#
+# Prior to the fix, when probability_classifier=None the code at line ~660
+# called evaluate_v8_champion_lgb_only(surface) and returned immediately,
+# making the block_cells gate at line ~1005 unreachable.  All 200 recent
+# v9_1_lgb_only and v12_lgb_combo trades bypassed block_cells silently.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_surface_pc_null(**overrides):
+    """Like _make_surface but with probability_classifier=None.
+
+    With pc=None and fallback_to_lgb_on_pc_null=True the engine falls back to
+    evaluate_v8_champion_lgb_only. The LGB signal (pl=0.82 → UP) passes the
+    v8 gate stack (all v8 gates use the same surface fields), so the fallback
+    returns a TRADE UP decision — which is the path the block_cells regression
+    must intercept.
+    """
+    base = dict(
+        eval_offset=80,            # T-61-90
+        window_ts=_HOUR_10_UTC_TS,  # hour=10 UTC → eu_am
+        v4_regime="chop",
+        regime="chop",
+        vpin=0.50,
+        probability_lgb=0.82,       # LGB: UP, dist=0.32
+        probability_classifier=None,  # ← triggers pc-null fallback
+        delta_chainlink=0.0003,
+        delta_tiingo=0.0002,
+        delta_binance=None,
+        delta_coinglass=None,
+        poly_max_entry_price=0.65,
+        clob_up_ask=0.65,
+        clob_down_ask=0.35,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+class TestPcNullFallbackBlockCells:
+    """Regression suite: block_cells must be enforced on the pc-null fallback path.
+
+    Previously all block_cells predicates were silently ignored when
+    probability_classifier=None because evaluate_v8_champion_lgb_only() was
+    called and its result returned before gate 9c could run.  Fix: the gate is
+    now applied inside the pc-null branch after the fallback decision is known.
+    """
+
+    def _run(self, predicates, surface=None, extra_overrides=None):
+        """Run evaluate_v9_ensemble with pc=None and the given block_cells predicates."""
+        from strategies import gate_params as _gp
+        from strategies.configs.v9_ensemble import evaluate_v9_ensemble
+
+        if surface is None:
+            surface = _make_surface_pc_null(**(extra_overrides or {}))
+
+        with patch.object(_gp, "_ACTIVE") as mock_active:
+            # Also enable fallback_to_lgb_on_pc_null so the branch fires.
+            mock_active.get.return_value = {
+                "block_cells": predicates,
+                "fallback_to_lgb_on_pc_null": True,
+            }
+            return evaluate_v9_ensemble(surface)
+
+    def test_block_cells_enforced_on_pc_null_fallback_trade(self):
+        """CORE regression: block UP×T-61-90 while in pc-null fallback → must SKIP."""
+        predicates = [{"direction": "UP", "t_band": "T-61-90", "conf_min": 0.25}]
+        decision = self._run(predicates)
+        assert decision.action == "SKIP", (
+            f"Expected SKIP but got {decision.action}; "
+            f"skip_reason={decision.skip_reason!r}. "
+            "block_cells gate was not enforced on pc-null fallback path."
+        )
+        assert "block_cells" in (decision.skip_reason or ""), (
+            f"skip_reason does not contain 'block_cells': {decision.skip_reason!r}"
+        )
+
+    def test_block_cells_skip_reason_contains_predicate_on_pc_null(self):
+        """Skip reason must include matching predicate details (not just 'block_cells')."""
+        predicates = [
+            {"direction": "UP", "regime": "chop", "conf_min": 0.25},
+        ]
+        decision = self._run(predicates)
+        assert decision.action == "SKIP"
+        reason = decision.skip_reason or ""
+        assert "block_cells" in reason
+        assert "UP" in reason
+
+    def test_non_matching_predicate_allows_fallback_on_pc_null(self):
+        """A predicate that doesn't match must NOT cause a spurious SKIP."""
+        # Block DOWN only — LGB says UP, so this predicate must not fire.
+        predicates = [{"direction": "DOWN", "t_band": "T-61-90", "conf_min": 0.25}]
+        decision = self._run(predicates)
+        # The decision may be SKIP for other gate reasons (e.g. 3-tick
+        # confirmation) but the skip_reason must NOT be block_cells.
+        if decision.action == "SKIP":
+            assert "block_cells" not in (decision.skip_reason or ""), (
+                f"block_cells fired on wrong direction: {decision.skip_reason!r}"
+            )
+
+    def test_empty_block_cells_on_pc_null_does_not_skip(self):
+        """Empty predicates → gate is no-op even in pc-null fallback."""
+        decision = self._run([])
+        if decision.action == "SKIP":
+            assert "block_cells" not in (decision.skip_reason or ""), (
+                f"Empty predicates caused block_cells skip: {decision.skip_reason!r}"
+            )
+
+    def test_cascade_down_conf_min_predicate_on_pc_null(self):
+        """Reproduce prod scenario: DOWN×CASCADE×conf>=0.30 must be blocked.
+
+        This exactly matches the predicates on v9_1_lgb_only that were being
+        bypassed for trades #8137, #8126, #8125, #8121, #8096 (Hub note #434).
+        """
+        predicates = [
+            {"direction": "DOWN", "regime": "CASCADE", "conf_min": 0.30},
+        ]
+        # Use a surface with CASCADE regime and DOWN LGB signal.
+        surface = _make_surface_pc_null(
+            regime="CASCADE",
+            probability_lgb=0.18,   # DOWN direction, dist=0.32
+            delta_chainlink=-0.0003,
+            delta_tiingo=-0.0002,
+            clob_down_ask=0.32,
+        )
+        decision = self._run(predicates, surface=surface)
+        assert decision.action == "SKIP", (
+            f"Prod predicate DOWN×CASCADE×conf>=0.30 was NOT enforced on pc-null "
+            f"fallback (action={decision.action!r}, "
+            f"skip_reason={decision.skip_reason!r}). "
+            "This is the exact regression from Hub note #434."
+        )
+        assert "block_cells" in (decision.skip_reason or "")
