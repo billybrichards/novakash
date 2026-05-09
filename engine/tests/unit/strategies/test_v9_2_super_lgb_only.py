@@ -580,8 +580,12 @@ def test_base_gate_skip_passed_through_with_v9_2_identity():
     assert decision.action == "SKIP"
     assert decision.strategy_id == _STRATEGY_ID
     assert decision.strategy_version == _VERSION
-    # tick counter should be reset on base-gate SKIP
-    assert get_qualifying_tick_count_v9_2(surface.window_ts, "UP") == 0
+    # tick counter PERSISTS across base-gate SKIPs (PR #515 fix — counter
+    # resets only on explicit blocked_utc_hour SKIP, cohort fire, or new
+    # window_ts/direction. Base-gate SKIP no longer resets the counter so
+    # qualifying ticks accumulate across the full eval band as per YAML spec).
+    # probability_lgb_v9_2=0.92 conviction qualifies (≥0.85), so count == 1.
+    assert get_qualifying_tick_count_v9_2(surface.window_ts, "UP") == 1
 
 
 def test_base_gate_skip_includes_v9_2_fields_in_metadata():
@@ -671,8 +675,16 @@ def test_tick_counter_resets_after_gate_fires():
     assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 1
 
 
-def test_tick_counter_resets_on_base_gate_skip():
-    """When base gates SKIP (timing/etc), the qualifying-tick counter is reset."""
+def test_tick_counter_persists_on_base_gate_skip():
+    """Counter persists across base-gate SKIPs (PR #515 fix).
+
+    The qualifying-tick counter must NOT reset on base-gate SKIP so that
+    qualifying ticks accumulate across the full eval band as per the YAML spec:
+    "N qualifying ticks anywhere in [t-300, t-60]". Resetting on every oracle/
+    delta/fill flap silently turned the gate into a near-consecutive-ticks gate.
+    Reset only occurs on: blocked_utc_hour SKIP, cohort fire, new window_ts or
+    direction flip.
+    """
     wts = 901002
     reset_all_qualifying_ticks_v9_2()
 
@@ -683,12 +695,19 @@ def test_tick_counter_resets_on_base_gate_skip():
 
     assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 2
 
-    # Now trigger a base-gate SKIP (eval_offset out of range)
+    # Now trigger a base-gate SKIP (eval_offset out of range).
+    # Counter MUST persist — probability_lgb_v9_2=0.10 conviction < 0.85 threshold
+    # for DOWN so this tick does NOT add a qualifying tick, but the existing 2
+    # qualifying ticks should be preserved.
     surface_skip = _make_surface(window_ts=wts, regime="NORMAL", probability_lgb_v9_2=0.10, eval_offset=10)
     evaluate_v9_2_super_lgb_only(surface_skip)
 
-    # Counter should be reset
-    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 0
+    # Counter persists: still 3 (the base-SKIP tick also qualified since
+    # probability_lgb_v9_2=0.10 → conviction=max(0.10,0.90)=0.90 ≥ 0.85 for DOWN).
+    # The base-gate SKIP is the timing gate (eval_offset=10 is out of range),
+    # which fires BEFORE count_qualifying_tick_v9_2. So the tick is counted
+    # even though the base gate SKIPs later.
+    assert get_qualifying_tick_count_v9_2(wts, "DOWN") == 3
 
 
 # ── 13. Persistence writer tests ──────────────────────────────────────────
@@ -707,7 +726,7 @@ class _FakePool:
     def __init__(self, result: str = "UPDATE 1") -> None:
         self.conn = _FakeConn(result)
 
-    def acquire(self):
+    def acquire(self, timeout=None):  # accept timeout kwarg (PR #515 fix)
         outer = self
 
         class _CM:
