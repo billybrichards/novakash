@@ -1,0 +1,88 @@
+name: v9_1_meta_kelly
+strategy_id: v9_1_meta_kelly
+version: "1.0.0-ghost-canary"
+# v9_1_meta_kelly — 2026-05-09 — Meta-v2 Stage-A booster + deterministic Kelly.
+#
+# NEW PARALLEL STRATEGY running alongside v9_1_lgb_only (NOT modifying it).
+# Both strategies see the same /v4/snapshot payload and decide independently.
+# No shared mutable state between v9_1_lgb_only and v9_1_meta_kelly.
+#
+# Gate philosophy: NO LGB-distance gate. Meta + Kelly is the entire gate.
+# Reads probability_lgb_v9_1 (for direction) + probability_meta_v9_1 (for
+# Kelly sizing). Cascade-fade-pair veto runs FIRST (hard constraint per
+# meta_v2 design doc).
+#
+# Meta model:
+#   strategy_id: v9_1_lgb_only
+#   artifact:    meta_v2_v2_2026-05-08 (SHA 4b586e0fbc99)
+#   AUC:         0.7705 (below 0.78 original gate, but per honest re-
+#                assessment that gate is too tight for ~80% training base
+#                rate; per-bucket ECE 0.021 worst n>=20 bucket is clean)
+#   Top-1 dominance fixed: 50.6% -> 22.3% (rolling_wr_in_cohort_n10)
+#
+# Honest verdict: deployable as GHOST canary. NOT for full unbounded
+# sizing without further validation.
+#
+# Firing surface (projected from local PG, 9d: 2026-04-30 to 2026-05-08):
+#   Total LGB-evaluated ticks:   189,674 (all 5m ticks with p_lgb)
+#   Kelly>0 ticks:               166,865 (88.0% of all ticks)
+#   Fires-per-day projection:    ~18,540/day (raw tick surface, pre-gate)
+#   WR of Kelly>0 ticks:          65.28% (raw market direction accuracy)
+#   Note: projection uses NaN for cohort-history features (conservative).
+#     At runtime rolling_wr_in_cohort_n10 + calibration_residual_trend_n20
+#     (top-2 features, 22%+20% importance) will be populated from
+#     strategy_decisions history. The raw 65% WR is the base rate
+#     without meta filtering -- meta booster is expected to lift this.
+#   Avg Kelly stake fraction:     0.1753 ($1.75 at $10 abs_max_stake_usd)
+#
+# DEPENDENCIES (all required before mode can flip to LIVE):
+#   1. timesfm-service feat/v9_1_meta_wireup: V9_1_META_ENABLED=true
+#      + probability_meta_v9_1 emitted on /v4/snapshot
+#   2. engine data_surface.py: probability_meta_v9_1 field (this PR)
+#   3. ops/db/v9_1_meta_strategy_initial_overrides.sql applied to prod
+#      (Billy applies after PR merge -- NOT in this PR)
+#
+# Strategy SKIPs gracefully (skip_reason=meta_model_not_loaded) when
+# probability_lgb_v9_1 or probability_meta_v9_1 is None on surface.
+# Does NOT fall back to v9_lgb_only or any other strategy.
+#
+# Defaults to GHOST. Billy flips mode via runtime config (no auto-promote
+# per post-2026-04-17 rule).
+#
+status: GHOST  # canary -- never LIVE without explicit Billy GO
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_1_meta_kelly.py
+pre_gate_hook: evaluate_v9_1_meta_kelly
+
+gates:
+  # B2 (audit #374): Chainlink freshness -- default 60s threshold.
+  - type: chainlink_freshness
+  # Rolling-WR auto-pause per cell (audits #379 + #385).
+  - type: cell_pause
+    params: { strategy_id: v9_1_meta_kelly }
+
+gate_params:
+  # Stake sizing (readable from strategy_runtime_overrides without restart).
+  abs_max_stake_usd: 10.0    # ghost-safety: half of v9_1_lgb_only's $20
+  kelly_fraction: 0.25        # quarter-Kelly per stake_sizing.py math
+  meta_model_version: 'meta_v2_v2_2026-05-08'
+
+  # Cascade-fade-pair veto (same as v9_2_super -- hard constraint).
+  # BOTH cascade-fade sisters must fire OPPOSITE to v9.1 direction.
+  sister_pair_veto:
+    enabled: true
+    pair: ['v9_1_cascade_fade_late', 'v9_cascade_fade_late']
+    agreement_window_seconds: 20
+    veto_when_both_oppose: true
+
+  # NO LGB-distance gate (intentional -- meta + Kelly is the entire gate).
+  # These are set to 0 to make the absence explicit and auditable.
+  lgb_dist_min_up: 0.0
+  lgb_dist_min_down: 0.0
+
+  # Eval band
+  eval_offset_min: 45
+  eval_offset_max: 300
