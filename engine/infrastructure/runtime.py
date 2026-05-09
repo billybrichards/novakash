@@ -960,6 +960,15 @@ class EngineRuntime:
         # behind the engine coming online. Previously they were a sequence
         # of inline awaits between feed init and data_surface, so a stuck
         # DDL could keep the data surface offline indefinitely.
+        # Per-step timeout (seconds) — ALTER TABLE may grab AccessExclusiveLock.
+        # If a single step exceeds this, log + skip; engine boot proceeds and
+        # the DDL retries on next boot. See audit #413 / Hub note #431:
+        # 2026-05-09 ensure_v8_trade_columns held AccessExclusiveLock on
+        # `trades` for 13m41s → blocked all writers → engine event loop
+        # stalled. Per-step + global caps bound this regression.
+        DDL_STEP_TIMEOUT_S = 10.0
+        DDL_CHAIN_TIMEOUT_S = 60.0
+
         async def _ensure_ddls_bg() -> None:
             t0 = time.monotonic()
             steps = [
@@ -978,11 +987,31 @@ class EngineRuntime:
             ]
             for name, fn in steps:
                 step_t0 = time.monotonic()
+                # Global chain cap — abort any further steps if the chain has
+                # already cumulated past the budget. Boot continues; remaining
+                # DDLs retry on next boot.
+                chain_elapsed = time.monotonic() - t0
+                if chain_elapsed >= DDL_CHAIN_TIMEOUT_S:
+                    log.warning(
+                        "orchestrator.ddl_chain_timeout",
+                        step=name,
+                        chain_elapsed_ms=int(chain_elapsed * 1000),
+                        chain_timeout_s=DDL_CHAIN_TIMEOUT_S,
+                        skipped_remaining=True,
+                    )
+                    break
                 try:
-                    await fn()
+                    await asyncio.wait_for(fn(), timeout=DDL_STEP_TIMEOUT_S)
                     log.info(
                         "orchestrator.ddl_done",
                         step=name,
+                        elapsed_ms=int((time.monotonic() - step_t0) * 1000),
+                    )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "orchestrator.ddl_timeout",
+                        step=name,
+                        timeout_s=DDL_STEP_TIMEOUT_S,
                         elapsed_ms=int((time.monotonic() - step_t0) * 1000),
                     )
                 except Exception as exc:
