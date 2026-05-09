@@ -533,3 +533,156 @@ class TestPcNullFallbackBlockCells:
             "This is the exact regression from Hub note #434."
         )
         assert "block_cells" in (decision.skip_reason or "")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regression: pc-null fallback must also honour size_multiplier predicates
+#
+# PR #522 added the hard-block check to the pc-null path.  That fix only ported
+# check_block_cells_predicate — predicates carrying size_multiplier > 0.0 were
+# still silently ignored (they are treated as hard-blocks by
+# check_block_cells_predicate ≥ audit #410, so they were actually *passed
+# through* rather than being enforced as partial-size).
+#
+# This suite verifies that resolve_block_cells_size_multiplier is now called on
+# the pc-null path, and that its result is propagated into decision.metadata as
+# ``block_cell_size_multiplier`` so _calculate_stake can apply the scaling.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPcNullFallbackSizeMultiplier:
+    """Regression: size_multiplier predicates must reach decision.metadata on pc-null path."""
+
+    def _run(self, predicates, surface=None, extra_overrides=None):
+        from strategies import gate_params as _gp
+        from strategies.configs.v9_ensemble import evaluate_v9_ensemble
+
+        if surface is None:
+            surface = _make_surface_pc_null(**(extra_overrides or {}))
+
+        with patch.object(_gp, "_ACTIVE") as mock_active:
+            mock_active.get.return_value = {
+                "block_cells": predicates,
+                "fallback_to_lgb_on_pc_null": True,
+            }
+            return evaluate_v9_ensemble(surface)
+
+    def test_size_mult_set_in_metadata_on_pc_null_trade(self):
+        """CORE: a partial-size predicate must propagate block_cell_size_multiplier into metadata.
+
+        The trade should NOT be skipped (hard-block didn't fire), but the
+        metadata must carry block_cell_size_multiplier=0.5 so _calculate_stake
+        can apply the scaling.
+
+        Note: size_multiplier < 1.0 (downscaling) is what propagates through the
+        ``if result.size_multiplier < 1.0`` guard in both normal and fallback paths.
+        Upscaling predicates (> 1.0) are currently a no-op in both paths; this
+        test focuses on the downscaling case which is the common guard-rail use.
+        """
+        # Surface: LGB=UP (pl=0.82, dist=0.32), pc=None → pc-null fallback.
+        # Predicate: UP × conf_min=0.25 × size_multiplier=0.5 → 50% stake.
+        predicates = [
+            {
+                "direction": "UP",
+                "t_band": "T-61-90",
+                "conf_min": 0.25,
+                "size_multiplier": 0.5,
+            }
+        ]
+        decision = self._run(predicates)
+
+        # The hard-block check (check_block_cells_predicate) treats
+        # size_multiplier > 0.0 predicates as PASS, so block_cells must NOT
+        # be the skip reason if a SKIP is returned.
+        assert decision.action in ("TRADE", "SKIP"), "Unexpected action"
+        # block_cells must not hard-block a partial-size predicate.
+        assert "block_cells" not in (decision.skip_reason or ""), (
+            f"block_cells hard-blocked a size_multiplier predicate: "
+            f"{decision.skip_reason!r}"
+        )
+
+        # The metadata must carry block_cell_size_multiplier regardless of whether
+        # the final decision is TRADE or SKIP (from v8_champion confirmation gate).
+        # We set it unconditionally on fallback_meta before the StrategyDecision is
+        # returned, so it must always be present.
+        meta = decision.metadata or {}
+        assert "block_cell_size_multiplier" in meta, (
+            "block_cell_size_multiplier not present in pc-null decision metadata. "
+            "resolve_block_cells_size_multiplier was not called on the pc-null path."
+        )
+        assert meta["block_cell_size_multiplier"] == pytest.approx(0.5, rel=1e-3), (
+            f"Expected block_cell_size_multiplier=0.5, got {meta['block_cell_size_multiplier']}"
+        )
+
+    def test_hard_block_predicate_still_hard_blocks_on_pc_null(self):
+        """Regression guard for #522 fix: hard-block predicates must still SKIP.
+
+        Verifies that adding size_mult resolver did NOT break the hard-block path.
+        """
+        # No size_multiplier field → hard block.
+        predicates = [
+            {"direction": "UP", "t_band": "T-61-90", "conf_min": 0.25},
+        ]
+        decision = self._run(predicates)
+        assert decision.action == "SKIP", (
+            f"Hard-block predicate did not SKIP on pc-null path "
+            f"(action={decision.action!r}, skip_reason={decision.skip_reason!r})"
+        )
+        assert "block_cells" in (decision.skip_reason or ""), (
+            f"skip_reason does not mention block_cells: {decision.skip_reason!r}"
+        )
+
+    def test_zero_size_mult_treated_as_hard_block_on_pc_null(self):
+        """size_multiplier=0.0 is semantically equivalent to a hard block (block_cells.py).
+
+        The resolve_block_cells_size_multiplier function returns skip_reason set
+        when size_multiplier==0.0.  check_block_cells_predicate also treats 0.0
+        as a hard block.  Verify that the trade is at minimum NOT given a
+        size_mult=0 scaling, i.e. the metadata does not carry a 0.0 multiplier
+        that would result in a $0 stake.
+        """
+        predicates = [
+            {
+                "direction": "UP",
+                "t_band": "T-61-90",
+                "conf_min": 0.25,
+                "size_multiplier": 0.0,
+            }
+        ]
+        decision = self._run(predicates)
+        # check_block_cells_predicate treats size_multiplier=0.0 as hard-block
+        # so this should SKIP at the hard-block stage.
+        meta = decision.metadata or {}
+        if decision.action == "TRADE":
+            mult = meta.get("block_cell_size_multiplier", 1.0)
+            assert mult != pytest.approx(0.0, abs=1e-9), (
+                "block_cell_size_multiplier=0.0 must not appear on a TRADE decision — "
+                "that would result in a zero-dollar stake."
+            )
+
+    def test_no_predicates_no_size_mult_key_absent_or_one(self):
+        """Empty predicates: block_cell_size_multiplier absent or 1.0 in metadata."""
+        decision = self._run([])
+        meta = decision.metadata or {}
+        mult = meta.get("block_cell_size_multiplier", 1.0)
+        assert mult == pytest.approx(1.0, rel=1e-3), (
+            f"Empty predicates should give multiplier=1.0, got {mult}"
+        )
+
+    def test_non_matching_size_mult_predicate_leaves_multiplier_at_one(self):
+        """A predicate that doesn't match must not change block_cell_size_multiplier."""
+        # Block DOWN only — LGB says UP (pl=0.82) → predicate must not match.
+        predicates = [
+            {
+                "direction": "DOWN",
+                "conf_min": 0.25,
+                "size_multiplier": 0.5,
+            }
+        ]
+        decision = self._run(predicates)
+        meta = decision.metadata or {}
+        if decision.action == "TRADE":
+            mult = meta.get("block_cell_size_multiplier", 1.0)
+            assert mult == pytest.approx(1.0, rel=1e-3), (
+                f"Non-matching predicate must not reduce multiplier (got {mult})"
+            )
