@@ -386,3 +386,88 @@ async def test_gtc_resting_card_never_suppressed(registry_with_alerter):
     assert all(o == "GTC_RESTING" for o in outcomes), outcomes
     # cap=1 would suppress second call for FAILED/SKIPPED — GTC_RESTING is exempt.
     assert len(alerter.calls) == 2
+
+
+# ─── Bug 1: already_executing_in_process must be a silent skip ───────────────
+#
+# Window 1778448300 (2026-05-10): two concurrent eval ticks for v_consensus_4way
+# both reached _fire_trade_attempt_card. The second one had
+# failure_reason="already_executing_in_process" and was classified as
+# FAILED_EXECUTION, emitting a confusing ❌ TG card. The fix: return early
+# (silent drop, DEBUG log) when the reason is already_executing_in_process —
+# the first attempt's card is the one that matters.
+
+
+@pytest.mark.asyncio
+async def test_already_executing_in_process_emits_no_tg_card(registry_with_alerter):
+    """already_executing_in_process must NOT emit a FAILED_EXECUTION TG card.
+
+    The in-process lock blocks a second concurrent execute() call for the
+    same (strategy, window, direction). This is correct serialization — the
+    first attempt is still in-flight. Emitting ❌ FAILED_EXECUTION for the
+    blocked second attempt confused operators into thinking a real execution
+    failure occurred. Fix: silently return from _fire_trade_attempt_card when
+    failure_reason == 'already_executing_in_process'.
+    """
+    reg, alerter = registry_with_alerter
+    from domain.value_objects import StrategyDecision
+
+    dec = StrategyDecision(
+        action="TRADE", direction="UP",
+        confidence="HIGH", confidence_score=0.80,
+        entry_cap=0.82, collateral_pct=0.025,
+        strategy_id="v_consensus_4way", strategy_version="1.0.0",
+        entry_reason="consensus_4way", skip_reason=None,
+        metadata={},
+    )
+    exec_result = _fake_exec_result(
+        success=False, failure_reason="already_executing_in_process"
+    )
+    await reg._fire_trade_attempt_card(
+        strategy="v_consensus_4way",
+        window_ts=1778448300,
+        decision=dec,
+        execution_result=exec_result,
+        timeframe="5m",
+    )
+    # MUST emit zero cards — this is a silent internal serialization guard
+    assert len(alerter.calls) == 0, (
+        f"already_executing_in_process must not emit TG card, "
+        f"got {len(alerter.calls)} call(s): {alerter.calls}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_other_failures_still_emit_failed_execution(registry_with_alerter):
+    """Other non-serialization failures (e.g. gtc_submit_error network error)
+    must still be classified as FAILED_EXECUTION and emit a card.
+
+    Complement test: proves the already_executing_in_process early-return is
+    narrowly scoped and doesn't suppress genuine failure cards.
+    """
+    reg, alerter = registry_with_alerter
+    from domain.value_objects import StrategyDecision
+
+    dec = StrategyDecision(
+        action="TRADE", direction="UP",
+        confidence="HIGH", confidence_score=0.80,
+        entry_cap=0.82, collateral_pct=0.025,
+        strategy_id="v_consensus_4way", strategy_version="1.0.0",
+        entry_reason="consensus_4way", skip_reason=None,
+        metadata={},
+    )
+    exec_result = _fake_exec_result(
+        success=False,
+        failure_reason="gtc_submit_error: clob_auth_error: 401 Unauthorized",
+    )
+    await reg._fire_trade_attempt_card(
+        strategy="v_consensus_4way",
+        window_ts=1778448300,
+        decision=dec,
+        execution_result=exec_result,
+        timeframe="5m",
+    )
+    assert len(alerter.calls) == 1
+    assert alerter.calls[0]["outcome"] == "FAILED_EXECUTION", (
+        "Real execution failures must still emit FAILED_EXECUTION cards"
+    )

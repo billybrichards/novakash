@@ -99,6 +99,28 @@ _REAL_ERROR_REASON_PREFIXES: tuple[str, ...] = (
     "execution_error",
 )
 
+# Substrings in a failure_reason that indicate a client-side safety
+# rejection rather than a real CLOB/infra error. Even when the prefix
+# matches _REAL_ERROR_REASON_PREFIXES, if any of these substrings are
+# present the error is treated as a benign skip — NOT counted toward
+# the circuit-breaker consecutive-error counter.
+#
+# Rationale (window 1778448300, 2026-05-10):
+#   "gtc_submit_error: Token price 0.88 exceeds 85¢ cap — skipping"
+#   "gtc_submit_error: Token price 0.88 exceeds safety cap ..."
+# These are raised by adapters/polymarket/live_client.py BEFORE any
+# network call is made — the GTC was never submitted to Polymarket.
+# Counting them as "order errors" tripped the circuit breaker after 3
+# windows at high fill prices, silencing ALL strategies for 180s.
+# They are price-band enforcement by the engine itself; the market is
+# not at fault and neither is the infrastructure.
+_SAFETY_REJECTION_SUBSTRINGS: tuple[str, ...] = (
+    "exceeds",
+    "safety cap",
+    "cap — skipping",
+    "cap -- skipping",
+)
+
 # ── Default eval-offset recheck knobs (v6 late-fill defense, 2026-04-21) ──
 #
 # Defence-in-depth: even if a strategy's timing gate passes because
@@ -249,9 +271,28 @@ def _recheck_timing_before_execute(
 
 
 def _is_real_order_error(failure_reason: str | None) -> bool:
+    """Return True only for genuine CLOB/infra errors that should trip the breaker.
+
+    Client-side safety rejections (e.g. "gtc_submit_error: Token price 0.88
+    exceeds 85¢ cap — skipping") match the prefix but are price-band enforcement
+    by the engine itself — the GTC was never submitted to Polymarket. They must
+    NOT count toward the consecutive-error counter; otherwise 3 back-to-back
+    high-fill windows trip the breaker and silence ALL strategies for 180s.
+
+    Window 1778448300 (2026-05-10): exactly this happened — cap-rejection at
+    0.88 > 0.85 incremented the counter 3 times, tripped circuit breaker.
+    """
     if not failure_reason:
         return False
-    return failure_reason.startswith(_REAL_ERROR_REASON_PREFIXES)
+    if not failure_reason.startswith(_REAL_ERROR_REASON_PREFIXES):
+        return False
+    # Exclude client-side safety rejections — they look like gtc_submit_error
+    # but were raised before any network call and are NOT infrastructure faults.
+    lower = failure_reason.lower()
+    for substr in _SAFETY_REJECTION_SUBSTRINGS:
+        if substr.lower() in lower:
+            return False
+    return True
 
 
 def _failed(
