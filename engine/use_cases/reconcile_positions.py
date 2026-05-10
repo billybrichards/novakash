@@ -619,10 +619,12 @@ class ReconcilePositionsUseCase:
                 logger.info("reconciler.prefix_match", pos_token=token_id[:20], db_token=(match.get("token_id") or "")[:20])
                 return match, "prefix"
 
-        # Tier 3: approximate cost match
+        # Tier 3: approximate cost match (Hub #455: pass condition_id to
+        # avoid same-stake cross-market false positives).
         if position.cost > 0:
             match = await self._trade_repo.find_by_approximate_cost(
                 position.cost,
+                condition_id=position.condition_id or None,
             )
             if match:
                 # Phantom-trade guard (2026-04-17 incident #4881). The
