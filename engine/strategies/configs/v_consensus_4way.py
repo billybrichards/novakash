@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from strategies.data_surface import FullDataSurface
 
 from domain.value_objects import StrategyDecision
+from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v_consensus_4way"
 _VERSION = "1.0.0"
@@ -127,12 +128,18 @@ def evaluate_consensus_4way(surface: "FullDataSurface") -> StrategyDecision:
     dist = abs(mean_prob - 0.5)
     confidence_score = min(dist * 2.0, 1.0)  # Scale: 0.55→0.10, 0.70→0.40, 0.80→0.60
 
+    # entry_cap is the GTC price ceiling fed into fak_ladder_executor.
+    # 0.0 would cause gtc_price = round(0.0 + pi_bonus, 2) ≈ $0.01 →
+    # order rests at $0.01 and never fills. Read fill_band_max from runtime
+    # overrides so operator can tune via SQL without a redeploy.
+    fill_cap = _gp.get_float("fill_band_max", None, 0.82)
+
     return StrategyDecision(
         action="TRADE",
         direction=direction,
         confidence=_confidence_label(mean_prob),
         confidence_score=confidence_score,
-        entry_cap=0.0,  # Let sizing gate determine
+        entry_cap=fill_cap,  # GTC price ceiling — must be > 0
         collateral_pct=0.0,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
