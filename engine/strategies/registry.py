@@ -1267,7 +1267,16 @@ class StrategyRegistry:
         # sets result.failure_reason = "already_traded"; that's our signal.
         if execution_result is not None:
             if getattr(execution_result, "success", False):
-                outcome = "FILLED"
+                # GTC resting: order is live on-book but NOT yet filled.
+                # Do NOT emit "FILLED" — that would show fill_price=None as
+                # $0.000 and mislead the operator. Use GTC_RESTING so the
+                # card says "resting on book (awaiting fill)". The reconciler
+                # fires a separate FILLED card when the order actually matches.
+                exec_mode = getattr(execution_result, "execution_mode", "") or ""
+                if exec_mode == "gtc_resting":
+                    outcome = "GTC_RESTING"
+                else:
+                    outcome = "FILLED"
             else:
                 failure_reason = getattr(execution_result, "failure_reason", "") or ""
                 if failure_reason == "already_traded":
@@ -1288,14 +1297,14 @@ class StrategyRegistry:
         # PR 4: per-(strategy, window, outcome) TG card cap. Retries at
         # later eval offsets still log full context to DB via
         # gate_check_traces, but we cap TG at _attempt_card_cap per tuple
-        # so operator isn't drowned. FILLED always emits (one-shot), and
+        # so operator isn't drowned. FILLED/GTC_RESTING always emit (one-shot), and
         # skip-path cards from the final-eval loop are already 1-per-window
         # — the cap matters mainly for FAILED_EXECUTION / SKIPPED_COOLDOWN
         # retries within a window.
         tuple_key = (strategy, int(window_ts or 0), outcome)
         count = self._attempt_card_counts.get(tuple_key, 0) + 1
         self._attempt_card_counts[tuple_key] = count
-        if outcome != "FILLED" and count > self._attempt_card_cap:
+        if outcome not in ("FILLED", "GTC_RESTING") and count > self._attempt_card_cap:
             log.debug(
                 "registry.trade_attempt_card_capped",
                 strategy=strategy,
@@ -1332,10 +1341,10 @@ class StrategyRegistry:
             price = getattr(execution_result, "fill_price", None)
             stake = getattr(execution_result, "stake_usd", None)
             order_id = getattr(execution_result, "order_id", None)
-        # For FAILED_EXECUTION, do NOT fall back to entry_cap as "price" —
-        # fill_price=None means no fill occurred. entry_cap shown as price would
-        # mislead operator into thinking a fill at that price happened.
-        if price is None and outcome != "FAILED_EXECUTION":
+        # For FAILED_EXECUTION and GTC_RESTING, do NOT fall back to entry_cap
+        # as "price" — fill_price=None means no fill occurred. entry_cap shown
+        # as price would mislead operator into thinking a fill happened.
+        if price is None and outcome not in ("FAILED_EXECUTION", "GTC_RESTING"):
             price = decision.entry_cap
 
         try:

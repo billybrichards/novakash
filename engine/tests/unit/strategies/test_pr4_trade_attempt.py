@@ -296,3 +296,93 @@ async def test_cap_is_per_outcome_fills_never_suppressed(registry_with_alerter):
     outcomes = [c["outcome"] for c in alerter.calls]
     assert outcomes.count("FILLED") == 1
     assert outcomes.count("FAILED_EXECUTION") == 1
+
+
+# ─── GTC_RESTING: resting order must NOT emit FILLED ────────────────────
+
+
+def _fake_gtc_resting_result() -> Any:
+    """Simulate a GTC order placed on book (success=True, fill_price=None)."""
+    class R:
+        pass
+
+    r = R()
+    r.success = True
+    r.failure_reason = None
+    r.fill_price = None        # not yet filled
+    r.fill_size = None
+    r.stake_usd = 5.00
+    r.order_id = "0xabc123"
+    r.execution_mode = "gtc_resting"
+    return r
+
+
+@pytest.mark.asyncio
+async def test_gtc_resting_emits_gtc_resting_not_filled(registry_with_alerter):
+    """A GTC resting result (success=True, execution_mode=gtc_resting) must
+    produce outcome=GTC_RESTING, NOT FILLED.  Emitting FILLED with fill_price=None
+    would render as $0.000 and imply a fill that hasn't happened yet.
+    """
+    reg, alerter = registry_with_alerter
+    from domain.value_objects import StrategyDecision
+
+    dec = StrategyDecision(
+        action="TRADE", direction="UP",
+        confidence="MODERATE", confidence_score=0.6,
+        entry_cap=0.72, collateral_pct=0.025,
+        strategy_id="v_consensus_4way", strategy_version="1.0.0",
+        entry_reason="consensus_4way_UP_0.680", skip_reason=None,
+        metadata={"consensus_4way_active": True},
+    )
+    gtc_result = _fake_gtc_resting_result()
+    await reg._fire_trade_attempt_card(
+        strategy="v_consensus_4way",
+        window_ts=1778439900,
+        decision=dec,
+        execution_result=gtc_result,
+        timeframe="5m",
+    )
+    assert len(alerter.calls) == 1
+    call = alerter.calls[0]
+    assert call["outcome"] == "GTC_RESTING", (
+        f"GTC resting order must not emit 'FILLED' — got {call['outcome']!r}. "
+        "FILLED with fill_price=None renders as $0.000 and is misleading."
+    )
+    # Price must be None (no fill yet) — do NOT fall back to entry_cap.
+    assert call["price"] is None, (
+        f"GTC resting card must have price=None, not {call['price']!r}. "
+        "entry_cap should not be passed as fill price."
+    )
+
+
+@pytest.mark.asyncio
+async def test_gtc_resting_card_never_suppressed(registry_with_alerter):
+    """GTC_RESTING cards must bypass the per-window cap (same as FILLED)."""
+    reg, alerter = registry_with_alerter
+    reg._attempt_card_cap = 1
+    from domain.value_objects import StrategyDecision
+
+    dec = StrategyDecision(
+        action="TRADE", direction="DOWN",
+        confidence="HIGH", confidence_score=0.7,
+        entry_cap=0.35, collateral_pct=0.025,
+        strategy_id="v_consensus_4way", strategy_version="1.0.0",
+        entry_reason="consensus_4way_DOWN_0.320", skip_reason=None,
+        metadata={},
+    )
+    gtc_result = _fake_gtc_resting_result()
+    # Fire the same GTC result twice on the same window — both should appear.
+    # In practice only one resting order fires per window, but the cap must
+    # not suppress GTC_RESTING cards regardless.
+    for _ in range(2):
+        await reg._fire_trade_attempt_card(
+            strategy="v_consensus_4way",
+            window_ts=1778442900,
+            decision=dec,
+            execution_result=gtc_result,
+            timeframe="5m",
+        )
+    outcomes = [c["outcome"] for c in alerter.calls]
+    assert all(o == "GTC_RESTING" for o in outcomes), outcomes
+    # cap=1 would suppress second call for FAILED/SKIPPED — GTC_RESTING is exempt.
+    assert len(alerter.calls) == 2

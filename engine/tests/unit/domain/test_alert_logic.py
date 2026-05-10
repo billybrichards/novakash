@@ -139,6 +139,28 @@ class TestScoreSignalHealth:
         )
         assert b.status is HealthStatus.DEGRADED
 
+    def test_sources_agree_none_does_not_degrade_health(self):
+        """sources_agree=None (not computed by strategy) must NOT produce
+        'sources:unknown' amber tag.  v_consensus_4way does its own 4-model
+        consensus check and does not populate this field — absence of data
+        should not be treated as disagreement.
+        """
+        b = score_signal_health(
+            vpin=0.60,
+            p_up=0.85,
+            p_up_distance=0.35,
+            sources_agree=None,   # not populated — OK
+            confidence_label="HIGH",
+            confidence_override_active=False,
+            eval_band_in_optimal=True,
+            chainlink_feed_age_s=5.0,
+        )
+        assert b.status is HealthStatus.OK, (
+            f"sources_agree=None must not degrade health, got {b.status}"
+        )
+        assert "sources:unknown" not in b.reasons, b.reasons
+        assert "sources:mixed" not in b.reasons, b.reasons
+
 
 # ---------------------------------------------------------------------------
 # classify_outcome

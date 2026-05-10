@@ -3689,6 +3689,7 @@ class TelegramAlerter:
     # can scan five cards in two seconds on a phone.
     _TRADE_ATTEMPT_EMOJI: dict[str, str] = {
         "FILLED": "✅",
+        "GTC_RESTING": "🟡",
         "SKIPPED_NO_EDGE": "⏸️",
         "SKIPPED_PRICE_BAND": "🚫",
         "SKIPPED_RISK_GATED": "🛑",
@@ -3703,6 +3704,7 @@ class TelegramAlerter:
     }
     _TRADE_ATTEMPT_REASON: dict[str, str] = {
         "FILLED": "filled",
+        "GTC_RESTING": "resting on book",
         "SKIPPED_NO_EDGE": "no edge",
         "SKIPPED_PRICE_BAND": "price outside band",
         "SKIPPED_RISK_GATED": "risk gate",
@@ -3758,6 +3760,12 @@ class TelegramAlerter:
         ]
         if stake_usd is not None and price is not None and outcome == "FILLED":
             lines.append(f"stake `${stake_usd:.2f}` @ `${price:.3f}`")
+        elif outcome == "GTC_RESTING":
+            # Order placed on book but NOT yet filled — no fill price exists.
+            # Show stake only so operator knows the size committed. Fill
+            # confirmation arrives separately from the reconciler.
+            if stake_usd is not None:
+                lines.append(f"stake `${stake_usd:.2f}` (awaiting fill)")
         elif outcome == "FAILED_EXECUTION":
             # Don't show fill price for failed executions — it is misleading
             # (fill_price=None renders as $0.000, or entry_cap is shown as if
@@ -3769,7 +3777,7 @@ class TelegramAlerter:
                 lines.append(f"gate: `{blocking_gate}`")
         elif price is not None:
             lines.append(f"price `${price:.3f}`")
-        if outcome != "FAILED_EXECUTION":
+        if outcome not in ("FAILED_EXECUTION", "GTC_RESTING"):
             if edge_bps is not None:
                 lines.append(f"edge `{edge_bps:+.1f} bps`")
             if blocking_gate:
@@ -3783,8 +3791,10 @@ class TelegramAlerter:
 
         text = "\n".join(lines)
         try:
-            if outcome == "FILLED":
-                # FILLED cards are critical — send immediately.
+            if outcome in ("FILLED", "GTC_RESTING"):
+                # FILLED and GTC_RESTING cards are critical — send immediately.
+                # GTC_RESTING means the order is live on-book; operator must
+                # see it promptly. Fill confirmation arrives from reconciler.
                 await self._send(text)
             else:
                 # SKIPPED/FAILED cards are diagnostic — queue them so

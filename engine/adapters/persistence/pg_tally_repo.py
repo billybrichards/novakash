@@ -57,6 +57,7 @@ class PgTallyRepo(TallyQueryPort):
             return cached  # type: ignore[return-value]
         tally = await self._aggregate_trades(
             "AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+            " AND COALESCE(is_live, FALSE) = TRUE"
         )
         self._cache_put("today", tally)
         return tally
@@ -67,6 +68,7 @@ class PgTallyRepo(TallyQueryPort):
             return cached  # type: ignore[return-value]
         tally = await self._aggregate_trades(
             "AND created_at >= NOW() - interval '1 hour'"
+            " AND COALESCE(is_live, FALSE) = TRUE"
         )
         self._cache_put("hour", tally)
         return tally
@@ -78,6 +80,7 @@ class PgTallyRepo(TallyQueryPort):
             return cached  # type: ignore[return-value]
         tally = await self._aggregate_trades(
             f"AND created_at >= to_timestamp({int(since_unix)})"
+            " AND COALESCE(is_live, FALSE) = TRUE"
         )
         self._cache_put(cache_key, tally)
         return tally
@@ -139,7 +142,8 @@ class PgTallyRepo(TallyQueryPort):
             return cached  # type: ignore[return-value]
         tally = await self._aggregate_trades(
             "AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') "
-            "AND timeframe = $1",
+            "AND timeframe = $1"
+            " AND COALESCE(is_live, FALSE) = TRUE",
             timeframe,
         )
         self._cache_put(cache_key, tally)
