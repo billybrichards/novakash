@@ -261,3 +261,142 @@ async def test_rfq_and_gtc_both_enabled_still_works_end_to_end(monkeypatch):
     assert client.place_order_calls >= 1
     assert result.success is True
     assert result.execution_mode == "gtc_resting"
+
+
+# ── GTC lifecycle hardening tests (2026-05-10) ────────────────────────────
+
+
+class _FakePolyClientWithCancel(_FakePolyClient):
+    """Extends fake client with cancel_order tracking."""
+
+    def __init__(self):
+        super().__init__()
+        self.cancel_calls: list[str] = []
+
+    async def cancel_order(self, order_id: str) -> bool:
+        self.cancel_calls.append(order_id)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_gtc_dedup_blocks_second_attempt():
+    """A second execute_order for the same token_id+side is blocked if a GTC
+    is already resting on the book.  The second call returns success=False
+    with failure_reason containing 'gtc_dedup_blocked', and place_order is
+    NOT called a second time.
+    """
+    client = _FakePolyClient()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    # First call — places GTC, returns gtc_resting.
+    result1 = await executor.execute_order(
+        token_id="token-abc-yes",
+        side="YES",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+    )
+    assert result1.success is True
+    assert result1.execution_mode == "gtc_resting"
+    assert client.place_order_calls == 1
+
+    # Second call for the same token+side — dedup must block.
+    result2 = await executor.execute_order(
+        token_id="token-abc-yes",
+        side="YES",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+    )
+    assert result2.success is False
+    assert "gtc_dedup_blocked" in (result2.failure_reason or "")
+    # place_order must NOT have been called a second time.
+    assert client.place_order_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gtc_dedup_allows_different_side():
+    """Dedup is per (token_id, side). YES and NO are independent slots."""
+    client = _FakePolyClient()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    result_yes = await executor.execute_order(
+        token_id="token-abc",
+        side="YES",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+    )
+    result_no = await executor.execute_order(
+        token_id="token-abc",
+        side="NO",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+    )
+    # Both should succeed — different sides are independent.
+    assert result_yes.success is True
+    assert result_no.success is True
+    assert client.place_order_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_gtc_window_expired_cancel_removes_resting_order():
+    """cancel_expired_gtc_orders() cancels the resting GTC and clears the
+    dedup registry so a future GTC for the same token_id+side is allowed.
+    """
+    client = _FakePolyClientWithCancel()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    # Place a GTC.
+    result = await executor.execute_order(
+        token_id="token-expiring",
+        side="YES",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+    )
+    assert result.success is True
+    assert result.execution_mode == "gtc_resting"
+    assert ("token-expiring", "YES") in executor._active_gtc
+
+    # Simulate window close.
+    await executor.cancel_expired_gtc_orders(["token-expiring"])
+
+    # Cancel must have been called with the order_id.
+    assert len(client.cancel_calls) == 1
+    assert "0xgtc-open" in client.cancel_calls[0]
+
+    # Dedup registry must be cleared — new GTC attempt should be allowed.
+    assert ("token-expiring", "YES") not in executor._active_gtc
+
+
+@pytest.mark.asyncio
+async def test_gtc_window_expired_cancel_noop_when_no_active_gtc():
+    """cancel_expired_gtc_orders with no active GTC is a clean no-op."""
+    client = _FakePolyClientWithCancel()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    # No GTC placed — cancel on an unrecognised token_id must not raise.
+    await executor.cancel_expired_gtc_orders(["token-never-used"])
+    assert len(client.cancel_calls) == 0

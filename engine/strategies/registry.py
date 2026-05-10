@@ -1315,6 +1315,15 @@ class StrategyRegistry:
         blocking_gate = meta.get("blocking_gate") or meta.get("failed_gate")
         gate_reason = decision.skip_reason if outcome.startswith("SKIPPED_") else None
 
+        # For FAILED_EXECUTION, surface the execution failure reason (e.g.
+        # "fak_rfq_exhausted; gtc_fallback_disabled") so the operator sees WHY
+        # the order was not placed, rather than a misleading $0.000 price line.
+        if outcome == "FAILED_EXECUTION":
+            exec_failure_reason = None
+            if execution_result is not None:
+                exec_failure_reason = getattr(execution_result, "failure_reason", None)
+            gate_reason = exec_failure_reason or exec_error or gate_reason
+
         side = decision.direction or "?"
         price: Optional[float] = None
         stake: Optional[float] = None
@@ -1323,7 +1332,10 @@ class StrategyRegistry:
             price = getattr(execution_result, "fill_price", None)
             stake = getattr(execution_result, "stake_usd", None)
             order_id = getattr(execution_result, "order_id", None)
-        if price is None:
+        # For FAILED_EXECUTION, do NOT fall back to entry_cap as "price" —
+        # fill_price=None means no fill occurred. entry_cap shown as price would
+        # mislead operator into thinking a fill at that price happened.
+        if price is None and outcome != "FAILED_EXECUTION":
             price = decision.entry_cap
 
         try:
@@ -1336,7 +1348,7 @@ class StrategyRegistry:
                 price=float(price) if price is not None else None,
                 edge_bps=None,
                 blocking_gate=blocking_gate,
-                gate_reason=gate_reason or (exec_error if outcome == "FAILED_EXECUTION" else None),
+                gate_reason=gate_reason,
                 order_id=str(order_id) if order_id else None,
                 timeframe=timeframe,
             )

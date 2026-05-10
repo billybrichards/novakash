@@ -284,6 +284,11 @@ class PaperPolymarketClient(PolymarketClientPort):
         """Return all tracked paper orders."""
         return list(self._paper_orders.values())
 
+    async def cancel_order(self, order_id: str) -> bool:
+        """Paper cancel — removes order from in-memory tracking. Always succeeds."""
+        self._paper_orders.pop(order_id, None)
+        return True
+
     async def get_trade_history(self) -> list[dict]:
         """Paper mode has no real trade fills to fetch."""
         return []

@@ -143,3 +143,69 @@ async def test_no_creds_silent():
             outcome="FILLED",
         )
         mock_send.assert_not_called()
+
+
+# ── FAILED_EXECUTION formatter fix (2026-05-10) ────────────────────────────
+# Before fix: fill_price=None rendered as $0.000 (entry_cap fallback shown as
+# fill price). After fix: no price line; failure reason shown instead.
+
+
+@pytest.mark.asyncio
+async def test_failed_execution_no_fill_price_shown():
+    """FAILED_EXECUTION card must NOT contain a $X.XXX price line.
+
+    When FAK exhausts and no fill occurred, fill_price=None. The old code
+    fell back to entry_cap (e.g. $0.640) and showed it as "price $0.640",
+    misleading the operator. New code skips the price line entirely.
+    """
+    alerter = _alerter()
+    sent: list[str] = []
+
+    def _fake_send_queued(text: str, priority=None) -> None:
+        sent.append(text)
+
+    with patch.object(alerter, "_send_queued", side_effect=_fake_send_queued):
+        await alerter.send_trade_attempt_result(
+            strategy="v_consensus_4way",
+            window_ts=1_778_438_700,
+            side="UP",
+            outcome="FAILED_EXECUTION",
+            # price=None simulates fill_price=None (no fill occurred)
+            price=None,
+        )
+
+    assert len(sent) == 1
+    msg = sent[0]
+    # Must not show any dollar-price line
+    assert "$0.000" not in msg
+    assert "price `$" not in msg
+    # Must still show outcome and emoji
+    assert "FAILED_EXECUTION" in msg
+    assert "❌" in msg
+
+
+@pytest.mark.asyncio
+async def test_failed_execution_shows_failure_reason():
+    """FAILED_EXECUTION card shows gate_reason (failure_reason from executor)."""
+    alerter = _alerter()
+    sent: list[str] = []
+
+    def _fake_send_queued(text: str, priority=None) -> None:
+        sent.append(text)
+
+    with patch.object(alerter, "_send_queued", side_effect=_fake_send_queued):
+        await alerter.send_trade_attempt_result(
+            strategy="v_consensus_4way",
+            window_ts=1_778_438_700,
+            side="UP",
+            outcome="FAILED_EXECUTION",
+            price=None,
+            gate_reason="fak_rfq_exhausted; gtc_fallback_disabled",
+        )
+
+    msg = sent[0]
+    assert "fak_rfq_exhausted" in msg
+    assert "gtc_fallback_disabled" in msg
+    # Price line must still be absent
+    assert "$0.000" not in msg
+    assert "price `$" not in msg
