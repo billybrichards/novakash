@@ -238,12 +238,13 @@ class LivePolymarketClient(PolymarketClientPort):
         max_price = float(os.environ.get("FIFTEEN_MIN_MAX_ENTRY_PRICE", "0.85")) if is_15m else float(os.environ.get("FIVE_MIN_MAX_ENTRY_PRICE", "0.85"))
         if token_price_f > max_price:
             self._log.warning(
-                "place_order.price_too_high",
-                price=str(price),
-                max_price=max_price,
+                "place_order.price_capped_to_max",
+                original_price=str(price),
+                capped_to=max_price,
                 market_slug=market_slug,
             )
-            raise ValueError(f"Token price {price} exceeds {int(max_price*100)}¢ cap — skipping")
+            price = Decimal(str(max_price))
+            token_price_f = max_price
         if token_price_f < 0.30:
             self._log.warning(
                 "place_order.price_too_low",
