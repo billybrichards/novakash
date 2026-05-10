@@ -54,24 +54,43 @@ def test_fetch_redeemable_positions_url_passes_limit_500() -> None:
 
 def test_polymarket_clients_pass_limit_500() -> None:
     """The PolymarketClient + LivePolymarketClient adapters that read
-    positions for portfolio value + outcome resolution must also request
-    limit=500. Same root-cause as the redeemer; same fix.
+    positions for portfolio value + outcome resolution must paginate.
+
+    Hub #455 (2026-05-10): the single limit=500 page was not enough for
+    wallets with 500+ historical positions.  Both clients now delegate to
+    ``_fetch_all_positions`` which iterates offset=0, 500, 1000, … until
+    a short page is returned.  The ``limit=500`` constraint lives in that
+    shared method; the public methods must call it.
     """
     import inspect
 
     from adapters.polymarket.live_client import LivePolymarketClient
     from execution.polymarket_client import PolymarketClient
 
+    # Verify the shared paginator method contains the limit and offset logic.
+    for cls in (LivePolymarketClient, PolymarketClient):
+        paginator_src = inspect.getsource(cls._fetch_all_positions)
+        assert "limit=500" in paginator_src or "limit={PAGE_SIZE}" in paginator_src or "PAGE_SIZE" in paginator_src, (
+            f"{cls.__name__}._fetch_all_positions must set limit=500 per page "
+            f"on the data-api positions URL. Audit task #322 / Hub #455."
+        )
+        assert "offset" in paginator_src, (
+            f"{cls.__name__}._fetch_all_positions must paginate using an "
+            f"offset parameter (Hub #455 — single page of 500 silently "
+            f"drops positions on page 2+)."
+        )
+
+    # The public methods must delegate to the paginator — no inline fetch.
     for cls, methods in (
         (LivePolymarketClient, ("get_portfolio_value", "get_position_outcomes")),
         (PolymarketClient, ("get_portfolio_value", "get_position_outcomes")),
     ):
         for m in methods:
             src = inspect.getsource(getattr(cls, m))
-            assert "limit=500" in src, (
-                f"{cls.__name__}.{m} must pass limit=500 on the "
-                f"data-api positions URL — default 100 silently "
-                f"truncates pending wins. Audit task #322."
+            assert "_fetch_all_positions" in src, (
+                f"{cls.__name__}.{m} must delegate to _fetch_all_positions() "
+                f"for pagination — direct single-page URL fetches silently "
+                f"drop positions on page 2+. Hub #455."
             )
 
 

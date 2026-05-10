@@ -609,10 +609,20 @@ class TradeRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def find_by_approximate_cost(self, cost: float) -> Optional[dict]:
+    async def find_by_approximate_cost(
+        self,
+        cost: float,
+        condition_id: Optional[str] = None,
+    ) -> Optional[dict]:
         """Cost-based fallback when token matching fails entirely.
 
-        Matches the most recent unresolved live trade within $0.50 of *cost*.
+        Matches the most recent unresolved live trade within $0.15 of
+        *cost*.  When ``condition_id`` is supplied the query adds a
+        ``metadata->>'condition_id' = $2`` (or ``conditionId``) clause,
+        so same-stake trades from different markets cannot cross-match.
+        Hub #455 (2026-05-10): all v_consensus_4way entries carry $5
+        stakes — without the condition_id filter a losing $4.94 position
+        was stamping the wrong outcome on an unrelated winning trade.
         """
         ...
 

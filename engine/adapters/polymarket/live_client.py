@@ -918,33 +918,73 @@ class LivePolymarketClient(PolymarketClientPort):
             "raw": resp if isinstance(resp, dict) else None,
         }
 
+    async def _fetch_all_positions(self) -> list:
+        """Paginate Polymarket data-api /positions, concatenating all pages.
+
+        Polymarket caps each page at 500 records.  Wallets with deep
+        history (500+ total positions) silently lose page-2+ entries when
+        callers only request a single page.  Hub #455 (2026-05-10): two
+        winning v_consensus_4way positions sat on page 2 and were
+        invisible to the reconciler, causing mis-classification as LOSS
+        via the cost-fallback tier.
+
+        Pagination: iterate offset=0, 500, 1000, … until the response
+        contains fewer than PAGE_SIZE records, at which point we've
+        received the last page.
+        """
+        import aiohttp
+        PAGE_SIZE = 500
+        funder = self._funder_address.lower()
+        base_url = f"https://data-api.polymarket.com/positions?user={funder}&limit={PAGE_SIZE}"
+        headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
+        all_positions: list = []
+        offset = 0
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            while True:
+                url = f"{base_url}&offset={offset}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status != 200:
+                        self._log.warning(
+                            "live_client.positions_api_error",
+                            status=resp.status,
+                            offset=offset,
+                        )
+                        break
+                    page = await resp.json()
+
+                if not page:
+                    break
+
+                all_positions.extend(page)
+
+                if len(page) < PAGE_SIZE:
+                    # Last page — no more records.
+                    break
+
+                offset += PAGE_SIZE
+
+        if offset > 0:
+            self._log.debug(
+                "live_client.positions_paginated",
+                total=len(all_positions),
+                pages=offset // PAGE_SIZE + 1,
+            )
+
+        return all_positions
+
     async def get_portfolio_value(self) -> float:
         """Return total portfolio value: CLOB cash + open position value."""
         cash = await self.get_balance()
         try:
-            import aiohttp
-            funder = self._funder_address.lower()
-            # Pass explicit limit=500 — see redeemer.py for full
-            # rationale. Default page size is 100 which silently
-            # truncates wallets with deeper history.
-            url = (
-                f"https://data-api.polymarket.com/positions"
-                f"?user={funder}&limit=500"
-            )
-            headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
-            
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status != 200:
-                        return cash
-                    positions = await resp.json()
-            
+            positions = await self._fetch_all_positions()
+
             position_value = 0.0
             for p in positions:
                 sz = float(p.get("size", 0))
                 cur = float(p.get("curPrice", 0))
                 position_value += sz * cur
-            
+
             total = cash + position_value
             self._log.debug(
                 "portfolio.value",
@@ -958,38 +998,28 @@ class LivePolymarketClient(PolymarketClientPort):
             return cash  # Fallback to cash only
 
     async def get_position_outcomes(self) -> dict:
-        """Fetch real position outcomes from Polymarket data API."""
+        """Fetch real position outcomes from Polymarket data API.
+
+        Paginates all pages via :meth:`_fetch_all_positions` so positions
+        on page 2+ (offset >= 500) are not silently dropped.  Hub #455.
+        """
         try:
-            import aiohttp
-            funder = self._funder_address.lower()
-            # Explicit limit=500 — default 100 silently truncates
-            # pending wins on deep wallets. See redeemer.py rationale.
-            url = (
-                f"https://data-api.polymarket.com/positions"
-                f"?user={funder}&limit=500"
-            )
-            headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
-            
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status != 200:
-                        return {}
-                    positions = await resp.json()
-            
+            positions = await self._fetch_all_positions()
+
             results = {}
             for p in positions:
                 cid = p.get("conditionId", "")
                 cur_price = float(p.get("curPrice", 0))
                 size = float(p.get("size", 0))
                 avg_price = float(p.get("avgPrice", 0))
-                
+
                 if cur_price <= 0.01:
                     outcome = "LOSS"
                 elif cur_price >= 0.99:
                     outcome = "WIN"
                 else:
                     outcome = "OPEN"
-                
+
                 results[cid] = {
                     "size": size,
                     "avgPrice": avg_price,
@@ -1000,8 +1030,9 @@ class LivePolymarketClient(PolymarketClientPort):
                     "pnl": (size * cur_price) - (size * avg_price),
                     "tokenId": p.get("asset", "") or p.get("tokenId", ""),
                     "asset": p.get("asset", ""),
+                    "conditionId": cid,
                 }
-            
+
             return results
         except Exception as exc:
             self._log.debug("positions.fetch_failed", error=str(exc))

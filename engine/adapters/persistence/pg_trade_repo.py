@@ -523,7 +523,11 @@ class PgTradeRepository:
             )
             return None
 
-    async def find_by_approximate_cost(self, cost: float) -> Optional[dict]:
+    async def find_by_approximate_cost(
+        self,
+        cost: float,
+        condition_id: Optional[str] = None,
+    ) -> Optional[dict]:
         """Loose fallback by trade stake when token matching fails.
 
         Keeps ``outcome IS NULL`` — cost-fallback is the weakest tier (Tier 3),
@@ -531,11 +535,62 @@ class PgTradeRepository:
         already-resolved trades here would risk false positives. PR #234's
         phantom-trade guard ALSO runs against this match, relying on the
         ``polymarket_order_id`` + ``polymarket_tx_hash`` fields we now return.
+
+        When ``condition_id`` is supplied (Hub #455 patch, 2026-05-10) the
+        query adds a ``metadata->>'condition_id' = $2`` clause so same-stake
+        trades from different markets cannot cross-match.  All v_consensus_4way
+        entries share a $5 stake; without this filter a losing $4.94 position
+        stamped the wrong outcome on an unrelated winning trade.  Falls back to
+        cost-only matching if ``condition_id`` is absent (legacy behaviour for
+        strategies that don't store condition_id in metadata).
         """
         if not self._pool or cost <= 0:
             return None
         try:
             async with self._pool.acquire() as conn:
+                if condition_id:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT id,
+                               strategy,
+                               direction,
+                               stake_usd,
+                               entry_price,
+                               fill_size,
+                               metadata,
+                               created_at,
+                               outcome,
+                               resolved_at,
+                               polymarket_order_id,
+                               polymarket_tx_hash,
+                               COALESCE(metadata->>'asset', 'BTC') AS asset,
+                               metadata->>'window_ts' AS window_ts,
+                               COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
+                        FROM trades
+                        WHERE outcome IS NULL
+                          AND ABS(COALESCE(stake_usd, 0) - $1) <= 0.15
+                          AND (
+                                metadata->>'condition_id' = $2
+                             OR metadata->>'conditionId'  = $2
+                          )
+                        ORDER BY ABS(COALESCE(stake_usd, 0) - $1) ASC, created_at DESC
+                        LIMIT 1
+                        """,
+                        float(cost),
+                        condition_id,
+                    )
+                    if row:
+                        return dict(row)
+                    # condition_id present but no match — fall through to
+                    # cost-only query so we don't silently drop the position
+                    # for strategies that don't persist condition_id in metadata.
+                    log.debug(
+                        "pg_trade_repo.find_by_approximate_cost.cid_miss",
+                        condition_id=condition_id[:20],
+                        cost=cost,
+                        note="falling back to cost-only match",
+                    )
+
                 row = await conn.fetchrow(
                     """
                     SELECT id,
