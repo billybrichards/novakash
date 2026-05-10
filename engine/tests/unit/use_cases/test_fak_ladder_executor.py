@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import re
+import time
+from pathlib import Path
+
 import pytest
 
-from adapters.execution.fak_ladder_executor import FAKLadderExecutor
+from adapters.execution.fak_ladder_executor import (
+    FAKLadderExecutor,
+    GTC_EXPIRY_GRACE_SECONDS,
+    _WINDOW_DURATION_SECONDS,
+)
+
+RUNTIME_PATH = (
+    Path(__file__).parent.parent.parent.parent / "infrastructure" / "runtime.py"
+)
 
 
 class _FakePolyClient:
@@ -400,3 +412,125 @@ async def test_gtc_window_expired_cancel_noop_when_no_active_gtc():
     # No GTC placed — cancel on an unrecognised token_id must not raise.
     await executor.cancel_expired_gtc_orders(["token-never-used"])
     assert len(client.cancel_calls) == 0
+
+
+# ── Periodic expiry logic: get_expired_token_ids (PR #525 follow-up) ─────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_expired_gtc_skips_unexpired():
+    """get_expired_token_ids() must NOT include a GTC whose close_ts is in the future.
+
+    Token placed at t=0, window closes at t=300. At t=310 (< close_ts + grace=30)
+    the GTC is NOT yet expired.
+    """
+    client = _FakePolyClientWithCancel()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    # Seed the registry directly — avoids running execute_order (FAK/RFQ path).
+    now = time.time()
+    close_ts = now + 200  # window closes in 200s from now
+    executor._active_gtc[("token-future", "YES")] = {
+        "order_id": "0xorder-future",
+        "placed_at": now,
+        "close_ts": close_ts,
+    }
+
+    # Query at now — close_ts + grace is still in the future.
+    expired = executor.get_expired_token_ids(now=now)
+    assert "token-future" not in expired, (
+        "Unexpired GTC (close_ts in future) must not appear in expired list"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_expired_gtc_includes_expired_with_grace():
+    """get_expired_token_ids() must include a GTC past close_ts + grace.
+
+    Token placed at t=0, close_ts=t+300. At t = close_ts + grace + 1
+    the GTC must be returned as expired.
+    """
+    client = _FakePolyClientWithCancel()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    past_close = time.time() - _WINDOW_DURATION_SECONDS - GTC_EXPIRY_GRACE_SECONDS - 5
+    executor._active_gtc[("token-stale", "YES")] = {
+        "order_id": "0xorder-stale",
+        "placed_at": past_close - 100,
+        "close_ts": past_close,
+    }
+
+    expired = executor.get_expired_token_ids()
+    assert "token-stale" in expired, (
+        "GTC past close_ts + grace must be in the expired list"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_expired_gtc_clears_registry():
+    """cancel_expired_gtc_orders() removes the entry from _active_gtc.
+
+    After cancellation, the dedup registry must be clear so a future
+    GTC placement for the same (token_id, side) is permitted.
+    """
+    client = _FakePolyClientWithCancel()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    # Seed the registry with a stale entry.
+    past_close = time.time() - _WINDOW_DURATION_SECONDS - GTC_EXPIRY_GRACE_SECONDS - 5
+    executor._active_gtc[("token-clear", "YES")] = {
+        "order_id": "0xorder-clear",
+        "placed_at": past_close - 100,
+        "close_ts": past_close,
+    }
+    assert ("token-clear", "YES") in executor._active_gtc
+
+    # Run cancel.
+    await executor.cancel_expired_gtc_orders(["token-clear"])
+
+    # Registry must be empty for that token+side.
+    assert ("token-clear", "YES") not in executor._active_gtc, (
+        "_active_gtc must not retain the entry after cancel_expired_gtc_orders"
+    )
+    # cancel_order must have been called once.
+    assert len(client.cancel_calls) == 1
+
+
+def test_periodic_task_starts_at_engine_boot():
+    """The GTC cancel loop must be wired as an asyncio task at engine startup.
+
+    Static source check — if a refactor removes the create_task call for
+    ``_gtc_cancel_expired_loop`` from ``infrastructure/runtime.py``, this
+    test fails immediately (no need to spin up the full runtime).
+    """
+    src = RUNTIME_PATH.read_text()
+
+    # Verify the method definition exists.
+    assert "async def _gtc_cancel_expired_loop" in src, (
+        "_gtc_cancel_expired_loop method missing from runtime.py"
+    )
+
+    # Verify it is scheduled as an asyncio task.
+    pattern = re.compile(
+        r'asyncio\.create_task\(\s*self\._gtc_cancel_expired_loop\(\)',
+        re.DOTALL,
+    )
+    assert pattern.search(src), (
+        "asyncio.create_task(self._gtc_cancel_expired_loop()) missing from "
+        "runtime.py — periodic GTC cancel loop must be started at engine boot"
+    )
