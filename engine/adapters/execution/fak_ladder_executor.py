@@ -7,6 +7,13 @@ satisfies the OrderExecutionPort interface.
 This adapter owns the multi-step execution strategy. The use case just
 calls execute_order() and gets back an ExecutionResult.
 
+GTC lifecycle hardening (2026-05-10):
+- Dedup: max 1 GTC per (token_id, side) — a second attempt for the same
+  window+direction is blocked with failure_reason='gtc_dedup_blocked'.
+- Auto-cancel: call cancel_expired_gtc_orders(expired_token_ids) from the
+  engine heartbeat (or window resolver) to cancel resting GTCs for windows
+  that have closed without a fill, preventing phantom fills on expired markets.
+
 Audit: SP-06 Phase 4.
 """
 
@@ -122,6 +129,13 @@ class FAKLadderExecutor(OrderExecutionPort):
                 "fak_ladder.init",
                 extra={"rfq": "disabled (FAK_LADDER_ENABLE_RFQ=false)"},
             )
+
+        # GTC dedup registry: (token_id, side) -> order_id
+        # Enforces max 1 GTC per window+direction. Entries removed on
+        # cancel_expired_gtc_orders() call or when the order is confirmed filled.
+        # Dict is bounded: entries are pruned on cancel/expiry. In the pathological
+        # case of very many distinct token IDs without expiry calls, cap at 1000.
+        self._active_gtc: dict[tuple[str, str], str] = {}
 
     async def execute_order(
         self,
@@ -368,6 +382,58 @@ class FAKLadderExecutor(OrderExecutionPort):
             )
         return None
 
+    async def cancel_expired_gtc_orders(self, expired_token_ids: list[str]) -> None:
+        """Cancel resting GTC orders for windows that have closed.
+
+        Call this from the engine heartbeat / window resolver after a window
+        closes without a fill. Passes the list of token_ids whose windows
+        have expired. Any active GTC order for those tokens is cancelled via
+        the CLOB API, preventing phantom fills on resolved markets.
+
+        Logs ``gtc_window_expired_cancel`` for each cancelled order so
+        operators can spot them in the engine log.
+
+        No-op when GTC fallback is disabled or cancel_order is not available
+        on the poly client.
+        """
+        if not expired_token_ids:
+            return
+        cancel_fn = getattr(self._poly, "cancel_order", None)
+        if cancel_fn is None:
+            return
+        for token_id in expired_token_ids:
+            for side in ("YES", "NO"):
+                key = (token_id, side)
+                order_id = self._active_gtc.get(key)
+                if not order_id:
+                    continue
+                try:
+                    ok = await cancel_fn(order_id)
+                    logger.info(
+                        "fak_ladder.gtc_window_expired_cancel",
+                        extra={
+                            "token_id": token_id[:20],
+                            "side": side,
+                            "order_id": order_id[:20],
+                            "cancelled": ok,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "fak_ladder.gtc_cancel_error",
+                        extra={"order_id": order_id[:20], "error": str(exc)[:200]},
+                    )
+                finally:
+                    # Always remove from dedup registry after expiry attempt —
+                    # whether the cancel succeeded or not, the window is closed.
+                    self._active_gtc.pop(key, None)
+                # Bound dict size: prune if somehow grown beyond safe limit.
+                if len(self._active_gtc) > 1000:
+                    # Remove oldest half — in FIFO order.
+                    excess = list(self._active_gtc.keys())[:500]
+                    for k in excess:
+                        self._active_gtc.pop(k, None)
+
     async def _try_gtc(
         self,
         token_id: str,
@@ -377,7 +443,38 @@ class FAKLadderExecutor(OrderExecutionPort):
         start: float,
         fak_prices: list[float],
     ) -> ExecutionResult:
-        """Place GTC at cap + pi bonus, poll for fill."""
+        """Place GTC at cap + pi bonus, poll for fill.
+
+        Enforces a 1-GTC-per-(token_id, side) dedup lock so a second call
+        for the same window+direction (e.g. from a retry at a different
+        eval_offset) cannot place a duplicate resting order.
+        """
+        # ── GTC dedup check ──────────────────────────────────────────────
+        dedup_key = (token_id, side)
+        existing_order_id = self._active_gtc.get(dedup_key)
+        if existing_order_id:
+            logger.info(
+                "fak_ladder.gtc_dedup_blocked",
+                extra={
+                    "token_id": token_id[:20],
+                    "side": side,
+                    "existing_order_id": existing_order_id[:20],
+                },
+            )
+            return ExecutionResult(
+                success=False,
+                failure_reason=(
+                    f"gtc_dedup_blocked: order {existing_order_id[:20]} already resting"
+                ),
+                stake_usd=stake_usd,
+                execution_mode="none",
+                fak_attempts=len(fak_prices),
+                fak_prices=fak_prices,
+                token_id=token_id,
+                execution_start=start,
+                execution_end=time.time(),
+            )
+
         gtc_price = round(entry_cap + self._pi_bonus, 2)
         market_slug = ""  # Not needed for CLOB submission
 
@@ -404,6 +501,22 @@ class FAKLadderExecutor(OrderExecutionPort):
                 token_id=token_id,
                 execution_start=start,
                 execution_end=time.time(),
+            )
+
+        # Register in dedup registry immediately after successful placement.
+        # This prevents a second execute_order call (from a retry at a later
+        # eval_offset within the same window) from placing a duplicate GTC.
+        order_id_str = str(order_id) if order_id else None
+        if order_id_str:
+            self._active_gtc[dedup_key] = order_id_str
+            logger.info(
+                "fak_ladder.gtc_registered",
+                extra={
+                    "token_id": token_id[:20],
+                    "side": side,
+                    "order_id": order_id_str[:20],
+                    "active_gtc_count": len(self._active_gtc),
+                },
             )
 
         # Poll briefly for an immediate fill. If the order remains live on the
@@ -434,12 +547,15 @@ class FAKLadderExecutor(OrderExecutionPort):
                     extra={"error": str(exc)[:100], "elapsed": elapsed},
                 )
 
-        order_id_str = str(order_id) if order_id else None
         order_live_on_book = bool(order_id_str) and not filled
         fee = self._calc_fee(gtc_price, stake_usd) if filled else 0.0
         fill_price = (
             round(stake_usd / fill_size, 4) if filled and fill_size > 0 else None
         )
+
+        if filled:
+            # Order filled during poll — remove from dedup registry (no longer resting).
+            self._active_gtc.pop(dedup_key, None)
 
         if order_live_on_book:
             return ExecutionResult(
@@ -457,6 +573,8 @@ class FAKLadderExecutor(OrderExecutionPort):
                 execution_end=time.time(),
             )
 
+        # Not filled + not live (rejected/cancelled) — remove from dedup.
+        self._active_gtc.pop(dedup_key, None)
         return ExecutionResult(
             success=filled,
             order_id=order_id_str,

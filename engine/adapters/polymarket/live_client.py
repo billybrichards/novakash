@@ -1019,6 +1019,25 @@ class LivePolymarketClient(PolymarketClientPort):
             return raw
         return []
 
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel a resting CLOB order by order_id.
+
+        Returns True on success (cancelled or already gone), False on error.
+        Uses py-clob-client's ``cancel(order_id)`` (Level 2 auth DELETE).
+        """
+        client = self._ensure_client()
+        try:
+            resp = await _run_poly_sdk(self._clob_client.cancel, order_id)
+            # cancel() returns a dict on success; raises on auth / server error.
+            return True
+        except Exception as exc:
+            self._log.warning(
+                "polymarket.cancel_order_failed",
+                order_id=order_id[:20],
+                error=str(exc)[:200],
+            )
+            return False
+
     async def get_trade_history(self) -> list[dict]:
         """Fetch filled trade history from the CLOB."""
         client = self._ensure_client()

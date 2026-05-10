@@ -3758,15 +3758,25 @@ class TelegramAlerter:
         ]
         if stake_usd is not None and price is not None and outcome == "FILLED":
             lines.append(f"stake `${stake_usd:.2f}` @ `${price:.3f}`")
+        elif outcome == "FAILED_EXECUTION":
+            # Don't show fill price for failed executions — it is misleading
+            # (fill_price=None renders as $0.000, or entry_cap is shown as if
+            # a fill occurred). Show the failure reason instead so operator
+            # knows why (e.g. fak_rfq_exhausted; gtc_fallback_disabled).
+            if gate_reason:
+                lines.append(f"reason: `{gate_reason[:120]}`")
+            elif blocking_gate:
+                lines.append(f"gate: `{blocking_gate}`")
         elif price is not None:
             lines.append(f"price `${price:.3f}`")
-        if edge_bps is not None:
-            lines.append(f"edge `{edge_bps:+.1f} bps`")
-        if blocking_gate:
-            gate_line = f"gate: `{blocking_gate}`"
-            if gate_reason:
-                gate_line += f" — {gate_reason[:80]}"
-            lines.append(gate_line)
+        if outcome != "FAILED_EXECUTION":
+            if edge_bps is not None:
+                lines.append(f"edge `{edge_bps:+.1f} bps`")
+            if blocking_gate:
+                gate_line = f"gate: `{blocking_gate}`"
+                if gate_reason:
+                    gate_line += f" — {gate_reason[:80]}"
+                lines.append(gate_line)
         if order_id:
             lines.append(f"order: `{order_id[:20]}`")
         lines.append(f"window: `{window_ts}`")
