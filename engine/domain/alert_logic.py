@@ -77,10 +77,11 @@ def score_signal_health(
     red: list[str] = []
 
     # Sources dimension
+    # sources_agree is None when the strategy doesn't compute cross-source
+    # agreement (e.g. v_consensus_4way uses internal 4-model consensus instead).
+    # Don't flag "unknown" — absence of data is not the same as disagreement.
     if sources_agree is False:
         amber.append("sources:mixed")
-    elif sources_agree is None:
-        amber.append("sources:unknown")
 
     # VPIN dimension — healthy band is informed-but-not-cascading
     if vpin is not None:
