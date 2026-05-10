@@ -1,0 +1,105 @@
+name: v_consensus_4way
+version: "1.0.0"
+# v_consensus_4way — 2026-05-10 — 4-model consensus gate for BTC 5m.
+#
+# Strategy fires ONLY when all 4 probability signals agree on direction
+# with conviction. No fill-band gate — consensus naturally selects
+# contrarian-fill windows (clob_up_ask / clob_down_ask ≥ 0.78 in >95% of
+# qualified windows per May 1-8 data).
+#
+# The 4 signals (all from /v4/snapshot surface, read at eval time):
+#   1. v2_probability_up           — V2/TimesFM scorer effective P(UP)
+#   2. probability_lgb_v9_1        — v9.1 priceToBeat-aligned LGB booster
+#   3. probability_lgb_v12         — v12 LGB booster
+#   4. probability_classifier      — Path1 MLP classifier head
+#
+# Consensus thresholds (swept May 1-8 against market_data resolved outcomes):
+#   >=0.55 / <=0.45  → 549 windows, 88.3% accuracy (~69/day)
+#   >=0.60 / <=0.40  → 305 windows, 88.9% accuracy (~38/day)
+#   >=0.65 / <=0.35  → 112 windows, 94.6% accuracy (~14/day)
+#
+# Default: 0.55/0.45 (max volume, still 88.3% accuracy).
+#
+# Key insight: consensus windows naturally cluster at fills >= 0.78 because
+# the market rarely agrees with 4 models simultaneously. The contrarian-fill
+# premium provides the edge: breakeven WR ~48%, signal accuracy 88%.
+#
+# DEPENDENCIES (all satisfied in current deploy):
+#   1. timesfm-service emits probability_lgb_v9_1 (V9_1_ENABLED=true)
+#   2. timesfm-service emits probability_lgb_v12  (V12_ENABLED=true)
+#   3. timesfm-service emits probability_classifier (Path1 MLP loaded)
+#   4. V2 scorer emits v2_probability_up (production path)
+#   5. registry.py registration (type: LGB_X)
+#
+# Promotion criteria:
+#   - GHOST ≥ 7 days with ≥ 150 qualified windows
+#   - trade WR ≥ 75% (verified via wallet_truth, not trades.pnl_usd)
+#   - Billy enables LIVE by hand (no auto-promote per post-2026-04-17 rule)
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v_consensus_4way.py
+pre_gate_hook: evaluate_consensus_4way
+
+gates:
+  - type: chainlink_freshness
+  - type: cell_pause
+    params: { strategy_id: v_consensus_4way }
+
+gate_params:
+  min_offset_sec: 45
+  max_offset_sec: 200
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  fill_band_min: 0.00
+  fill_band_max: 0.85
+
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  blocked_utc_hours: []
+  blocked_utc_hours_down: []
+  blocked_utc_hours_up: []
+
+  oracle_agreement_min_sources: 2
+  post_loss_cooldown_min: 20
+
+  # ── No LGB dist gates — consensus IS the gate ──
+  lgb_dist_min_up: 0.01
+  lgb_dist_min_down: 0.01
+
+  # ── 1-tick confirmation (first consensus hit wins — N>1 degrades accuracy) ──
+  min_consecutive_pass_ticks: 1
+
+  # ── Disable ensemble-specific params (not used) ──
+  ensemble_disagreement_threshold: 0.99
+  require_direction_agreement: false
+
+  # ── Disable VHC bypass (consensus is the filter) ──
+  vhc_threshold: 0.99
+  vhc_bypass_transition: false
+  vhc_bypass_up_dist: false
+  vhc_bypass_disagreement: false
+  vhc_bypass_lgb_safety_floor: false
+  vhc_bypass_oracle_direction: false
+
+  # ── Disable PL VHC ──
+  pl_vhc_bypass_enabled: false
+
+  # ── Disable delta alignment (consensus covers it) ──
+  delta_gate_enabled: false
+
+  # ── Exit monitoring OFF ──
+  exit_monitor_enabled: false
+  exit_shadow_mode: false
