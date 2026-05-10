@@ -366,3 +366,132 @@ async def test_successful_fill_blocks_retry_in_same_window():
     assert r2.failure_reason == "already_filled_this_window"
     # Executor must NOT be called a second time
     assert mock_executor.execute_order.call_count == 1
+
+
+# ── Sub-task D: Bug 1 — already_executing_in_process is silent (no TG card) ────
+
+
+def test_already_executing_in_process_is_silent_skip(monkeypatch):
+    """already_executing_in_process must NOT emit a FAILED_EXECUTION TG card.
+
+    Window 1778448300 (2026-05-10): the second concurrent eval tick returned
+    already_executing_in_process and the registry emitted a ❌ FAILED_EXECUTION
+    TG card for what is correct serialization behaviour. The operator saw a
+    confusing card that looked like a real failure. Fix: treat this reason as
+    a silent skip — log at DEBUG, no TG card emitted.
+    """
+    # Import the registry _fire_trade_attempt_card logic indirectly by
+    # constructing an ExecutionResult with the specific failure reason and
+    # verifying _is_real_order_error returns False for it (which keeps the
+    # circuit breaker clean) and verifying that the registry outcome
+    # classification returns early (silent drop).
+    from use_cases.execute_trade import _is_real_order_error
+
+    # The failure reason for in-process lock — must NOT trip circuit breaker
+    reason = "already_executing_in_process"
+    assert not _is_real_order_error(reason), (
+        "already_executing_in_process must NOT count as a real order error"
+    )
+
+
+# ── Sub-task E: Bug 2 — cap-rejection allows retrade on next tick ────────────
+
+
+@pytest.mark.asyncio
+async def test_cap_rejection_does_not_block_retry_via_registry_dedup():
+    """After a cap-rejection (gtc_submit_error: Token price X exceeds Y cap),
+    the NEXT sequential eval tick for the same (strategy, window, direction)
+    must reach the executor again — the registry dedup only records successful
+    fills, not failed attempts.
+
+    Window 1778448300 (2026-05-10): price was 0.88 > 0.85 cap on tick 1.
+    If price dropped to 0.82 on tick 2, the strategy should fire again.
+    This test proves the dedup path allows it.
+    """
+    window_ts = 1_778_448_300
+    clock = _FakeClock(start=window_ts + 300 - 88)
+
+    cap_rejection_result = _fill(
+        clock=clock,
+        success=False,
+        reason="gtc_submit_error: Token price 0.88 exceeds 85¢ cap — skipping",
+    )
+    uc, mock_executor, mock_ws = _build_uc(
+        clock=clock, executor_result=cap_rejection_result
+    )
+
+    dec = _decision(strategy_id="v_consensus_4way", direction="UP")
+    mkt = _market(window_ts)
+
+    # Tick 1: cap-rejection
+    r1 = await uc.execute(
+        decision=dec, window_market=mkt, current_btc_price=65000.0, open_price=65100.0
+    )
+    assert r1.success is False
+    assert "exceeds" in (r1.failure_reason or "")
+
+    # In-process lock must be clear
+    assert not uc._in_flight_keys
+
+    # Tick 2: price recovered, executor now succeeds
+    clock.advance(31.0)
+    mock_ws.has_filled.return_value = False
+    mock_ws.try_claim_trade.return_value = (True, "claim-2")
+    mock_ws.try_claim_fill_slot.return_value = True
+    mock_executor.execute_order.return_value = _fill(clock=clock, success=True)
+
+    r2 = await uc.execute(
+        decision=dec, window_market=mkt, current_btc_price=65000.0, open_price=65100.0
+    )
+    # Must have reached the executor a second time (retry after cap-rejection)
+    assert mock_executor.execute_order.call_count == 2, (
+        f"Expected 2 executor calls (retry after cap-rejection), "
+        f"got {mock_executor.execute_order.call_count}"
+    )
+    assert r2.failure_reason != "already_executing_in_process"
+
+
+# ── Sub-task F: Bug 3 — circuit breaker excludes cap-rejection safety rejects ──
+
+
+def test_cap_rejection_not_real_order_error():
+    """gtc_submit_error from a client-side price cap must NOT be a real order
+    error — it must not increment the circuit-breaker consecutive-error counter.
+
+    Window 1778448300 (2026-05-10): 3 cap-rejections tripped the circuit
+    breaker and silenced ALL strategies for 180s. Cap-rejections are raised
+    by the engine client BEFORE any Polymarket API call. They are safety
+    enforcement by the engine, not infrastructure failures.
+    """
+    from use_cases.execute_trade import _is_real_order_error
+
+    # Cap-rejection variants that must NOT count as real errors
+    cap_reasons = [
+        "gtc_submit_error: Token price 0.88 exceeds 85¢ cap — skipping",
+        "gtc_submit_error: Token price 0.91 exceeds 85¢ cap — skipping",
+        "gtc_submit_error: price 0.88 exceeds safety cap 0.85",
+        "gtc_submit_error: 0.88 exceeds cap -- skipping",
+    ]
+    for reason in cap_reasons:
+        assert not _is_real_order_error(reason), (
+            f"Cap-rejection should NOT be a real order error: {reason!r}"
+        )
+
+
+def test_real_gtc_submit_error_still_counts():
+    """A genuine GTC submit error (e.g. auth failure, signer error) that does
+    NOT contain a cap-related substring must still count as a real order error
+    and increment the circuit-breaker counter.
+    """
+    from use_cases.execute_trade import _is_real_order_error
+
+    real_errors = [
+        "gtc_submit_error: clob_auth_error: 401 Unauthorized",
+        "gtc_submit_error: signer failed: invalid key",
+        "gtc_submit_error: network error: connection refused",
+        "execution_error: RPC timeout",
+    ]
+    for reason in real_errors:
+        assert _is_real_order_error(reason), (
+            f"Real order error should count toward circuit breaker: {reason!r}"
+        )

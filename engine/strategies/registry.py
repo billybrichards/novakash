@@ -1287,6 +1287,21 @@ class StrategyRegistry:
                     # operator. SKIPPED_DEDUP renders as "sibling already
                     # traded" — true and actionable.
                     outcome = "SKIPPED_DEDUP"
+                elif failure_reason == "already_executing_in_process":
+                    # Internal serialization lock: two eval ticks fired concurrently
+                    # for the same (strategy, window, direction) and the second was
+                    # blocked while the first was still in-flight. This is correct
+                    # guard-rail behaviour, NOT a user-facing failure. The first
+                    # attempt's outcome card is the one that matters. Silently drop
+                    # this card so the operator doesn't see misleading ❌ FAILED_EXECUTION
+                    # cards for what is actually a successful serialization.
+                    # Logs are still emitted at INFO level in execute_trade.py.
+                    log.debug(
+                        "registry.trade_attempt_card_in_process_lock_skip",
+                        strategy=strategy,
+                        window_ts=window_ts,
+                    )
+                    return
                 else:
                     outcome = "FAILED_EXECUTION"
         elif exec_error is not None:
