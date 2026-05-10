@@ -813,6 +813,76 @@ class PositionRedeemer:
             self._log.debug("redeemer.usdc_balance_error", error=str(exc))
             return 0.0
 
+    # ── Maximum pages to fetch when paginating /positions ─────────────────────
+    # 50 pages × 500 records = 25 000 positions — far above any realistic
+    # wallet size. Acts as a hard safety cap so a bug on the API side
+    # (e.g. infinite non-empty responses) cannot loop forever.
+    _POSITIONS_PAGE_LIMIT = 50
+
+    async def _fetch_all_positions_raw(self) -> list[dict]:
+        """Fetch ALL positions from Polymarket data-api, paginating via offset.
+
+        Hub #455 (2026-05-10): wallets with 500+ historical positions see
+        only the first page when a single ``limit=500`` request is made.
+        Recent fills appear on page 2+ and are invisible to the redeemer,
+        causing WIN positions to go unredeemed indefinitely.
+
+        Pagination: iterate ``offset=0, 500, 1000, …`` until the response
+        contains fewer than PAGE_SIZE (500) records or the safety cap is
+        reached.  Returns the concatenated list of all raw position dicts.
+        """
+        PAGE_SIZE = 500
+        funder = self._proxy_address.lower()
+        base_url = (
+            f"https://data-api.polymarket.com/positions"
+            f"?user={funder}&limit={PAGE_SIZE}"
+        )
+        headers = {"User-Agent": "NovakashEngine/1.0"}
+        all_positions: list[dict] = []
+        offset = 0
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            for _ in range(self._POSITIONS_PAGE_LIMIT):
+                url = f"{base_url}&offset={offset}"
+                try:
+                    async with session.get(
+                        url, timeout=aiohttp.ClientTimeout(total=15)
+                    ) as resp:
+                        if resp.status != 200:
+                            self._log.warning(
+                                "redeemer.positions_api_error",
+                                status=resp.status,
+                                offset=offset,
+                            )
+                            break
+                        page = await resp.json()
+                except Exception as exc:
+                    self._log.warning(
+                        "redeemer.positions_page_error",
+                        offset=offset,
+                        error=str(exc)[:120],
+                    )
+                    break
+
+                if not page:
+                    break
+
+                all_positions.extend(page)
+
+                if len(page) < PAGE_SIZE:
+                    # Last (partial) page — no more records.
+                    break
+
+                offset += PAGE_SIZE
+
+        if offset > 0:
+            self._log.debug(
+                "redeemer.positions_paginated",
+                total=len(all_positions),
+                pages=offset // PAGE_SIZE + 1,
+            )
+        return all_positions
+
     async def fetch_redeemable_positions(
         self,
         outcomes: Optional[set[str]] = None,
@@ -834,6 +904,9 @@ class PositionRedeemer:
         card), the cooldown gate is SKIPPED — the scan is a data-api GET
         that never touches the relayer, and blocking it hides unredeemed wins
         from the operator during cooldown windows.
+
+        Hub #455 (2026-05-10): paginates ALL position pages so wins sitting
+        on page 2+ (offset >= 500) are visible and redeemable.
         """
         if self._paper_mode:
             return []
@@ -842,31 +915,7 @@ class PositionRedeemer:
             return []
 
         try:
-            funder = self._proxy_address.lower()
-            # Polymarket's data-api defaults to limit=100 when unset. With
-            # 250+ historical positions on this wallet (most resolved LOSS
-            # at curPrice=0), the default page is dominated by stale
-            # losers and silently truncates pending wins. Pass an explicit
-            # limit=500 so the redeemer's win/loss scan sees the full
-            # position set. 500 is enough headroom for current activity
-            # (252 positions on prod 2026-04-26) without burdening the
-            # API. Audit task #322.
-            url = (
-                f"https://data-api.polymarket.com/positions"
-                f"?user={funder}&limit=500"
-            )
-            headers = {"User-Agent": "NovakashEngine/1.0"}
-
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=15)
-                ) as resp:
-                    if resp.status != 200:
-                        self._log.warning(
-                            "redeemer.positions_api_error", status=resp.status
-                        )
-                        return []
-                    positions = await resp.json()
+            positions = await self._fetch_all_positions_raw()
 
             if not positions:
                 return []

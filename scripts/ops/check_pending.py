@@ -61,12 +61,40 @@ def payout_denom(cid_hex: str) -> list:
     return out
 
 
-def main():
-    req = Request(
-        f"https://data-api.polymarket.com/positions?user={PROXY}&sizeThreshold=0.01&limit=500",
-        headers={"User-Agent": "Mozilla/5.0"},
+def fetch_all_positions(proxy: str, size_threshold: float = 0.01) -> list:
+    """Fetch ALL positions for ``proxy``, paginating via offset until exhausted.
+
+    Hub #455 (2026-05-10): a single ``limit=500`` request silently drops
+    positions on page 2+ (offset >= 500).  Recent winning positions (e.g.
+    conditionId 0x8b1c93...redeemed for $6.09 on 2026-05-10) sat on page 2
+    and were invisible, causing check_pending to report zero redeemable
+    positions when there were three.
+
+    Pagination: iterate offset=0, 500, 1000, … until the server returns a
+    partial page.  Safety cap: 50 pages = 25 000 positions maximum.
+    """
+    PAGE_SIZE = 500
+    base_url = (
+        f"https://data-api.polymarket.com/positions"
+        f"?user={proxy}&sizeThreshold={size_threshold}&limit={PAGE_SIZE}"
     )
-    positions = json.loads(urlopen(req, timeout=15).read())
+    all_positions: list = []
+    offset = 0
+    for _ in range(50):
+        url = base_url + "&offset=" + str(offset)
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        page = json.loads(urlopen(req, timeout=15).read())
+        if not page:
+            break
+        all_positions.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+    return all_positions
+
+
+def main():
+    positions = fetch_all_positions(PROXY)
     # Candidate = still holds value. Ignore fully-lost ($0) and dust.
     candidates = [
         p for p in positions

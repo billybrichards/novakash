@@ -130,18 +130,38 @@ def poly_activity(since_ts: int) -> list[dict]:
 
 
 def poly_positions() -> list[dict]:
-    """Current (unredeemed) positions held by the proxy wallet."""
+    """Current positions held by the proxy wallet — all pages.
+
+    Hub #455 (2026-05-10): wallets with 500+ historical positions silently
+    lose page-2+ entries when only a single ``limit=500`` request is made.
+    Recent fills (including unredeemed wins) appear on later pages.  This
+    function paginates via ``offset`` until the server returns a partial page.
+    """
     addr = _funder()
-    url = "https://data-api.polymarket.com/positions?user=" + addr + "&limit=500"
-    return [
-        p for p in json.loads(
+    PAGE_SIZE = 500
+    base_url = (
+        "https://data-api.polymarket.com/positions?user="
+        + addr + "&limit=" + str(PAGE_SIZE)
+    )
+    all_positions: list[dict] = []
+    offset = 0
+    # Safety cap: 50 pages × 500 = 25 000 positions.
+    for _ in range(50):
+        url = base_url + "&offset=" + str(offset)
+        page = json.loads(
             urllib.request.urlopen(
                 urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}),
                 timeout=15,
             ).read()
         )
-        if float(p.get("size", 0)) > 0.01
-    ]
+        if not page:
+            break
+        all_positions.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+
+    return [p for p in all_positions if float(p.get("size", 0)) > 0.01]
 
 
 async def _wallet_history(hours: int) -> list[tuple]:
@@ -214,15 +234,24 @@ def _analyse(rows: list[dict], positions_by_cond: dict) -> dict:
         if payout > 0:
             wins_resolved.append((ts, direction, cost, payout, title))
         elif pos:
-            cv = float(pos["currentValue"])
-            if cv > cost * 1.3:
+            cv = float(pos.get("currentValue") or 0)
+            cur_price = float(pos.get("curPrice") or pos.get("currentPrice") or 0)
+            # Hub #455 fix: treat curPrice >= 0.99 as a pending WIN regardless
+            # of the cv/cost ratio.  At high fill prices (e.g. 0.81) the ratio
+            # cv/cost is only ~1.23 — below the old 1.3 threshold — even though
+            # the position is definitively winning.  The canonical signal is
+            # curPrice, not the ratio.
+            if cur_price >= 0.99:
                 wins_pending.append((ts, direction, cost, cv, title))
-            elif cv < 0.1:
+            elif cur_price <= 0.01:
                 losses.append((ts, direction, cost, title))
             else:
+                # Still open (0.01 < curPrice < 0.99)
                 opens.append((ts, direction, cost, cv, title))
         else:
-            # No redeem record + not in held positions = worthless loss
+            # No redeem record + not in held positions = worthless loss.
+            # After the pagination fix this path fires only for genuinely
+            # expired positions, not ones that were invisible on page 2+.
             losses.append((ts, direction, cost, title))
 
     return {
@@ -331,12 +360,15 @@ def main(hours_window: int = 8) -> None:
     _print_window("LAST 2 HOURS", rows_2h, positions_by_cond)
     _print_window(f"LAST {args.hours} HOURS", rows_primary, positions_by_cond)
 
-    # Effective balance right now
+    # Effective balance right now.
+    # Hub #455: use curPrice >= 0.99 as the WIN signal, NOT the `redeemable`
+    # flag (which lags CTF resolution by up to 15 min).  Positions on page 2+
+    # were also missing before the pagination fix above.
     pending_usd_all = sum(
         float(p.get("currentValue", 0))
         for p in positions
-        if p.get("redeemable")
-        and float(p.get("currentValue", 0)) > float(p.get("size", 0)) * 0.5
+        if float(p.get("curPrice") or p.get("currentPrice") or 0) >= 0.99
+        and float(p.get("currentValue", 0)) > 0.01
     )
     print("=" * 76)
     print("EFFECTIVE BALANCE RIGHT NOW")
