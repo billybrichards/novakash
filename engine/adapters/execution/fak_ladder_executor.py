@@ -25,7 +25,7 @@ import math
 import os
 import time
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 
 from use_cases.ports.execution import OrderExecutionPort
 from domain.ports import PolymarketClientPort
@@ -42,6 +42,23 @@ DEFAULT_GTC_MAX_WAIT = 60
 
 # Pi bonus for GTC after FAK exhaustion
 DEFAULT_PI_BONUS = 0.0314
+
+# Seconds after window close before a resting GTC is considered expired.
+# 30s grace ensures we don't cancel during the final-fill window when the
+# market is still resolving. Cancel loop fires every 30s — worst-case a
+# resting GTC can survive for (300 + 30 + 30) ≈ 6 min before expiry.
+GTC_EXPIRY_GRACE_SECONDS = 30
+
+# Each 5-min window is 300 seconds.
+_WINDOW_DURATION_SECONDS = 300
+
+
+class _GTCEntry(TypedDict):
+    """Registry entry for one resting GTC order."""
+
+    order_id: str
+    placed_at: float   # wall-clock time.time() at placement
+    close_ts: float    # estimated window close (placed_at rounded up to next 300s boundary)
 
 # Phase-3 GTC fallback default. Disabled (False) post-2026-04-17 incident:
 # 20/20 overnight gtc_resting orders booked as RESOLVED_LOSS in trades table
@@ -130,12 +147,12 @@ class FAKLadderExecutor(OrderExecutionPort):
                 extra={"rfq": "disabled (FAK_LADDER_ENABLE_RFQ=false)"},
             )
 
-        # GTC dedup registry: (token_id, side) -> order_id
+        # GTC dedup registry: (token_id, side) -> _GTCEntry
         # Enforces max 1 GTC per window+direction. Entries removed on
         # cancel_expired_gtc_orders() call or when the order is confirmed filled.
         # Dict is bounded: entries are pruned on cancel/expiry. In the pathological
         # case of very many distinct token IDs without expiry calls, cap at 1000.
-        self._active_gtc: dict[tuple[str, str], str] = {}
+        self._active_gtc: dict[tuple[str, str], _GTCEntry] = {}
 
     async def execute_order(
         self,
@@ -382,6 +399,21 @@ class FAKLadderExecutor(OrderExecutionPort):
             )
         return None
 
+    def get_expired_token_ids(self, now: Optional[float] = None) -> list[str]:
+        """Return token_ids whose GTC windows have closed (including grace period).
+
+        Called by the periodic heartbeat cancel loop. Uses the ``close_ts``
+        stored at placement time plus ``GTC_EXPIRY_GRACE_SECONDS`` to decide
+        whether a resting GTC is stale. Safe to call at any cadence.
+        """
+        if now is None:
+            now = time.time()
+        expired: set[str] = set()
+        for (token_id, _side), entry in self._active_gtc.items():
+            if now > entry["close_ts"] + GTC_EXPIRY_GRACE_SECONDS:
+                expired.add(token_id)
+        return list(expired)
+
     async def cancel_expired_gtc_orders(self, expired_token_ids: list[str]) -> None:
         """Cancel resting GTC orders for windows that have closed.
 
@@ -404,9 +436,10 @@ class FAKLadderExecutor(OrderExecutionPort):
         for token_id in expired_token_ids:
             for side in ("YES", "NO"):
                 key = (token_id, side)
-                order_id = self._active_gtc.get(key)
-                if not order_id:
+                entry = self._active_gtc.get(key)
+                if not entry:
                     continue
+                order_id = entry["order_id"]
                 try:
                     ok = await cancel_fn(order_id)
                     logger.info(
@@ -451,8 +484,9 @@ class FAKLadderExecutor(OrderExecutionPort):
         """
         # ── GTC dedup check ──────────────────────────────────────────────
         dedup_key = (token_id, side)
-        existing_order_id = self._active_gtc.get(dedup_key)
-        if existing_order_id:
+        existing_entry = self._active_gtc.get(dedup_key)
+        if existing_entry:
+            existing_order_id = existing_entry["order_id"]
             logger.info(
                 "fak_ladder.gtc_dedup_blocked",
                 extra={
@@ -506,15 +540,27 @@ class FAKLadderExecutor(OrderExecutionPort):
         # Register in dedup registry immediately after successful placement.
         # This prevents a second execute_order call (from a retry at a later
         # eval_offset within the same window) from placing a duplicate GTC.
+        # close_ts: round placed_at up to the next 300s boundary (current window
+        # close). The periodic cancel loop uses close_ts + GTC_EXPIRY_GRACE_SECONDS
+        # to detect stale GTCs without needing the caller to supply window_ts.
         order_id_str = str(order_id) if order_id else None
         if order_id_str:
-            self._active_gtc[dedup_key] = order_id_str
+            _placed_at = time.time()
+            _close_ts = (
+                (_placed_at // _WINDOW_DURATION_SECONDS + 1) * _WINDOW_DURATION_SECONDS
+            )
+            self._active_gtc[dedup_key] = _GTCEntry(
+                order_id=order_id_str,
+                placed_at=_placed_at,
+                close_ts=_close_ts,
+            )
             logger.info(
                 "fak_ladder.gtc_registered",
                 extra={
                     "token_id": token_id[:20],
                     "side": side,
                     "order_id": order_id_str[:20],
+                    "close_ts": int(_close_ts),
                     "active_gtc_count": len(self._active_gtc),
                 },
             )

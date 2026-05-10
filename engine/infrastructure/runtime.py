@@ -905,6 +905,17 @@ class EngineRuntime:
                 )
             )
 
+        # 6d. GTC expired-order cancel loop (every 30s) — PR #525 follow-up.
+        # Cancels any resting GTC orders whose 5-min window has closed
+        # (close_ts + 30s grace). Prevents phantom fills on resolved markets
+        # when FAK_LADDER_ENABLE_GTC=true. No-op when GTC is disabled.
+        self._tasks.append(
+            asyncio.create_task(
+                self._gtc_cancel_expired_loop(),
+                name="gtc_cancel_expired",
+            )
+        )
+
         # ── DATA SURFACE: wire feeds + warmup + start BEFORE the DDL /
         # recovery / reconciler work below. Strategies evaluate every 2s
         # and need feeds wired from t=0. Previously this block sat AFTER
@@ -3743,6 +3754,58 @@ class EngineRuntime:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── GTC Expired-Order Cancel Loop ──────────────────────────────────────
+
+    async def _gtc_cancel_expired_loop(self) -> None:
+        """Every 30s: cancel resting GTC orders whose windows have closed.
+
+        Reads the executor from the strategy registry's execute-trade use
+        case (same reference the mode-switch logic uses at runtime). Safe
+        to call when GTC is disabled — ``get_expired_token_ids()`` returns
+        [] and ``cancel_expired_gtc_orders()`` is a no-op.
+
+        Wired unconditionally at startup (task 6d). The FAKLadderExecutor
+        itself guards against unnecessary work when GTC is disabled.
+        """
+        _CANCEL_INTERVAL_S = 30.0
+
+        log.info("gtc_cancel_expired_loop.started")
+        while not self._shutdown_event.is_set():
+            try:
+                # Resolve the executor via the registry's execute-trade UC.
+                # Falls back to None if the registry / UC / executor is not
+                # yet wired (early startup) — cancel loop simply idles.
+                from adapters.execution.fak_ladder_executor import FAKLadderExecutor
+
+                _execute_uc = getattr(
+                    getattr(self, "_strategy_registry", None), "_execute_uc", None
+                )
+                _executor = getattr(_execute_uc, "_executor", None)
+                if isinstance(_executor, FAKLadderExecutor):
+                    expired_ids = _executor.get_expired_token_ids()
+                    if expired_ids:
+                        log.info(
+                            "gtc_cancel_expired_loop.cancelling",
+                            count=len(expired_ids),
+                        )
+                        await _executor.cancel_expired_gtc_orders(expired_ids)
+            except Exception as exc:
+                log.warning(
+                    "gtc_cancel_expired_loop.error",
+                    error=str(exc)[:200],
+                )
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=_CANCEL_INTERVAL_S,
+                )
+                break
+            except asyncio.TimeoutError:
+                continue
+
+        log.info("gtc_cancel_expired_loop.stopped")
 
     # ── Builder Relayer Redeemer Loop ───────────────────────────────────────
 
