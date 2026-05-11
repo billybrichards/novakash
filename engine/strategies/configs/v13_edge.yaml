@@ -12,7 +12,7 @@ version: "13.0.0"
 #
 # GTC resting price is 0.72 (patient limit well below 0.89 FAK cap).
 # Starts as GHOST for shadow validation before any LIVE flip.
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 
