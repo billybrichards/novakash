@@ -1104,12 +1104,14 @@ class ExecuteTradeUseCase:
                 # would CancelError-bomb the executor mid-flight and
                 # potentially leave a CLOB order half-submitted.
                 _log_step("pre_execute_order")
+                gtc_cap = getattr(decision, "gtc_cap", None)
                 result = await self._executor.execute_order(
                     token_id=token_id,
                     side=side,
                     stake_usd=stake.adjusted_stake,
                     entry_cap=entry_cap,
                     price_floor=PRICE_FLOOR,
+                    gtc_cap=gtc_cap,
                 )
                 _log_step(
                     "post_execute_order",
