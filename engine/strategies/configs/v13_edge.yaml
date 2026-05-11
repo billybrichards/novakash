@@ -1,0 +1,59 @@
+name: v13_edge
+version: "13.0.0"
+# v13_edge — 2026-05-11 — Early-window UP-only strategy.
+# Hub note #464: V2+V92/V12 at T-180-280s = 94-96% WR, +$0.11 EV.
+# DOWN is dead at this timing — never fires DOWN.
+# No tick accumulation — fires on first qualifying tick.
+#
+# Three signal tiers (first match wins, all UP only):
+#   T1: v2_probability_up >= 0.60 AND probability_lgb_v9_2 >= 0.55 -> 0.08 collateral
+#   T2: v2_probability_up >= 0.60 AND probability_lgb_v12 >= 0.55  -> 0.06 collateral
+#   T3: probability_lgb_v9_2 >= 0.70 solo                           -> 0.04 collateral
+#
+# GTC resting price is 0.72 (patient limit well below 0.89 FAK cap).
+# Starts as GHOST for shadow validation before any LIVE flip.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates:
+  - type: chainlink_freshness
+  - type: cell_pause
+    params: { strategy_id: v13_edge }
+
+gate_params:
+  # ── Entry timing window (T-minus convention: seconds before close) ──────
+  # T-180 to T-280: fires in the early window (first ~100s of the window).
+  # DOWN is proven negative EV at this timing — hook enforces UP only.
+  min_offset_sec: 180
+  max_offset_sec: 280
+
+  # ── No tick accumulation — fire on first qualifying tick ─────────────────
+  min_consecutive_pass_ticks: 1
+
+  # ── Fill band ───────────────────────────────────────────────────────────
+  # Hook enforces its own clob_ask check at 0.89. The YAML fill_band_max
+  # is set to the same value as belt-and-suspenders.
+  fill_band_max: 0.89
+
+  # ── Source agreement ────────────────────────────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+
+  # ── 24/7 trading — no UTC hour blocks ──────────────────────────────────
+  blocked_utc_hours: []
+
+  # ── No post-loss cooldown — early window fires are naturally spread ─────
+  post_loss_cooldown_min: 0
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  # Hard cap — yields ~$5 from a typical $120 bankroll.
+  # Per-tier collateral_pct (0.08/0.06/0.04) is set by the hook and will
+  # further scale stake down from the hard cap.
+  max_collateral_pct: 0.04
+
+hooks_file: v13_edge.py
+pre_gate_hook: evaluate_v13_edge

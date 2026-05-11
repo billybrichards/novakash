@@ -900,6 +900,12 @@ class StrategyDecision:
     # below rather than assigning a dict literal here.
     metadata: dict = field(default_factory=dict)
 
+    # Optional explicit GTC limit price override.  When set, the FAK ladder
+    # uses this as the GTC resting price instead of computing
+    # ``entry_cap + pi_bonus``.  Used by strategies (e.g. v13_edge) that
+    # target a specific patience price independent of the FAK cap.
+    gtc_cap: Optional[float] = None
+
     # ── Factory methods (Three-Builders convergence) ─────────────────────────
     #
     # These are the one blessed construction path for TRADE / SKIP / ERROR

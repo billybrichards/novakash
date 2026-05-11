@@ -161,6 +161,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         stake_usd: float,
         entry_cap: float,
         price_floor: float,
+        gtc_cap: Optional[float] = None,
     ) -> ExecutionResult:
         """Execute using the FAK -> RFQ -> GTC ladder.
 
@@ -353,6 +354,7 @@ class FAKLadderExecutor(OrderExecutionPort):
             entry_cap,
             start,
             fak_prices,
+            gtc_cap=gtc_cap,
         )
         return gtc_result
 
@@ -475,6 +477,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         entry_cap: float,
         start: float,
         fak_prices: list[float],
+        gtc_cap: Optional[float] = None,
     ) -> ExecutionResult:
         """Place GTC at cap + pi bonus, poll for fill.
 
@@ -509,7 +512,7 @@ class FAKLadderExecutor(OrderExecutionPort):
                 execution_end=time.time(),
             )
 
-        gtc_price = round(entry_cap + self._pi_bonus, 2)
+        gtc_price = round(gtc_cap if gtc_cap is not None else (entry_cap + self._pi_bonus), 2)
         market_slug = ""  # Not needed for CLOB submission
 
         try:
