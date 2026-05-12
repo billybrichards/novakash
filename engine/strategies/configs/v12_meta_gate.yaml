@@ -8,6 +8,24 @@ asset: BTC
 timescale: 5m
 hooks_file: v12_meta_gate.py
 pre_gate_hook: evaluate_v12_meta_gate
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.10
+  max_collateral_pct: 0.10
+  schedule:
+    - { threshold: 0.50, modifier: 1.0, label: "gate-pass" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.10
+  max_collateral_pct: 0.10
+  schedule:
+    - { threshold: 0.50, modifier: 1.0, label: "gate-pass" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
 gates:
   - type: chainlink_freshness
   - type: cell_pause
