@@ -905,6 +905,12 @@ class FiveMinVPINStrategy(BaseStrategy):
         # `signals/vpin_buffer.py` for SQL semantics.
         self._vpin_buffer.push(time.time(), current_vpin)
         _vpin_60s_stats = self._vpin_buffer.compute()
+        # Audit #963 — V9.1 training/serving skew: models trained before
+        # the 60s rolling buffer existed (pre-2026-05-07) expect NaN for
+        # these five features.  Toggle V9_1_VPIN_ROLLING_STATS=false to
+        # restore pre-buffer behaviour (all None → scorer sends NaN).
+        if os.environ.get("V9_1_VPIN_ROLLING_STATS", "true").lower() == "false":
+            _vpin_60s_stats = {k: None for k in _vpin_60s_stats}
 
         # ── TWAP-Delta evaluation (v5.7) ─────────────────────────────────
         twap_result: Optional[TWAPResult] = None
