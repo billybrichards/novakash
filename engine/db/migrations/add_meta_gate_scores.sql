@@ -12,7 +12,7 @@
 --        -U postgres -d novakash \
 --        -f engine/db/migrations/add_meta_gate_scores.sql
 
-ALTER TABLE signal_evaluations_v2
+ALTER TABLE signal_evaluations
   ADD COLUMN IF NOT EXISTS probability_v2_meta_gate  double precision,
   ADD COLUMN IF NOT EXISTS probability_v9_2_meta_gate double precision,
   ADD COLUMN IF NOT EXISTS probability_v12_meta_gate double precision;
