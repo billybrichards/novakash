@@ -62,7 +62,8 @@ class PgSignalRepository(SignalRepository):
                         gate_vpin_passed, gate_delta_passed, gate_cg_passed,
                         gate_twap_passed, gate_timesfm_passed, gate_passed,
                         gate_failed, decision,
-                        twap_delta, twap_direction, twap_gamma_agree
+                        twap_delta, twap_direction, twap_gamma_agree,
+                        probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1, $2, $3, $4,
                         $5, $6, $7, $8,
@@ -75,7 +76,8 @@ class PgSignalRepository(SignalRepository):
                         $32, $33, $34,
                         $35, $36, $37,
                         $38, $39, $40, $41,
-                        $42, $43, $44, $45
+                        $42, $43, $44, $45,
+                        $46, $47, $48
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         clob_up_bid           = EXCLUDED.clob_up_bid,
@@ -119,6 +121,9 @@ class PgSignalRepository(SignalRepository):
                         twap_delta            = EXCLUDED.twap_delta,
                         twap_direction        = EXCLUDED.twap_direction,
                         twap_gamma_agree      = EXCLUDED.twap_gamma_agree,
+                        probability_v2_meta_gate  = EXCLUDED.probability_v2_meta_gate,
+                        probability_v9_2_meta_gate = EXCLUDED.probability_v9_2_meta_gate,
+                        probability_v12_meta_gate  = EXCLUDED.probability_v12_meta_gate,
                         evaluated_at          = NOW()
                     """,
                     int(data.get("window_ts", 0)),
@@ -166,7 +171,16 @@ class PgSignalRepository(SignalRepository):
                     data.get("decision", "SKIP"),
                     float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
                     data.get("twap_direction"),
-                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None
+                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None,
+                    float(data["probability_v2_meta_gate"])
+                    if data.get("probability_v2_meta_gate") is not None
+                    else None,
+                    float(data["probability_v9_2_meta_gate"])
+                    if data.get("probability_v9_2_meta_gate") is not None
+                    else None,
+                    float(data["probability_v12_meta_gate"])
+                    if data.get("probability_v12_meta_gate") is not None
+                    else None,
                 )
         except Exception as exc:
             log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
@@ -290,7 +304,8 @@ class PgSignalRepository(SignalRepository):
                         macro_bias, macro_direction_gate, macro_size_modifier,
                         clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
                         clob_imbalance, clob_implied_up, clob_fill_price,
-                        open_price_source
+                        open_price_source,
+                        probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -316,7 +331,8 @@ class PgSignalRepository(SignalRepository):
                         $96,
                         $97,$98,$99,
                         $100,$101,$102,$103,
-                        $104,$105,$106,$107
+                        $104,$105,$106,$107,
+                        $108,$109,$110
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         open_price             = COALESCE(EXCLUDED.open_price, window_snapshots.open_price),
@@ -365,7 +381,10 @@ class PgSignalRepository(SignalRepository):
                         clob_down_ask          = COALESCE(EXCLUDED.clob_down_ask, window_snapshots.clob_down_ask),
                         clob_imbalance         = COALESCE(EXCLUDED.clob_imbalance, window_snapshots.clob_imbalance),
                         clob_implied_up        = COALESCE(EXCLUDED.clob_implied_up, window_snapshots.clob_implied_up),
-                        clob_fill_price        = COALESCE(EXCLUDED.clob_fill_price, window_snapshots.clob_fill_price)
+                        clob_fill_price        = COALESCE(EXCLUDED.clob_fill_price, window_snapshots.clob_fill_price),
+                        probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
+                        probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
+                        probability_v12_meta_gate   = COALESCE(EXCLUDED.probability_v12_meta_gate, window_snapshots.probability_v12_meta_gate)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -484,6 +503,10 @@ class PgSignalRepository(SignalRepository):
                     snapshot.get("clob_fill_price"),
                     # open_price_source — engine taxonomy for open_price value
                     snapshot.get("open_price_source"),
+                    # Meta gate scores (2026-05-12)
+                    snapshot.get("probability_v2_meta_gate"),
+                    snapshot.get("probability_v9_2_meta_gate"),
+                    snapshot.get("probability_v12_meta_gate"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -628,10 +651,11 @@ class PgSignalRepository(SignalRepository):
                         window_ts, asset, timeframe, eval_offset,
                         ensemble_p_up, ensemble_p_lgb, ensemble_p_classifier,
                         ensemble_mode, ensemble_disagreement, ensemble_model_version,
-                        probability_lgb_v12, probability_lgb_v9_2
+                        probability_lgb_v12, probability_lgb_v9_2,
+                        probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11,$12
+                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -641,7 +665,10 @@ class PgSignalRepository(SignalRepository):
                         ensemble_disagreement  = COALESCE(EXCLUDED.ensemble_disagreement, window_snapshots.ensemble_disagreement),
                         ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version),
                         probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12),
-                        probability_lgb_v9_2   = COALESCE(EXCLUDED.probability_lgb_v9_2, window_snapshots.probability_lgb_v9_2)
+                        probability_lgb_v9_2   = COALESCE(EXCLUDED.probability_lgb_v9_2, window_snapshots.probability_lgb_v9_2),
+                        probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
+                        probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
+                        probability_v12_meta_gate   = COALESCE(EXCLUDED.probability_v12_meta_gate, window_snapshots.probability_v12_meta_gate)
                     """,
                     int(window_ts),
                     asset,
@@ -655,6 +682,9 @@ class PgSignalRepository(SignalRepository):
                     ensemble_fields.get("ensemble_model_version"),
                     ensemble_fields.get("probability_lgb_v12"),
                     ensemble_fields.get("probability_lgb_v9_2"),
+                    ensemble_fields.get("probability_v2_meta_gate"),
+                    ensemble_fields.get("probability_v9_2_meta_gate"),
+                    ensemble_fields.get("probability_v12_meta_gate"),
                 )
         except Exception as exc:
             log.warning(

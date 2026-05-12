@@ -236,6 +236,12 @@ def _ensemble_surface_fields(surface) -> dict:
         # first-class access. signal_evaluations is fixed separately by
         # converting the sidecar writer to an upsert.
         "probability_lgb_v9_2": getattr(surface, "probability_lgb_v9_2", None),
+        # 2026-05-12: meta gate scores — emitted by timesfm-service on
+        # /v4/snapshot. Written to window_snapshots via ensemble_fields
+        # upsert so SQL analysis has first-class access.
+        "probability_v2_meta_gate": getattr(surface, "probability_v2_meta_gate", None),
+        "probability_v9_2_meta_gate": getattr(surface, "probability_v9_2_meta_gate", None),
+        "probability_v12_meta_gate": getattr(surface, "probability_v12_meta_gate", None),
     }
 
 

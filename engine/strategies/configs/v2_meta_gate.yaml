@@ -1,0 +1,37 @@
+name: v2_meta_gate
+strategy_id: v2_meta_gate
+version: "1.0.0"
+status: GHOST
+description: V2 meta gate — gates V2 trades by checking probability_v2_meta_gate score
+mode: GHOST
+asset: BTC
+timescale: 5m
+hooks_file: v2_meta_gate.py
+pre_gate_hook: evaluate_v2_meta_gate
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.10
+  max_collateral_pct: 0.10
+  schedule:
+    - { threshold: 0.50, modifier: 1.0, label: "gate-pass" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+gates:
+  - type: chainlink_freshness
+  - type: cell_pause
+    params: { strategy_id: v2_meta_gate }
+gate_params:
+  min_offset_sec: 45
+  max_offset_sec: 200
+  vpn_min: 0.40
+  vpn_max: 1.0
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+  blocked_utc_hours: []
+  meta_gate_threshold: 0.6
+  v2_up_threshold: 0.60
+  v2_down_threshold: 0.40

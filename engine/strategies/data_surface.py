@@ -232,6 +232,12 @@ class FullDataSurface:
     # Hub note #356 — PR-B handover. timesfm docs/V9_2_GATE_CONFIG.html — spec.
     probability_lgb_v9_2: Optional[float] = None
 
+    # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
+    # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
+    probability_v2_meta_gate: Optional[float] = None
+    probability_v9_2_meta_gate: Optional[float] = None
+    probability_v12_meta_gate: Optional[float] = None
+
     # v9.1 meta-v2 Stage-A calibrated P(WIN) — fire-context meta booster,
     # served via probability_meta_v9_1 on /v4/snapshot when timesfm-service
     # has V9_1_META_ENABLED=true. The engine's v9_1_meta_kelly strategy reads
@@ -1332,6 +1338,21 @@ class DataSurfaceManager:
             probability_lgb_v9_2=(
                 float(ts_data["probability_lgb_v9_2"])
                 if ts_data.get("probability_lgb_v9_2") is not None
+                else None
+            ),
+            probability_v2_meta_gate=(
+                float(ts_data["probability_v2_meta_gate"])
+                if ts_data.get("probability_v2_meta_gate") is not None
+                else None
+            ),
+            probability_v9_2_meta_gate=(
+                float(ts_data["probability_v9_2_meta_gate"])
+                if ts_data.get("probability_v9_2_meta_gate") is not None
+                else None
+            ),
+            probability_v12_meta_gate=(
+                float(ts_data["probability_v12_meta_gate"])
+                if ts_data.get("probability_v12_meta_gate") is not None
                 else None
             ),
             probability_meta_v9_1=(
