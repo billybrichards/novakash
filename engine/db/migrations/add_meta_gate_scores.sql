@@ -1,5 +1,5 @@
 -- engine/db/migrations/add_meta_gate_scores.sql
--- Audit #963 (2026-05-12): add meta gate score columns to signal_evaluations_v2
+-- Audit #963 (2026-05-12): add meta gate score columns to signal_evaluations
 -- and window_snapshots.
 --
 -- The gate models (v2_meta_gate, v9_2_meta_gate, v12_meta_gate) emit
