@@ -59,7 +59,7 @@ def evaluate_v9_2_meta_gate(surface: "FullDataSurface") -> StrategyDecision:
 
     return StrategyDecision(
         action="TRADE", direction=direction, confidence=confidence,
-        confidence_score=confidence_score, entry_cap=None, collateral_pct=None,
+        confidence_score=confidence_score, entry_cap=None, collateral_pct=None, skip_reason=None,
         strategy_id=_STRATEGY_ID, strategy_version=_VERSION,
         entry_reason="v9_2_meta_gate_pass",
         metadata={"probability_lgb_v9_2": p_v92, "probability_v9_2_meta_gate": p_gate},
