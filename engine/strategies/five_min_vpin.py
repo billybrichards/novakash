@@ -2234,6 +2234,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                     vpin_std_60s=_vpin_60s_stats["vpin_std_60s"],
                     vpin_min_60s=_vpin_60s_stats["vpin_min_60s"],
                     vpin_max_60s=_vpin_60s_stats["vpin_max_60s"],
+                    # Audit #224/#233 Tier 1 — mirror pre-eval call site (line ~1757).
+                    # Without these the decision-path scorer sees gamma_*=NaN,
+                    # session_bucket=NaN → v9 PROD + v9.1 boosters collapse to
+                    # constant mean-leaf output (observed 0.7208480565371025
+                    # repeatedly in strategy_decisions May 8 onwards).
+                    gamma_up_price=window.up_price,
+                    gamma_down_price=window.down_price,
+                    window_ts=getattr(window, "window_ts", None),
                 )
                 _v2_result = await self._timesfm_v2.score_with_features(
                     asset=window.asset,
