@@ -70,8 +70,12 @@ gate_params:
   # V9_1_ENABLED flag in timesfm-service).
   #
   # 2026-04-26 (audit #319): bumped from 24 → 45.
-  min_offset_sec: 45
-  max_offset_sec: 200
+  # 2026-05-02 (calibration recce): 45→30 / 200→180. v9.1 honest holdout:
+  # offset 0-180 is 88-100% WR both directions. Cliff hits at 210+ where
+  # DOWN collapses to 43% (n=125). Widening floor to 30 captures additional
+  # 90-100% WR tail near close.
+  min_offset_sec: 30
+  max_offset_sec: 180
   tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
 
   block_down_vpin_regimes: []
@@ -99,7 +103,12 @@ gate_params:
   post_loss_cooldown_min: 20
 
   # ── LGB safety floor ────────────────────────────────────────────────
-  lgb_dist_min_up: 0.15
+  # 2026-05-02 (calibration recce): UP 0.15→0.05. v9.1 honest data shows
+  # UP from dist=0.05 already 84-100% WR; was over-defensive vs UP signal.
+  # DOWN kept at 0.10 — DOWN <0.10 bleeds 33-45% WR (n=1179) so floor
+  # remains protective. Asymmetric floor matches v9.1's reverse-direction
+  # asymmetry vs v9 PROD/v12 (both of which want UP higher than DOWN).
+  lgb_dist_min_up: 0.05
   lgb_dist_min_down: 0.10
   lgb_dist_min_up_with_hc_agree: 0.05
   lgb_dist_min_down_with_hc_agree: 0.05
