@@ -1,0 +1,44 @@
+name: v9_2_v12_combo
+strategy_id: v9_2_v12_combo
+version: "1.0.0"
+# v9_2_v12_combo — 2026-05-13 — intersection of v9.2 and v12 LGB signals.
+#
+# Fires only when BOTH probability_lgb_v9_2 AND probability_lgb_v12 agree.
+# No cohort gates, no sister-pair veto, no blocked hours, no cell pauses.
+#
+# Criteria (5d signal_evaluations intersection analysis):
+#   UP   when p_v9_2 >= 0.75 AND p_v12 >= 0.70  -> 95.9% WR (~13 fires/day)
+#   DOWN when p_v9_2 <= 0.20 AND p_v12 <= 0.40  -> 96.0% WR (~9 fires/day)
+#   eval_offset between 60 and 210              -> T-60 to T-210
+#   one qualifying tick is enough               -> no N-of-M cohort gate
+#
+# Defaults GHOST. A/B compare vs v9_2_raw_lgb before promotion.
+#
+status: GHOST
+description: |
+  Intersection strategy on v9.2 and v12 LGB signals. Fires only when BOTH
+  agree: UP at p_v9_2 >= 0.75 AND p_v12 >= 0.70, DOWN at p_v9_2 <= 0.20
+  AND p_v12 <= 0.40, within eval_offset [60, 210], any single qualifying
+  tick. No cohort gates, no veto layers, no cell pauses, no blocked hours.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_v12_combo.py
+pre_gate_hook: evaluate_v9_2_v12_combo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_v92_threshold: 0.75
+  up_v12_threshold: 0.70
+  down_v92_threshold: 0.20
+  down_v12_threshold: 0.40
+  eval_offset_min: 60
+  eval_offset_max: 210
