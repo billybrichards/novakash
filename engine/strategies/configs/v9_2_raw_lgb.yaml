@@ -1,0 +1,42 @@
+name: v9_2_raw_lgb
+strategy_id: v9_2_raw_lgb
+version: "1.0.0"
+# v9_2_raw_lgb — 2026-05-13 — clean raw v9.2 signal strategy.
+#
+# Fires purely on probability_lgb_v9_2 (no v9_ensemble base-gate delegation,
+# no cohort gates, no sister-pair veto, no blocked hours, no cell pauses).
+#
+# Criteria (Hub note #508, 30d raw matrix on v9_2_super_lgb_only):
+#   UP   when probability_lgb_v9_2 >= 0.75  -> 93-94% WR at n=126-143
+#   DOWN when probability_lgb_v9_2 <= 0.20  -> 91% WR at n=23-55
+#   eval_offset between 60 and 210         -> T-60 to T-210
+#   one qualifying tick is enough          -> no N-of-M cohort gate
+#
+# Defaults GHOST. Billy promotes manually.
+#
+status: GHOST
+description: |
+  Clean raw v9.2 signal strategy. Fires on probability_lgb_v9_2 alone:
+  UP at p >= 0.75, DOWN at p <= 0.20, within eval_offset [60, 210], any
+  single qualifying tick. No v9_ensemble delegation, no cohort gates,
+  no veto layers, no cell pauses, no blocked hours.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_raw_lgb.py
+pre_gate_hook: evaluate_v9_2_raw_lgb
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.75
+  down_threshold: 0.20
+  eval_offset_min: 60
+  eval_offset_max: 210
