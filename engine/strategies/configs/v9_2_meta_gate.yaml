@@ -29,9 +29,9 @@ gate_params:
   vpn_max: 1.0
   fill_band_min: 0.00
   fill_band_max: 0.82
-  up_min_fill_price: 0.20
+  up_min_fill_price: 1.01
   down_min_fill_price: 0.15
   blocked_utc_hours: []
-  meta_gate_threshold: 0.6
+  meta_gate_threshold: 0.70
   v9_2_up_threshold: 0.75
-  v9_2_down_threshold: 0.22
+  v9_2_down_threshold: 0.30
