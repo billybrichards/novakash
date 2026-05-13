@@ -14,13 +14,13 @@ version: "1.0.0"
 #
 # Defaults GHOST. A/B compare vs v9_2_raw_lgb before promotion.
 #
-status: GHOST
+status: LIVE
 description: |
   Intersection strategy on v9.2 and v12 LGB signals. Fires only when BOTH
   agree: UP at p_v9_2 >= 0.75 AND p_v12 >= 0.70, DOWN at p_v9_2 <= 0.20
   AND p_v12 <= 0.40, within eval_offset [60, 210], any single qualifying
   tick. No cohort gates, no veto layers, no cell pauses, no blocked hours.
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 

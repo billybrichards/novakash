@@ -14,13 +14,13 @@ version: "1.0.0"
 #
 # Defaults GHOST. Billy promotes manually.
 #
-status: GHOST
+status: LIVE
 description: |
   Clean raw v9.2 signal strategy. Fires on probability_lgb_v9_2 alone:
   UP at p >= 0.75, DOWN at p <= 0.20, within eval_offset [60, 210], any
   single qualifying tick. No v9_ensemble delegation, no cohort gates,
   no veto layers, no cell pauses, no blocked hours.
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 
