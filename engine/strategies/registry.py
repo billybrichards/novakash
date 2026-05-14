@@ -1532,6 +1532,34 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.1 ghost persistence — write probability_lgb_v9_1 on every
+        # tick where the field is populated so ghost performance can be
+        # analysed via signal_evaluations the same as v9_2/v12. Restored
+        # 2026-05-14 along with v9_1_lgb_only clean ghost strategy.
+        v9_1 = getattr(surface, "probability_lgb_v9_1", None)
+        if v9_1 is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_1"
+        ):
+            try:
+                _v9_1_p = float(v9_1)
+            except (TypeError, ValueError):
+                _v9_1_p = None
+            if _v9_1_p is not None:
+                v9_1_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_1(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_1=_v9_1_p,
+                    )
+                )
+                v9_1_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_1_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,

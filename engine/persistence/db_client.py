@@ -1711,6 +1711,71 @@ class DBClient:
             )
             return 0
 
+    async def update_signal_evaluations_lgb_v9_1(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_1: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_1`` onto signal_evaluations row.
+
+        Mirror of update_signal_evaluations_lgb_v12 for the v9.1 model so
+        we can analyse ghost performance via signal_evaluations the same
+        way as v9_2/v12. Column added by
+        ``migrations/add_probability_lgb_v9_1.sql``.
+
+        Idempotent: COALESCE preserves any existing value on conflict.
+        Returns row count affected (1 = upsert ok, 0 = no-op).
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_1 is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_1, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v9_1 = COALESCE(
+                            signal_evaluations.probability_lgb_v9_1,
+                            EXCLUDED.probability_lgb_v9_1
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_1),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_1_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_1_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
     async def update_signal_evaluations_lgb_v9_2(
         self,
         window_ts,
