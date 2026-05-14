@@ -152,7 +152,10 @@ class FAKLadderExecutor(OrderExecutionPort):
         # cancel_expired_gtc_orders() call or when the order is confirmed filled.
         # Dict is bounded: entries are pruned on cancel/expiry. In the pathological
         # case of very many distinct token IDs without expiry calls, cap at 1000.
-        self._active_gtc: dict[tuple[str, str], _GTCEntry] = {}
+        # Keyed by (strategy_id, token_id, side) — per-strategy scoping
+        # added 2026-05-14 so independent strats (v9_2_raw_lgb +
+        # v9_2_v12_combo) don't block each other on shared windows.
+        self._active_gtc: dict[tuple[str, str, str], _GTCEntry] = {}
 
     async def execute_order(
         self,
@@ -162,8 +165,15 @@ class FAKLadderExecutor(OrderExecutionPort):
         entry_cap: float,
         price_floor: float,
         gtc_cap: Optional[float] = None,
+        strategy_id: str = "",
     ) -> ExecutionResult:
         """Execute using the FAK -> RFQ -> GTC ladder.
+
+        ``strategy_id`` scopes the in-memory GTC dedup registry so two
+        independent strategies (e.g. v9_2_raw_lgb + v9_2_v12_combo) can
+        both place their own resting orders on the same (token_id, side).
+        Same-strategy retries within a window still hit the dedup as
+        intended (anti-phantom-fill safeguard from 2026-04-17 incident).
 
         Returns ExecutionResult. Does not raise.
         """
@@ -355,6 +365,7 @@ class FAKLadderExecutor(OrderExecutionPort):
             start,
             fak_prices,
             gtc_cap=gtc_cap,
+            strategy_id=strategy_id,
         )
         return gtc_result
 
@@ -407,11 +418,19 @@ class FAKLadderExecutor(OrderExecutionPort):
         Called by the periodic heartbeat cancel loop. Uses the ``close_ts``
         stored at placement time plus ``GTC_EXPIRY_GRACE_SECONDS`` to decide
         whether a resting GTC is stale. Safe to call at any cadence.
+
+        Note: dedup keys are (strategy_id, token_id, side) since 2026-05-14
+        per-strategy refactor. We project to token_ids here because the
+        legacy cancel_expired_gtc_orders(expired_token_ids) signature is
+        token-keyed; the cancel function iterates _active_gtc.items()
+        internally to find the matching (strategy_id, side) tuples.
         """
         if now is None:
             now = time.time()
         expired: set[str] = set()
-        for (token_id, _side), entry in self._active_gtc.items():
+        for key, entry in self._active_gtc.items():
+            # key is (strategy_id, token_id, side); token_id is index 1.
+            token_id = key[1] if len(key) == 3 else key[0]
             if now > entry["close_ts"] + GTC_EXPIRY_GRACE_SECONDS:
                 expired.add(token_id)
         return list(expired)
@@ -421,8 +440,9 @@ class FAKLadderExecutor(OrderExecutionPort):
 
         Call this from the engine heartbeat / window resolver after a window
         closes without a fill. Passes the list of token_ids whose windows
-        have expired. Any active GTC order for those tokens is cancelled via
-        the CLOB API, preventing phantom fills on resolved markets.
+        have expired. Any active GTC order for those tokens (across ALL
+        strategies and sides) is cancelled via the CLOB API, preventing
+        phantom fills on resolved markets.
 
         Logs ``gtc_window_expired_cancel`` for each cancelled order so
         operators can spot them in the engine log.
@@ -435,39 +455,45 @@ class FAKLadderExecutor(OrderExecutionPort):
         cancel_fn = getattr(self._poly, "cancel_order", None)
         if cancel_fn is None:
             return
-        for token_id in expired_token_ids:
-            for side in ("YES", "NO"):
-                key = (token_id, side)
-                entry = self._active_gtc.get(key)
-                if not entry:
-                    continue
-                order_id = entry["order_id"]
-                try:
-                    ok = await cancel_fn(order_id)
-                    logger.info(
-                        "fak_ladder.gtc_window_expired_cancel",
-                        extra={
-                            "token_id": token_id[:20],
-                            "side": side,
-                            "order_id": order_id[:20],
-                            "cancelled": ok,
-                        },
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "fak_ladder.gtc_cancel_error",
-                        extra={"order_id": order_id[:20], "error": str(exc)[:200]},
-                    )
-                finally:
-                    # Always remove from dedup registry after expiry attempt —
-                    # whether the cancel succeeded or not, the window is closed.
-                    self._active_gtc.pop(key, None)
-                # Bound dict size: prune if somehow grown beyond safe limit.
-                if len(self._active_gtc) > 1000:
-                    # Remove oldest half — in FIFO order.
-                    excess = list(self._active_gtc.keys())[:500]
-                    for k in excess:
-                        self._active_gtc.pop(k, None)
+        expired_set = set(expired_token_ids)
+        # Snapshot keys to mutate dict during iteration.
+        keys_to_check = [k for k in self._active_gtc.keys() if (k[1] if len(k) == 3 else k[0]) in expired_set]
+        for key in keys_to_check:
+            entry = self._active_gtc.get(key)
+            if not entry:
+                continue
+            if len(key) == 3:
+                strategy_id, token_id, side = key
+            else:
+                strategy_id, token_id, side = "", key[0], key[1]
+            order_id = entry["order_id"]
+            try:
+                ok = await cancel_fn(order_id)
+                logger.info(
+                    "fak_ladder.gtc_window_expired_cancel",
+                    extra={
+                        "strategy_id": strategy_id,
+                        "token_id": token_id[:20],
+                        "side": side,
+                        "order_id": order_id[:20],
+                        "cancelled": ok,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "fak_ladder.gtc_cancel_error",
+                    extra={"order_id": order_id[:20], "error": str(exc)[:200]},
+                )
+            finally:
+                # Always remove from dedup registry after expiry attempt —
+                # whether the cancel succeeded or not, the window is closed.
+                self._active_gtc.pop(key, None)
+        # Bound dict size: prune if somehow grown beyond safe limit.
+        if len(self._active_gtc) > 1000:
+            # Remove oldest half — in FIFO order.
+            excess = list(self._active_gtc.keys())[:500]
+            for k in excess:
+                self._active_gtc.pop(k, None)
 
     async def _try_gtc(
         self,
@@ -478,15 +504,21 @@ class FAKLadderExecutor(OrderExecutionPort):
         start: float,
         fak_prices: list[float],
         gtc_cap: Optional[float] = None,
+        strategy_id: str = "",
     ) -> ExecutionResult:
         """Place GTC at cap + pi bonus, poll for fill.
 
-        Enforces a 1-GTC-per-(token_id, side) dedup lock so a second call
-        for the same window+direction (e.g. from a retry at a different
-        eval_offset) cannot place a duplicate resting order.
+        Enforces a 1-GTC-per-(strategy_id, token_id, side) dedup lock so a
+        second call from the SAME strategy (e.g. a retry at a different
+        eval_offset within the same window) cannot place a duplicate
+        resting order. Different strategies on the same (token_id, side)
+        are NOT blocked — each strategy owns its independent position.
+
+        ``strategy_id`` defaults to "" for legacy callers (tests); in
+        production execute_trade always supplies decision.strategy_id.
         """
         # ── GTC dedup check ──────────────────────────────────────────────
-        dedup_key = (token_id, side)
+        dedup_key = (strategy_id, token_id, side)
         existing_entry = self._active_gtc.get(dedup_key)
         if existing_entry:
             existing_order_id = existing_entry["order_id"]

@@ -29,8 +29,13 @@ class PaperExecutor(OrderExecutionPort):
         stake_usd: float,
         entry_cap: float,
         price_floor: float,
+        strategy_id: str = "",
     ) -> ExecutionResult:
-        """Simulate a fill. Always succeeds unless price_floor > entry_cap."""
+        """Simulate a fill. Always succeeds unless price_floor > entry_cap.
+
+        ``strategy_id`` is accepted for interface parity but unused — paper
+        execution has no dedup state to scope.
+        """
         start = time.time()
 
         # Reject obviously invalid inputs

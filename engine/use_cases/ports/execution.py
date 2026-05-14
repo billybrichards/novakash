@@ -30,8 +30,14 @@ class OrderExecutionPort(abc.ABC):
         stake_usd: float,
         entry_cap: float,
         price_floor: float,
+        strategy_id: str = "",
     ) -> ExecutionResult:
         """Execute a single order using the configured strategy.
+
+        ``strategy_id`` is used by FAKLadderExecutor to scope its in-memory
+        GTC dedup so independent strategies can both place their own
+        resting orders on the same (token_id, side). Defaults to "" for
+        backwards compatibility with legacy tests that don't set it.
 
         Returns an ExecutionResult with fill details or failure info.
         MUST NOT raise -- all exceptions are caught and returned as
