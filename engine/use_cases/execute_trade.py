@@ -1112,6 +1112,7 @@ class ExecuteTradeUseCase:
                     entry_cap=entry_cap,
                     price_floor=PRICE_FLOOR,
                     gtc_cap=gtc_cap,
+                    strategy_id=decision.strategy_id,
                 )
                 _log_step(
                     "post_execute_order",
