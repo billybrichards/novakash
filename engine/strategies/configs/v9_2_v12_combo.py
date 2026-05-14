@@ -35,6 +35,31 @@ _DEFAULT_EVAL_OFFSET_MAX = 210
 _DEFAULT_ENTRY_CAP = 0.85
 _DEFAULT_COLLATERAL_PCT = 0.025
 _DEFAULT_GTC_CAP = 0.80
+_DEFAULT_MIN_CONSEC_TICKS = 1
+
+# Consecutive-tick state. Maps (window_ts, direction) -> (count, last_seen_ts).
+# Same semantics as v9_2_raw_lgb._bump_and_check.
+_consec_state: dict[tuple[int, str], tuple[int, float]] = {}
+_MAX_GAP_S = 5.0
+
+
+def _bump_and_check(window_ts: int, direction: str, min_ticks: int) -> int:
+    import time
+    now = time.time()
+    key = (int(window_ts), direction)
+    other = "DOWN" if direction == "UP" else "UP"
+    _consec_state.pop((int(window_ts), other), None)
+    prev = _consec_state.get(key)
+    if prev is None or (now - prev[1]) > _MAX_GAP_S:
+        count = 1
+    else:
+        count = prev[0] + 1
+    _consec_state[key] = (count, now)
+    if len(_consec_state) > 50:
+        cutoff = now - 600.0
+        for k in [k for k, v in _consec_state.items() if v[1] < cutoff]:
+            _consec_state.pop(k, None)
+    return count
 
 
 def _skip(reason: str, metadata: dict) -> StrategyDecision:
@@ -94,6 +119,21 @@ def evaluate_v9_2_v12_combo(surface: "FullDataSurface") -> StrategyDecision:
         direction = "DOWN"
     else:
         return _skip("conviction_below_threshold", meta)
+
+    # N-consecutive-tick confirmation gate (runtime-tunable via
+    # gate_params.min_consecutive_pass_ticks).
+    window_ts = getattr(surface, "window_ts", None)
+    min_consec = _gp.get_int(
+        "min_consecutive_pass_ticks", None, _DEFAULT_MIN_CONSEC_TICKS
+    )
+    consec_count = _bump_and_check(window_ts or 0, direction, min_consec)
+    meta["consec_tick_count"] = consec_count
+    meta["min_consecutive_pass_ticks"] = min_consec
+    if consec_count < min_consec:
+        return _skip(
+            f"awaiting_consec_ticks ({consec_count}/{min_consec})",
+            meta,
+        )
 
     # Use the stronger signal for confidence scoring
     confidence_score = float(max(abs(p_v92 - 0.5), abs(p_v12 - 0.5)) * 2.0)
