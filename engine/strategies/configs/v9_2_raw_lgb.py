@@ -32,6 +32,7 @@ _DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 210
 _DEFAULT_ENTRY_CAP = 0.85
 _DEFAULT_COLLATERAL_PCT = 0.025
+_DEFAULT_GTC_CAP = 0.80
 
 
 def _skip(reason: str, metadata: dict) -> StrategyDecision:
@@ -88,8 +89,10 @@ def evaluate_v9_2_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
 
     entry_cap = _gp.get_float("entry_cap", None, _DEFAULT_ENTRY_CAP)
     collateral_pct = _gp.get_float("collateral_pct", None, _DEFAULT_COLLATERAL_PCT)
+    gtc_cap = _gp.get_float("gtc_cap", None, _DEFAULT_GTC_CAP)
     meta["entry_cap"] = entry_cap
     meta["collateral_pct"] = collateral_pct
+    meta["gtc_cap"] = gtc_cap
 
     return StrategyDecision(
         action="TRADE",
@@ -98,6 +101,7 @@ def evaluate_v9_2_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
         confidence_score=confidence_score,
         entry_cap=entry_cap,
         collateral_pct=collateral_pct,
+        gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
         entry_reason="v9_2_raw_lgb_pass",
