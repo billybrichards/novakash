@@ -646,9 +646,12 @@ class FAKLadderExecutor(OrderExecutionPort):
 
         order_live_on_book = bool(order_id_str) and not filled
         fee = self._calc_fee(gtc_price, stake_usd) if filled else 0.0
-        fill_price = (
-            round(stake_usd / fill_size, 4) if filled and fill_size > 0 else None
-        )
+        # GTC limit orders fill at gtc_price (or better) — never divide
+        # stake_usd by fill_size, which gives impossible >$1 prices on
+        # partial fills (audit #431). get_order_status does not return
+        # making_amount so we cannot mirror the FAK path's
+        # making_amount/taking_amount fix; use gtc_price directly.
+        fill_price = gtc_price if filled else None
 
         if filled:
             # Order filled during poll — remove from dedup registry (no longer resting).
