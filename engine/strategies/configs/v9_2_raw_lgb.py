@@ -33,7 +33,7 @@ _DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 210
 _DEFAULT_ENTRY_CAP = 0.85
 _DEFAULT_COLLATERAL_PCT = 0.025
-_DEFAULT_GTC_CAP = 0.80
+_DEFAULT_GTC_CAP = 0.90
 _DEFAULT_MIN_CONSEC_TICKS = 1
 
 # Consecutive-tick state. Maps (window_ts, direction) -> (count, last_seen_ts).
