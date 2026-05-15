@@ -32,8 +32,35 @@ logger = structlog.get_logger(__name__)
 
 # ── Config defaults ──────────────────────────────────────────────────────────
 
-PI_BONUS_CENTS = 0.0314  # π cents
+PI_BONUS_CENTS = 0.0314  # π cents (legacy fallback)
 RETRY_WAIT_S = 2.0
+
+# ── N-rung FAK ladder (2026-05-14) ───────────────────────────────────────────
+# Replaces legacy 2-rung [cap, cap+π] ladder with a configurable N-rung
+# ladder where each rung is `cap + delta`. Defaults: cap, cap+0.02,
+# cap+0.04, cap+0.07 ($0.85 / $0.87 / $0.89 / $0.92 with cap=$0.85).
+# Any rung whose price exceeds FAK_LADDER_MAX_PRICE is dropped — so the
+# ladder collapses to a single attempt if cap is already at the ceiling.
+# Both knobs are env-overridable so future tuning happens without a
+# code change.
+_DEFAULT_RUNG_DELTAS = (0.0, 0.02, 0.04, 0.07)
+_DEFAULT_MAX_PRICE = 0.92
+
+
+def _parse_rungs(raw: str) -> list[float]:
+    """Parse FAK_LADDER_RUNGS env. Comma-sep floats. Empty/malformed → []."""
+    if not raw:
+        return []
+    out: list[float] = []
+    for chunk in raw.split(","):
+        s = chunk.strip()
+        if not s:
+            continue
+        try:
+            out.append(float(s))
+        except ValueError:
+            return []  # any malformed token → fail closed, caller falls back
+    return out
 
 # Book-fetch 404 retry (audit 2026-04-26 — CLOB orderbook propagation lag).
 #
@@ -95,10 +122,15 @@ class FOKLadder:
         min_price: float = 0.30,
     ) -> FOKResult:
         """
-        Execute two-shot FAK/FOK ladder.
+        Execute N-rung FAK/FOK ladder.
 
-        Attempt 1: FAK at max_price (cap)
-        Attempt 2: FAK at max_price + π cents (if attempt 1 got zero fill)
+        N-rung ladder (2026-05-14):
+          The rung structure is config-driven via FAK_LADDER_RUNGS env
+          (comma-sep deltas added to ``max_price``). Default deltas:
+          [0.0, 0.02, 0.04, 0.07] → cap, cap+2¢, cap+4¢, cap+7¢. Any
+          rung whose computed price exceeds FAK_LADDER_MAX_PRICE
+          (default 0.92) is dropped. If the env is empty or malformed,
+          fall back to the legacy 2-rung [cap, cap+π] behaviour.
 
         Returns FOKResult with fill details or filled=False.
         """
@@ -106,14 +138,49 @@ class FOKLadder:
         pi_bonus = float(os.environ.get("FOK_PI_BONUS_CENTS", str(PI_BONUS_CENTS)))
         wait_s = float(os.environ.get("FOK_INTERVAL_S", str(RETRY_WAIT_S)))
 
+        # ── Build rung schedule (deltas added to cap) ───────────────────
         cap = round(max_price, 2)
-        cap_plus_pi = round(max_price + pi_bonus, 2)
+        env_rungs_raw = os.environ.get("FAK_LADDER_RUNGS", "")
+        parsed = _parse_rungs(env_rungs_raw)
+        if env_rungs_raw and not parsed:
+            self._log.warning(
+                "price_ladder.bad_rung_env",
+                raw=env_rungs_raw[:80],
+                note="FAK_LADDER_RUNGS malformed — falling back to legacy 2-rung [0, pi]",
+            )
+        if parsed:
+            rung_deltas = parsed
+        elif env_rungs_raw:
+            # malformed but non-empty → legacy fallback
+            rung_deltas = [0.0, pi_bonus]
+        else:
+            rung_deltas = list(_DEFAULT_RUNG_DELTAS)
+
+        try:
+            max_rung_price = float(
+                os.environ.get("FAK_LADDER_MAX_PRICE", str(_DEFAULT_MAX_PRICE))
+            )
+        except (TypeError, ValueError):
+            max_rung_price = _DEFAULT_MAX_PRICE
+
+        rung_prices: list[float] = []
+        for delta in rung_deltas:
+            p = round(cap + delta, 2)
+            if p > max_rung_price + 1e-9:
+                continue
+            if rung_prices and abs(p - rung_prices[-1]) < 1e-9:
+                continue
+            rung_prices.append(p)
+
+        if not rung_prices:
+            # Defensive: cap above ceiling — collapse to single attempt at cap.
+            rung_prices = [cap]
+
         attempted_prices: list[float] = []
 
         # ── Step 1: Check CLOB book (with 404 retry) ────────────────────
         best_ask = await self._fetch_best_ask_with_retry(token_id, order_type)
         if isinstance(best_ask, FOKResult):
-            # Helper returned an early-exit FOKResult (book error / 404 exhausted)
             return best_ask
 
         if best_ask < min_price:
@@ -126,37 +193,46 @@ class FOKLadder:
                 order_type=order_type,
             )
 
-        self._log.info("price_ladder.start",
-            order_type=order_type, best_ask=f"${best_ask:.4f}",
-            cap=f"${cap:.2f}", cap_pi=f"${cap_plus_pi:.2f}",
-            stake=f"${stake_usd:.2f}")
+        self._log.info(
+            "price_ladder.start",
+            order_type=order_type,
+            best_ask=f"${best_ask:.4f}",
+            cap=f"${cap:.2f}",
+            rungs=[f"${p:.2f}" for p in rung_prices],
+            max_rung_price=f"${max_rung_price:.2f}",
+            stake=f"${stake_usd:.2f}",
+        )
 
-        # ── Attempt 1: FAK at cap ───────────────────────────────────────
-        result_1 = await self._submit(token_id, cap, stake_usd, order_type, attempt=1)
-        attempted_prices.append(cap)
+        # ── Walk the rung schedule ──────────────────────────────────────
+        for idx, price in enumerate(rung_prices, start=1):
+            if idx > 1:
+                self._log.info(
+                    "price_ladder.retry",
+                    prev_price=f"${rung_prices[idx - 2]:.2f}",
+                    next_price=f"${price:.2f}",
+                    rung=idx,
+                    wait_s=wait_s,
+                )
+                await asyncio.sleep(wait_s)
 
-        if result_1 and result_1.get("size_matched", 0) > 0:
-            return self._build_result(result_1, cap, stake_usd, 1, attempted_prices, order_type)
+            result = await self._submit(token_id, price, stake_usd, order_type, attempt=idx)
+            attempted_prices.append(price)
 
-        # ── Wait, then Attempt 2: FAK at cap + π ────────────────────────
-        self._log.info("price_ladder.retry_with_pi",
-            cap=f"${cap:.2f}", cap_pi=f"${cap_plus_pi:.2f}", wait_s=wait_s)
-        await asyncio.sleep(wait_s)
+            if result and result.get("size_matched", 0) > 0:
+                return self._build_result(
+                    result, price, stake_usd, idx, attempted_prices, order_type,
+                )
 
-        result_2 = await self._submit(token_id, cap_plus_pi, stake_usd, order_type, attempt=2)
-        attempted_prices.append(cap_plus_pi)
-
-        if result_2 and result_2.get("size_matched", 0) > 0:
-            return self._build_result(result_2, cap_plus_pi, stake_usd, 2, attempted_prices, order_type)
-
-        # ── Both attempts failed ────────────────────────────────────────
-        self._log.warning("price_ladder.exhausted",
-            order_type=order_type, prices=[f"${p:.2f}" for p in attempted_prices])
-
+        # ── All rungs exhausted ─────────────────────────────────────────
+        self._log.warning(
+            "price_ladder.exhausted",
+            order_type=order_type,
+            prices=[f"${p:.2f}" for p in attempted_prices],
+        )
         return FOKResult(
             filled=False, fill_price=None, fill_step=None, shares=None,
-            attempts=2, order_id=None, attempted_prices=attempted_prices,
-            order_type=order_type,
+            attempts=len(attempted_prices), order_id=None,
+            attempted_prices=attempted_prices, order_type=order_type,
         )
 
     @staticmethod
