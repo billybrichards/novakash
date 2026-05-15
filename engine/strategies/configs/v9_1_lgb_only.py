@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from strategies.data_surface import FullDataSurface
 
 from domain.value_objects import StrategyDecision
+from strategies import gate_params as _gp
 from strategies.configs.v9_ensemble import evaluate_v9_ensemble as _evaluate_v9
 
 _STRATEGY_ID = "v9_1_lgb_only"
@@ -91,6 +92,11 @@ def evaluate_v9_1_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
     meta["lgb_only_forced"] = True
     meta["v9_1_active"] = True
 
+    # gtc_cap: pull from runtime overrides; default $0.90 (was $0.80 pre-2026-05-14
+    # alongside the 4-rung FAK ladder up to $0.92).
+    _gtc_cap = _gp.get_float("gtc_cap", None, 0.90)
+    meta["gtc_cap"] = _gtc_cap
+
     return StrategyDecision(
         action=decision.action,
         direction=decision.direction,
@@ -98,6 +104,7 @@ def evaluate_v9_1_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
         confidence_score=decision.confidence_score,
         entry_cap=decision.entry_cap,
         collateral_pct=decision.collateral_pct,
+        gtc_cap=_gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
         entry_reason=(

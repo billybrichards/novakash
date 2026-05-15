@@ -30,6 +30,7 @@ _DEFAULT_UP_THRESHOLD = 0.75
 _DEFAULT_DOWN_THRESHOLD = 0.20
 _DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 210
+_DEFAULT_GTC_CAP = 0.90
 
 
 def _skip(reason: str, metadata: dict) -> StrategyDecision:
@@ -84,6 +85,9 @@ def evaluate_v9_2_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
     confidence_score = float(abs(p_v92 - 0.5) * 2.0)
     confidence = "HIGH" if confidence_score >= 0.40 else "MODERATE"
 
+    gtc_cap = _gp.get_float("gtc_cap", None, _DEFAULT_GTC_CAP)
+    meta["gtc_cap"] = gtc_cap
+
     return StrategyDecision(
         action="TRADE",
         direction=direction,
@@ -91,6 +95,7 @@ def evaluate_v9_2_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
         confidence_score=confidence_score,
         entry_cap=None,
         collateral_pct=None,
+        gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
         entry_reason="v9_2_raw_lgb_pass",

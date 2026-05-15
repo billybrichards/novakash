@@ -38,7 +38,10 @@ FEE_MULTIPLIER = 0.072
 
 # GTC poll config
 DEFAULT_GTC_POLL_INTERVAL = 5
-DEFAULT_GTC_MAX_WAIT = 60
+# 2026-05-14: raised 60 → 180s. With FAK ladder up to $0.92 cap, GTC
+# fallback should be allowed more wall-clock to rest and fill before
+# expiring.
+DEFAULT_GTC_MAX_WAIT = 180
 
 # Pi bonus for GTC after FAK exhaustion
 DEFAULT_PI_BONUS = 0.0314
@@ -146,6 +149,19 @@ class FAKLadderExecutor(OrderExecutionPort):
                 "fak_ladder.init",
                 extra={"rfq": "disabled (FAK_LADDER_ENABLE_RFQ=false)"},
             )
+
+        # Always log init config so deploys can be verified in engine.log.
+        logger.info(
+            "fak_ladder.init",
+            extra={
+                "gtc_poll_interval_s": self._gtc_poll_interval,
+                "gtc_max_wait_s": self._gtc_max_wait,
+                "pi_bonus": self._pi_bonus,
+                "max_ladder_elapsed_s": self._max_ladder_elapsed_s,
+                "fak_ladder_rungs_env": os.environ.get("FAK_LADDER_RUNGS", "(unset → default 0.0,0.02,0.04,0.07)"),
+                "fak_ladder_max_price_env": os.environ.get("FAK_LADDER_MAX_PRICE", "(unset → default 0.92)"),
+            },
+        )
 
         # GTC dedup registry: (token_id, side) -> _GTCEntry
         # Enforces max 1 GTC per window+direction. Entries removed on

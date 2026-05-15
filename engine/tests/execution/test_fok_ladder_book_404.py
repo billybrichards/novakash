@@ -90,12 +90,13 @@ async def test_book_404_retry_then_success(monkeypatch):
 
     # get_clob_best_ask called exactly twice (initial + 1 retry)
     assert poly.get_clob_best_ask.await_count == 2
-    # Ladder proceeded to actually attempt FAKs (both prices)
-    assert poly.place_market_order.await_count == 2
+    # Ladder proceeded to actually attempt FAKs (default 4-rung ladder
+    # post-2026-05-14: [cap, cap+0.02, cap+0.04, cap+0.07] up to $0.92)
+    assert poly.place_market_order.await_count == 4
     # Final result: exhausted (no fills) but NOT a book_unavailable abort
     assert result.filled is False
     assert (result.abort_reason or "").startswith("book_unavailable") is False
-    assert len(result.attempted_prices) == 2
+    assert len(result.attempted_prices) == 4
 
 
 @pytest.mark.asyncio
@@ -175,3 +176,105 @@ async def test_is_book_404_detection_by_str_match():
             return "PolyApiException[status_code=500, error_message='internal']"
 
     assert FOKLadder._is_book_404(WrappedException500()) is False
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4-rung FAK ladder tests (2026-05-14)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_four_rung_ladder_default_prices(monkeypatch):
+    """Default 4-rung ladder (cap=0.85) produces [0.85, 0.87, 0.89, 0.92]."""
+    monkeypatch.delenv("FAK_LADDER_RUNGS", raising=False)
+    monkeypatch.delenv("FAK_LADDER_MAX_PRICE", raising=False)
+
+    poly = AsyncMock()
+    poly.get_clob_best_ask = AsyncMock(return_value=0.50)
+    poly.place_market_order = AsyncMock(
+        return_value={"size_matched": 0, "order_id": None, "filled": False}
+    )
+
+    ladder = FOKLadder(poly)
+    monkeypatch.setattr("execution.fok_ladder.asyncio.sleep", AsyncMock())
+
+    result = await ladder.execute(
+        token_id="a" * 32, direction="BUY", stake_usd=5.0,
+        max_price=0.85, min_price=0.30,
+    )
+
+    assert result.filled is False
+    assert result.attempted_prices == [0.85, 0.87, 0.89, 0.92]
+    assert poly.place_market_order.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_four_rung_ladder_ceiling_caps(monkeypatch):
+    """cap=0.90 + default deltas → rungs above 0.92 dropped → [0.90, 0.92]."""
+    monkeypatch.delenv("FAK_LADDER_RUNGS", raising=False)
+    monkeypatch.delenv("FAK_LADDER_MAX_PRICE", raising=False)
+
+    poly = AsyncMock()
+    poly.get_clob_best_ask = AsyncMock(return_value=0.50)
+    poly.place_market_order = AsyncMock(
+        return_value={"size_matched": 0, "order_id": None, "filled": False}
+    )
+
+    ladder = FOKLadder(poly)
+    monkeypatch.setattr("execution.fok_ladder.asyncio.sleep", AsyncMock())
+
+    result = await ladder.execute(
+        token_id="b" * 32, direction="BUY", stake_usd=5.0,
+        max_price=0.90, min_price=0.30,
+    )
+
+    # 0.90, 0.92 in; 0.94 + 0.97 dropped (> 0.92 ceiling)
+    assert result.attempted_prices == [0.90, 0.92]
+
+
+@pytest.mark.asyncio
+async def test_malformed_env_falls_back_to_legacy(monkeypatch):
+    """FAK_LADDER_RUNGS malformed → falls back to legacy [cap, cap+pi]."""
+    monkeypatch.setenv("FAK_LADDER_RUNGS", "not_a_number,0.02")
+
+    poly = AsyncMock()
+    poly.get_clob_best_ask = AsyncMock(return_value=0.50)
+    poly.place_market_order = AsyncMock(
+        return_value={"size_matched": 0, "order_id": None, "filled": False}
+    )
+
+    ladder = FOKLadder(poly)
+    monkeypatch.setattr("execution.fok_ladder.asyncio.sleep", AsyncMock())
+
+    result = await ladder.execute(
+        token_id="c" * 32, direction="BUY", stake_usd=5.0,
+        max_price=0.65, min_price=0.30,
+    )
+
+    # Legacy 2-rung: [cap=0.65, cap+0.0314 rounded to 0.68]
+    assert result.attempted_prices == [0.65, 0.68]
+    assert poly.place_market_order.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_custom_rungs_via_env(monkeypatch):
+    """FAK_LADDER_RUNGS env override works."""
+    monkeypatch.setenv("FAK_LADDER_RUNGS", "0.0,0.03,0.06")
+    monkeypatch.delenv("FAK_LADDER_MAX_PRICE", raising=False)
+
+    poly = AsyncMock()
+    poly.get_clob_best_ask = AsyncMock(return_value=0.50)
+    poly.place_market_order = AsyncMock(
+        return_value={"size_matched": 0, "order_id": None, "filled": False}
+    )
+
+    ladder = FOKLadder(poly)
+    monkeypatch.setattr("execution.fok_ladder.asyncio.sleep", AsyncMock())
+
+    result = await ladder.execute(
+        token_id="d" * 32, direction="BUY", stake_usd=5.0,
+        max_price=0.85, min_price=0.30,
+    )
+
+    assert result.attempted_prices == [0.85, 0.88, 0.91]
+    assert poly.place_market_order.await_count == 3
