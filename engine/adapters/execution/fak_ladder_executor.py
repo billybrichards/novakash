@@ -182,6 +182,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         price_floor: float,
         gtc_cap: Optional[float] = None,
         strategy_id: str = "",
+        window_close_ts: Optional[float] = None,
     ) -> ExecutionResult:
         """Execute using the FAK -> RFQ -> GTC ladder.
 
@@ -382,6 +383,7 @@ class FAKLadderExecutor(OrderExecutionPort):
             fak_prices,
             gtc_cap=gtc_cap,
             strategy_id=strategy_id,
+            window_close_ts=window_close_ts,
         )
         return gtc_result
 
@@ -511,6 +513,54 @@ class FAKLadderExecutor(OrderExecutionPort):
             for k in excess:
                 self._active_gtc.pop(k, None)
 
+    async def cancel_active_gtc(
+        self,
+        strategy_id: str,
+        token_id: str,
+        side: str,
+    ) -> bool:
+        """Cancel a resting GTC registered for (strategy_id, token_id, side).
+
+        Used by the execute_trade rollback path (orphan-fix, 2026-05-16) when
+        the outer use case detects an uncommitted slot after the executor has
+        already placed a GTC on CLOB. Without this hook, the resting GTC would
+        sit live for the remainder of the window and fill 30-60s later as a
+        phantom outflow.
+
+        Returns True if a cancel call was made, False if no matching active
+        GTC was found or cancel_order is unavailable on the poly client.
+        Always removes the registry entry on success path (and on cancel
+        exception too — better to drop a stale entry than retry forever).
+        """
+        cancel_fn = getattr(self._poly, "cancel_order", None)
+        if cancel_fn is None:
+            return False
+        key = (strategy_id, token_id, side)
+        entry = self._active_gtc.get(key)
+        if not entry:
+            return False
+        order_id = entry["order_id"]
+        try:
+            ok = await cancel_fn(order_id)
+            logger.info(
+                "fak_ladder.gtc_cancelled_on_rollback",
+                extra={
+                    "strategy_id": strategy_id,
+                    "token_id": token_id[:20],
+                    "side": side,
+                    "order_id": order_id[:20],
+                    "cancelled": ok,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "fak_ladder.gtc_cancel_on_rollback_error",
+                extra={"order_id": order_id[:20], "error": str(exc)[:200]},
+            )
+        finally:
+            self._active_gtc.pop(key, None)
+        return True
+
     async def _try_gtc(
         self,
         token_id: str,
@@ -521,6 +571,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         fak_prices: list[float],
         gtc_cap: Optional[float] = None,
         strategy_id: str = "",
+        window_close_ts: Optional[float] = None,
     ) -> ExecutionResult:
         """Place GTC at cap + pi bonus, poll for fill.
 
@@ -563,6 +614,24 @@ class FAKLadderExecutor(OrderExecutionPort):
         gtc_price = round(gtc_cap if gtc_cap is not None else (entry_cap + self._pi_bonus), 2)
         market_slug = ""  # Not needed for CLOB submission
 
+        # ── TTL on every GTC (orphan-fix, 2026-05-16) ──────────────────────
+        # When the outer execute_trade rollback path fires (DB write timeout,
+        # CancelledError mid-poll, etc), the resting GTC was previously left
+        # live on CLOB and would fill 30-60s later — invisible to the trades
+        # table, full stake bleed. We now bound the GTC's lifetime to the
+        # remaining window so even a rollback-orphaned order auto-expires.
+        # +120s buffer to match polymarket_client's market_slug-derived path.
+        # Falls back to no expiry only when window_close_ts is None (legacy
+        # callers / tests).
+        seconds_to_expiry: Optional[int] = None
+        if window_close_ts is not None:
+            _now = time.time()
+            _remaining = int(window_close_ts + 120 - _now)
+            # Cap at max(gtc_max_wait + 120, _remaining); a negative or zero
+            # value falls through to no-expiry (place_order treats it as 0).
+            if _remaining > 0:
+                seconds_to_expiry = _remaining
+
         try:
             order_id = await self._poly.place_order(
                 market_slug=market_slug,
@@ -570,6 +639,7 @@ class FAKLadderExecutor(OrderExecutionPort):
                 price=Decimal(str(gtc_price)),
                 stake_usd=stake_usd,
                 token_id=token_id,
+                seconds_to_expiry=seconds_to_expiry,
             )
         except Exception as exc:
             logger.error(
@@ -597,9 +667,15 @@ class FAKLadderExecutor(OrderExecutionPort):
         order_id_str = str(order_id) if order_id else None
         if order_id_str:
             _placed_at = time.time()
-            _close_ts = (
-                (_placed_at // _WINDOW_DURATION_SECONDS + 1) * _WINDOW_DURATION_SECONDS
-            )
+            # Prefer the actual window close timestamp when supplied — the
+            # legacy round-up-to-next-300s heuristic is wrong for 15m
+            # windows and any non-300s-aligned cadence.
+            if window_close_ts is not None:
+                _close_ts = float(window_close_ts)
+            else:
+                _close_ts = (
+                    (_placed_at // _WINDOW_DURATION_SECONDS + 1) * _WINDOW_DURATION_SECONDS
+                )
             self._active_gtc[dedup_key] = _GTCEntry(
                 order_id=order_id_str,
                 placed_at=_placed_at,
@@ -612,6 +688,7 @@ class FAKLadderExecutor(OrderExecutionPort):
                     "side": side,
                     "order_id": order_id_str[:20],
                     "close_ts": int(_close_ts),
+                    "seconds_to_expiry": seconds_to_expiry,
                     "active_gtc_count": len(self._active_gtc),
                 },
             )

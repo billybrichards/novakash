@@ -511,6 +511,109 @@ async def test_cancel_expired_gtc_clears_registry():
     assert len(client.cancel_calls) == 1
 
 
+# ── Orphan-GTC fix (2026-05-16 09:48 incident, audit #432) ────────────────
+
+
+class _FakePolyClientCapturingExpiry(_FakePolyClient):
+    """Records the seconds_to_expiry kwarg passed to place_order."""
+
+    def __init__(self):
+        super().__init__()
+        self.last_seconds_to_expiry: int | None = None
+
+    async def place_order(self, **kwargs):
+        self.place_order_calls += 1
+        self.last_seconds_to_expiry = kwargs.get("seconds_to_expiry")
+        return "0xgtc-open"
+
+
+@pytest.mark.asyncio
+async def test_gtc_has_seconds_to_expiry_set_from_window_close_ts():
+    """When window_close_ts is provided, _try_gtc must pass a matching
+    seconds_to_expiry to polymarket_client.place_order so the resting GTC
+    auto-expires at the window boundary even if our process never cancels it.
+
+    This is the second half of the orphan-fix: TTL on every GTC, so an order
+    we lose track of (rollback path, process crash) cannot fill 30-60s later
+    as a phantom outflow.
+    """
+    client = _FakePolyClientCapturingExpiry()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    now = time.time()
+    # Window closes in 200s; place_order should see ~200+120s budget.
+    close_ts = now + 200
+
+    result = await executor.execute_order(
+        token_id="token-ttl",
+        side="YES",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+        window_close_ts=close_ts,
+    )
+
+    assert result.success is True
+    assert result.execution_mode == "gtc_resting"
+    assert client.last_seconds_to_expiry is not None, (
+        "place_order must receive seconds_to_expiry when window_close_ts is set"
+    )
+    # Within a couple of seconds of (200 + 120) = 320.
+    assert 310 <= client.last_seconds_to_expiry <= 325, (
+        f"seconds_to_expiry={client.last_seconds_to_expiry} outside expected ~320s range"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_active_gtc_cancels_and_clears_registry():
+    """The new cancel_active_gtc() rollback hook must:
+    1. Call polymarket_client.cancel_order with the right order_id.
+    2. Remove the entry from _active_gtc.
+    3. Return True on a hit, False when no matching registry entry exists.
+
+    Used by execute_trade's finally_uncommitted path to kill orphaned
+    GTCs before they fill as phantom outflows (audit #432).
+    """
+    client = _FakePolyClientWithCancel()
+    executor = FAKLadderExecutor(
+        poly_client=client,
+        gtc_poll_interval=0,
+        gtc_max_wait=0,
+        enable_gtc_fallback=True,
+    )
+
+    # Place a GTC (key is (strategy_id, token_id, side)).
+    result = await executor.execute_order(
+        token_id="token-rollback",
+        side="YES",
+        stake_usd=5.0,
+        entry_cap=0.65,
+        price_floor=0.30,
+        strategy_id="v9_2_v12_combo",
+    )
+    assert result.success is True
+    assert ("v9_2_v12_combo", "token-rollback", "YES") in executor._active_gtc
+
+    # Hit — cancel succeeds and clears.
+    hit = await executor.cancel_active_gtc(
+        "v9_2_v12_combo", "token-rollback", "YES"
+    )
+    assert hit is True
+    assert len(client.cancel_calls) == 1
+    assert "0xgtc-open" in client.cancel_calls[0]
+    assert ("v9_2_v12_combo", "token-rollback", "YES") not in executor._active_gtc
+
+    # Miss — different strategy_id, no cancel call.
+    miss = await executor.cancel_active_gtc("other_strat", "token-rollback", "YES")
+    assert miss is False
+    assert len(client.cancel_calls) == 1  # unchanged
+
+
 def test_periodic_task_starts_at_engine_boot():
     """The GTC cancel loop must be wired as an asyncio task at engine startup.
 

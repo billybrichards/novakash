@@ -1105,6 +1105,16 @@ class ExecuteTradeUseCase:
                 # potentially leave a CLOB order half-submitted.
                 _log_step("pre_execute_order")
                 gtc_cap = getattr(decision, "gtc_cap", None)
+                # Compute window close timestamp so the executor can bound
+                # any GTC fallback's lifetime to the remaining window (orphan
+                # GTC fix, 2026-05-16 incident). Falls back to None on weird
+                # window keys, which preserves the legacy no-expiry path.
+                _exec_close_ts: Optional[float] = None
+                try:
+                    _exec_duration = getattr(window_key, "duration_secs", 0) or 300
+                    _exec_close_ts = float(int(window_key.window_ts) + int(_exec_duration))
+                except Exception:
+                    _exec_close_ts = None
                 result = await self._executor.execute_order(
                     token_id=token_id,
                     side=side,
@@ -1113,6 +1123,7 @@ class ExecuteTradeUseCase:
                     price_floor=PRICE_FLOOR,
                     gtc_cap=gtc_cap,
                     strategy_id=decision.strategy_id,
+                    window_close_ts=_exec_close_ts,
                 )
                 _log_step(
                     "post_execute_order",
@@ -1433,7 +1444,77 @@ class ExecuteTradeUseCase:
             # then _release_claim (15s TTL self-recovers but still nicer
             # to clear explicitly). Both are best-effort; failures log
             # WARN but never raise.
+            #
+            # Orphan-GTC fix (2026-05-16, audit #432): when the rollback
+            # path fires, a GTC fallback that already placed a resting
+            # order on CLOB would otherwise sit live for the rest of the
+            # window and fill 30-60s later as a phantom outflow (the
+            # 09:48 UTC incident: -$112 wipe split between FAK round 2
+            # ($56) + orphan GTC round 1 ($56)). Best-effort cancel here
+            # closes the gap. Two cases:
+            #   (a) result is non-None with a GTC order_id (place_order
+            #       returned then the rollback fired in record_trade /
+            #       mark_traded) — cancel by order_id via poly client.
+            #   (b) result is None (e.g. CancelledError mid-execute_order
+            #       after the executor's _try_gtc registered an order) —
+            #       look up the executor's _active_gtc registry by
+            #       (strategy_id, token_id, side).
             if slot_claimed and not committed:
+                try:
+                    _result = result  # local snapshot
+                    _exec_mode = getattr(_result, "execution_mode", None) if _result else None
+                    _order_id = getattr(_result, "order_id", None) if _result else None
+                    _is_gtc = _exec_mode in ("gtc_resting", "gtc")
+                    if _result and _is_gtc and _order_id:
+                        _poly = getattr(self, "_polymarket", None) or getattr(
+                            self._executor, "_poly", None
+                        )
+                        _cancel_fn = getattr(_poly, "cancel_order", None) if _poly else None
+                        if _cancel_fn is not None:
+                            try:
+                                _ok = await _cancel_fn(_order_id)
+                                log.warning(
+                                    "execute_trade.gtc_cancelled_on_rollback",
+                                    strategy=sid,
+                                    window=str(window_key),
+                                    order_id=str(_order_id)[:24],
+                                    cancelled=bool(_ok),
+                                )
+                            except BaseException as _cancel_exc:  # noqa: BLE001
+                                log.warning(
+                                    "execute_trade.gtc_cancel_on_rollback_failed",
+                                    strategy=sid,
+                                    window=str(window_key),
+                                    order_id=str(_order_id)[:24],
+                                    error=str(_cancel_exc)[:200],
+                                )
+                    else:
+                        # No result OR not a GTC — still attempt the registry
+                        # lookup. Covers the CancelledError-mid-execute_order
+                        # case where the executor placed an order before the
+                        # cancellation but we never got a result back.
+                        _cancel_active = getattr(
+                            self._executor, "cancel_active_gtc", None
+                        )
+                        if _cancel_active is not None:
+                            try:
+                                await _cancel_active(
+                                    decision.strategy_id, token_id, side
+                                )
+                            except BaseException as _cancel_exc2:  # noqa: BLE001
+                                log.warning(
+                                    "execute_trade.gtc_cancel_active_failed",
+                                    strategy=sid,
+                                    window=str(window_key),
+                                    error=str(_cancel_exc2)[:200],
+                                )
+                except BaseException as _orphan_exc:  # noqa: BLE001
+                    log.warning(
+                        "execute_trade.finally_orphan_gtc_check_failed",
+                        strategy=sid,
+                        window=str(window_key),
+                        error=str(_orphan_exc)[:200],
+                    )
                 try:
                     await _release_fill_slot("finally_uncommitted")
                 except BaseException as _fin_exc:  # noqa: BLE001

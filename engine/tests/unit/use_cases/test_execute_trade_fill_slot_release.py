@@ -368,6 +368,114 @@ async def test_cancel_after_fill_before_mark_traded_preserves_slot():
     assert "BTC/1777245000/5m/v10_lgb_only" in claimed
 
 
+# ─── Orphan-GTC fix (2026-05-16 09:48 incident, audit #432) ───────────────
+
+
+@pytest.mark.asyncio
+async def test_orphan_gtc_cancelled_on_rollback():
+    """When execute_order returns a gtc_resting result but the outer flow
+    then bails before commit (e.g. CancelledError mid-record_trade or
+    similar), the orphan GTC must be cancelled on CLOB.
+
+    Pre-fix: the resting order sat live until window close, then filled
+    30-60s later at $0.90 as a phantom outflow (full $56 bleed on the
+    2026-05-16 09:48 UTC incident).
+
+    Post-fix: the finally_uncommitted path calls polymarket.cancel_order
+    with the returned order_id.
+    """
+    window_ts = 1_777_658_700
+    close_ts = window_ts + 300
+    clock = _FakeClock(start=close_ts - 60)
+
+    uc, mock_executor, _ws, claimed = _build_use_case(clock=clock)
+
+    # Executor placed a resting GTC successfully.
+    mock_executor.execute_order.return_value = ExecutionResult(
+        success=True,
+        order_id="0xORPHAN-GTC",
+        fill_price=None,
+        fill_size=None,
+        stake_usd=10.0,
+        fee_usd=0.0,
+        execution_mode="gtc_resting",
+        fak_attempts=4,
+        fak_prices=[0.85, 0.87, 0.89, 0.92],
+        token_id="0xDOWN",
+        execution_start=clock.now(),
+        execution_end=clock.now() + 0.5,
+    )
+
+    # Cancellation lands inside record_trade — between execute_order
+    # returning success and committed=True being set the second time.
+    # (For gtc_resting, success=True so committed=True fires at the
+    # first commit point, BUT we still want to validate cancellation
+    # behaviour if a future regression reverses that ordering. Use the
+    # outer registry side-effect: raise via mark_traded which the inner
+    # try/except DOES swallow, so we instead trigger via the
+    # try_claim_fill_slot succeeding then forcing a BaseException via
+    # record_trade.)
+    async def _cancel_during_record(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    uc._recorder.record_trade.side_effect = _cancel_during_record
+
+    # Wire a cancel_order tracker onto the polymarket mock.
+    cancel_calls: list[str] = []
+
+    async def _cancel_order(order_id):
+        cancel_calls.append(order_id)
+        return True
+
+    uc._polymarket.cancel_order = _cancel_order
+
+    decision = _decision(strategy_id="v9_2_v12_combo")
+    market = _market(window_ts)
+
+    # Replace the AsyncMock executor with a real fake so attribute
+    # access in the finally block (cancel_active_gtc) routes to our
+    # registry-aware coroutine, not an auto-generated AsyncMock.
+    class _FakeExecutorWithRegistry:
+        def __init__(self):
+            self._active_gtc: dict = {}
+
+        async def execute_order(self, **kwargs):
+            # Simulate executor having registered an active GTC then
+            # being cancelled mid-poll. Mirrors what _try_gtc does after
+            # place_order returns but before the poll loop completes.
+            self._active_gtc[
+                ("v9_2_v12_combo", "0xDOWN", "NO")
+            ] = {
+                "order_id": "0xORPHAN-GTC",
+                "placed_at": clock.now(),
+                "close_ts": float(close_ts),
+            }
+            raise asyncio.CancelledError()
+
+        async def cancel_active_gtc(self, strategy_id, token_id, side):
+            entry = self._active_gtc.pop((strategy_id, token_id, side), None)
+            if entry:
+                await _cancel_order(entry["order_id"])
+                return True
+            return False
+
+    uc._executor = _FakeExecutorWithRegistry()
+    uc._recorder.record_trade.side_effect = None  # reset
+
+    with pytest.raises(asyncio.CancelledError):
+        await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=84000.0,
+            open_price=84100.0,
+        )
+
+    # The orphan GTC must have been cancelled via the registry hook.
+    assert "0xORPHAN-GTC" in cancel_calls, (
+        f"cancel_order must have been called for the orphan GTC; got {cancel_calls}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_cancel_during_mark_traded_preserves_slot():
     """Same root cause as above but the cancellation lands inside
