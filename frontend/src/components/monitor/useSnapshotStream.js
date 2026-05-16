@@ -56,6 +56,14 @@ export function useSnapshotStream({ asset = 'BTC', timescales = '5m', bufferCap 
             probability_up: tf5.probability_up,
             probability_lgb: tf5.probability_lgb,
             probability_classifier: tf5.probability_classifier,
+            // v9.1 / v9.2 / v12 LGB heads — emitted by timesfm-service on
+            // /v4/snapshot.timescales.5m when the respective booster is
+            // loaded (V9_1_ENABLED / v9.2 booster / v12 PR #137). Null
+            // when the model isn't loaded server-side. v9_2_v12_combo +
+            // v9_2_raw_lgb LIVE strategies read these via FullDataSurface.
+            probability_lgb_v9_1: tf5.probability_lgb_v9_1 ?? null,
+            probability_lgb_v9_2: tf5.probability_lgb_v9_2 ?? null,
+            probability_lgb_v12: tf5.probability_lgb_v12 ?? null,
             mode: tf5.ensemble_config?.mode ?? null,
             disagreement_magnitude: tf5.ensemble_config?.disagreement_magnitude ?? null,
             disagreement_detected: tf5.ensemble_config?.disagreement_detected ?? null,

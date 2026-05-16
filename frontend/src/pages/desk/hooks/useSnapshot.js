@@ -74,7 +74,7 @@ function extractTimescale(snap, tf) {
 // or null. Hub + ML-box use both snake and camel case at different
 // layers so we accept both.
 export function pickProbs(tsBlock) {
-  if (!tsBlock) return { pu: null, pc: null, pl: null, plV91: null };
+  if (!tsBlock) return { pu: null, pc: null, pl: null, plV91: null, plV92: null, plV12: null };
   const num = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   return {
     pu: num(tsBlock.probability_up ?? tsBlock.probabilityUp ?? tsBlock.p_up),
@@ -95,6 +95,20 @@ export function pickProbs(tsBlock) {
       tsBlock.probability_lgb_v9_1
         ?? tsBlock.probabilityLgbV91
         ?? tsBlock.probability_lgb_v91,
+    ),
+    // v9.2 LGB head — emitted by timesfm-service when the v9.2 booster
+    // is loaded (PR #499). Powers v9_2_raw_lgb + v9_2_v12_combo LIVE
+    // strategies via FullDataSurface.probability_lgb_v9_2.
+    plV92: num(
+      tsBlock.probability_lgb_v9_2
+        ?? tsBlock.probabilityLgbV92
+        ?? tsBlock.probability_lgb_v92,
+    ),
+    // v12 LGB combo head — emitted by timesfm-service (PR #137). Pairs
+    // with v9.2 in v9_2_v12_combo (must agree on direction to fire).
+    plV12: num(
+      tsBlock.probability_lgb_v12
+        ?? tsBlock.probabilityLgbV12,
     ),
   };
 }
