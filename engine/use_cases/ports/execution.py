@@ -31,6 +31,7 @@ class OrderExecutionPort(abc.ABC):
         entry_cap: float,
         price_floor: float,
         strategy_id: str = "",
+        window_close_ts: float | None = None,
     ) -> ExecutionResult:
         """Execute a single order using the configured strategy.
 

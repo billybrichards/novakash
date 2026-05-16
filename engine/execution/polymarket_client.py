@@ -297,6 +297,7 @@ class PolymarketClient:
         price: Decimal,
         stake_usd: float,
         token_id: Optional[str] = None,
+        seconds_to_expiry: Optional[int] = None,
     ) -> str:
         """Place a directional order on a binary market.
 
@@ -330,7 +331,8 @@ class PolymarketClient:
             )
 
         return await self._live_place_order(
-            market_slug, direction, price, stake_usd, token_id
+            market_slug, direction, price, stake_usd, token_id,
+            seconds_to_expiry=seconds_to_expiry,
         )
 
     async def _paper_place_order(
@@ -379,6 +381,7 @@ class PolymarketClient:
         price: Decimal,
         stake_usd: float,
         token_id: Optional[str] = None,
+        seconds_to_expiry: Optional[int] = None,
     ) -> str:
         """Place a real order on Polymarket CLOB.
 
@@ -480,18 +483,26 @@ class PolymarketClient:
         size = round(stake_usd / float(price), 3)  # 3dp to match CLOB precision
 
         # ── GTD expiry: auto-expire when the 5m/15m window closes ──────
-        # Extract window_ts from market_slug: "btc-updown-5m-1775256000"
-        # Window closes at window_ts + duration (300s for 5m, 900s for 15m)
+        # Two paths:
+        #   (1) Explicit seconds_to_expiry passed by caller (orphan-fix
+        #       2026-05-16): FAKLadderExecutor passes the window's remaining
+        #       time so a GTC fallback can't outlive its window. Wins over
+        #       the slug-parse fallback because callers (e.g. _try_gtc) use
+        #       an empty market_slug.
+        #   (2) Legacy slug parse: "btc-updown-5m-1775256000" -> window_ts.
         expiration = 0
-        try:
-            parts = market_slug.split("-")
-            window_ts = int(parts[-1])
-            duration = 900 if is_15m else 300
-            expiration = (
-                window_ts + duration + 120
-            )  # +2min buffer for Polymarket 1min threshold
-        except (ValueError, IndexError):
-            pass  # Fallback to no expiry (GTC)
+        if seconds_to_expiry is not None and seconds_to_expiry > 0:
+            expiration = int(time.time()) + int(seconds_to_expiry)
+        else:
+            try:
+                parts = market_slug.split("-")
+                window_ts = int(parts[-1])
+                duration = 900 if is_15m else 300
+                expiration = (
+                    window_ts + duration + 120
+                )  # +2min buffer for Polymarket 1min threshold
+            except (ValueError, IndexError):
+                pass  # Fallback to no expiry (GTC)
 
         # ── Order strategy: Single GTC limit at bestAsk + 2¢ ──────────────
         #

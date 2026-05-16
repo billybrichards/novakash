@@ -30,6 +30,8 @@ class PaperExecutor(OrderExecutionPort):
         entry_cap: float,
         price_floor: float,
         strategy_id: str = "",
+        window_close_ts: float | None = None,
+        gtc_cap: float | None = None,
     ) -> ExecutionResult:
         """Simulate a fill. Always succeeds unless price_floor > entry_cap.
 
