@@ -143,6 +143,14 @@ export default function EnsembleSignalCard({ snapshot, error, lastFetchTs }) {
           <ProbBar label="p_up" value={tf.probability_up} />
           <ProbBar label="p_lgb" value={tf.probability_lgb} />
           <ProbBar label="p_cls" value={tf.probability_classifier} saturationAlert />
+          {/* v9.1 / v9.2 / v12 LGB heads — emitted by timesfm-service on
+              /v4/snapshot.timescales.5m when the booster is loaded. v9_2
+              + v12 power the v9_2_v12_combo and v9_2_raw_lgb LIVE
+              strategies (see engine/strategies/configs/v9_2_*.py). Null
+              renders as "— null" automatically. */}
+          <ProbBar label="p_lgb_v9_1" value={tf.probability_lgb_v9_1 ?? null} />
+          <ProbBar label="p_lgb_v9_2" value={tf.probability_lgb_v9_2 ?? null} />
+          <ProbBar label="p_lgb_v12" value={tf.probability_lgb_v12 ?? null} />
 
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 14 }}>
             <Badge
