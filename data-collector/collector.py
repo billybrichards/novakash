@@ -335,51 +335,80 @@ async def fetch_html_price_to_beat(
     except (ValueError, json.JSONDecodeError):
         return None
 
-    # ── Source 1: dehydratedState queries for the event slug ──
-    # Walk dehydrated react-query state for the event's eventMetadata.priceToBeat.
-    queries = (
-        next_data.get("props", {})
-        .get("pageProps", {})
-        .get("dehydratedState", {})
-        .get("queries", [])
-        or []
-    )
+    # ── Source 1: queryKey == ['/api/event/slug', slug] eventMetadata.priceToBeat ──
+    # Mirrors engine/data/feeds/polymarket_html_pricetobeat.py:_parse_price_to_beat_from_html.
+    # Populated for resolved windows. For ACTIVE windows it's usually None
+    # and we fall through to source 2.
+    try:
+        queries = next_data["props"]["pageProps"]["dehydratedState"]["queries"]
+    except (KeyError, TypeError):
+        return None
+    if not isinstance(queries, list):
+        return None
+
     ptb_val: Optional[float] = None
     for q in queries:
+        if not isinstance(q, dict):
+            continue
+        qk = q.get("queryKey")
+        if not isinstance(qk, list) or len(qk) < 2:
+            continue
+        if qk[0] != "/api/event/slug" or qk[1] != slug:
+            continue
         try:
-            data = q.get("state", {}).get("data") or {}
-            em = data.get("eventMetadata") or {}
+            em = q["state"]["data"]["eventMetadata"]
+        except (KeyError, TypeError):
+            em = None
+        if isinstance(em, dict):
             raw = em.get("priceToBeat")
             if raw is not None:
-                v = float(raw)
-                if v > 0:
-                    ptb_val = v
-                    break
-        except Exception:
-            continue
+                try:
+                    v = float(raw)
+                    if v > 0:
+                        ptb_val = v
+                except (TypeError, ValueError):
+                    pass
+        break  # found the slug entry; fall through to past-results if no PTB
 
     # ── Source 2: past-results — find entry whose endTime == window_ts ──
+    # Polymarket samples the same Chainlink point for window N close and
+    # window N+1 priceToBeat, so the past-results entry whose endTime
+    # equals our window_ts has closePrice = our priceToBeat. Path is
+    # state.data.data.results (note double 'data' — react-query envelope).
     if ptb_val is None:
         target_iso = _epoch_to_iso_z(window_ts)
+        if target_iso is None:
+            return None
         for q in queries:
+            if not isinstance(q, dict):
+                continue
+            qk = q.get("queryKey")
+            if not isinstance(qk, list) or len(qk) < 1:
+                continue
+            if qk[0] != "past-results":
+                continue
             try:
-                key = q.get("queryKey") or []
-                if not key or "past-results" not in str(key[0]):
+                results = q["state"]["data"]["data"]["results"]
+            except (KeyError, TypeError):
+                continue
+            if not isinstance(results, list):
+                continue
+            for r in results:
+                if not isinstance(r, dict):
                     continue
-                results = (q.get("state", {}).get("data") or {}).get("results") or []
-                for r in results:
-                    end_time = r.get("endTime")
-                    if end_time and end_time == target_iso:
-                        cp = r.get("closePrice")
-                        if cp is not None:
+                end_time = r.get("endTime")
+                if end_time == target_iso:
+                    cp = r.get("closePrice")
+                    if cp is not None:
+                        try:
                             v = float(cp)
                             if v > 0:
                                 ptb_val = v
                                 break
-                if ptb_val is not None:
-                    break
-            except Exception:
-                continue
+                        except (TypeError, ValueError):
+                            pass
+            if ptb_val is not None:
+                break
 
     if ptb_val is not None and ptb_val > 0:
         if len(_HTML_PTB_CACHE) >= _HTML_PTB_CACHE_MAX:
