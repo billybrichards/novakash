@@ -652,10 +652,11 @@ class PgSignalRepository(SignalRepository):
                         ensemble_p_up, ensemble_p_lgb, ensemble_p_classifier,
                         ensemble_mode, ensemble_disagreement, ensemble_model_version,
                         probability_lgb_v12, probability_lgb_v9_2,
+                        probability_lgb_v9_2_post_iso,
                         probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -666,6 +667,7 @@ class PgSignalRepository(SignalRepository):
                         ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version),
                         probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12),
                         probability_lgb_v9_2   = COALESCE(EXCLUDED.probability_lgb_v9_2, window_snapshots.probability_lgb_v9_2),
+                        probability_lgb_v9_2_post_iso = COALESCE(EXCLUDED.probability_lgb_v9_2_post_iso, window_snapshots.probability_lgb_v9_2_post_iso),
                         probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
                         probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
                         probability_v12_meta_gate   = COALESCE(EXCLUDED.probability_v12_meta_gate, window_snapshots.probability_v12_meta_gate)
@@ -682,6 +684,7 @@ class PgSignalRepository(SignalRepository):
                     ensemble_fields.get("ensemble_model_version"),
                     ensemble_fields.get("probability_lgb_v12"),
                     ensemble_fields.get("probability_lgb_v9_2"),
+                    ensemble_fields.get("probability_lgb_v9_2_post_iso"),
                     ensemble_fields.get("probability_v2_meta_gate"),
                     ensemble_fields.get("probability_v9_2_meta_gate"),
                     ensemble_fields.get("probability_v12_meta_gate"),
@@ -851,6 +854,69 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_2_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v9_2_post_iso(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_2_post_iso: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_2_post_iso`` on signal_evaluations row.
+
+        Mirror of DBClient.update_signal_evaluations_lgb_v9_2_post_iso for
+        parity (lesson from PR #439 — keep the two writers verbatim).
+        Column added by migrations/add_probability_lgb_v9_2_post_iso.sql.
+
+        Hub note #536 (iso architecture). Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_2_post_iso is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_2_post_iso, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v9_2_post_iso = COALESCE(
+                            signal_evaluations.probability_lgb_v9_2_post_iso,
+                            EXCLUDED.probability_lgb_v9_2_post_iso
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_2_post_iso),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_lgb_v9_2_post_iso_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_lgb_v9_2_post_iso_failed",
                 error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,

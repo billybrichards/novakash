@@ -1448,10 +1448,11 @@ class DBClient:
                         ensemble_p_up, ensemble_p_lgb, ensemble_p_classifier,
                         ensemble_mode, ensemble_disagreement, ensemble_model_version,
                         probability_lgb_v12, probability_lgb_v9_2,
+                        probability_lgb_v9_2_post_iso,
                         probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -1462,6 +1463,7 @@ class DBClient:
                         ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version),
                         probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12),
                         probability_lgb_v9_2   = COALESCE(EXCLUDED.probability_lgb_v9_2, window_snapshots.probability_lgb_v9_2),
+                        probability_lgb_v9_2_post_iso = COALESCE(EXCLUDED.probability_lgb_v9_2_post_iso, window_snapshots.probability_lgb_v9_2_post_iso),
                         probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
                         probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
                         probability_v12_meta_gate   = COALESCE(EXCLUDED.probability_v12_meta_gate, window_snapshots.probability_v12_meta_gate)
@@ -1478,6 +1480,7 @@ class DBClient:
                     ensemble_fields.get("ensemble_model_version"),
                     ensemble_fields.get("probability_lgb_v12"),
                     ensemble_fields.get("probability_lgb_v9_2"),
+                    ensemble_fields.get("probability_lgb_v9_2_post_iso"),
                     ensemble_fields.get("probability_v2_meta_gate"),
                     ensemble_fields.get("probability_v9_2_meta_gate"),
                     ensemble_fields.get("probability_v12_meta_gate"),
@@ -1881,6 +1884,86 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_2_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v9_2_post_iso(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_2_post_iso: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_2_post_iso`` onto signal_evaluations row.
+
+        Mirror of update_signal_evaluations_lgb_v12 for the v9.2 post-hoc
+        isotonic calibration layer. Column added by
+        migrations/add_probability_lgb_v9_2_post_iso.sql (2026-05-18).
+
+        The calibrated probability is emitted by timesfm-service when
+        V9_2_POST_ISO_ENABLED=true. Read by the v9_2_iso_* strategy family
+        (v9_2_iso_volmatch / v9_2_iso_expand / v9_2_iso_strict).
+
+        Idempotent: COALESCE preserves any existing value on conflict.
+        Returns row count affected (1 = upsert ok, 0 = no-op).
+
+        Hub note #536 (iso architecture).
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_2_post_iso is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_2_post_iso, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        -- First-write-wins (mirrors v12 / v9_1 upsert behaviour).
+                        -- Iso probability is computed once per tick by the timesfm
+                        -- scorer and is stable for that (window, eval_offset). If
+                        -- multiple writers attempt the same upsert (e.g. registry
+                        -- trace + ensemble surface), the first non-NULL wins and
+                        -- subsequent attempts are no-ops. evaluated_at is NOT
+                        -- refreshed on conflict — that's intentional parity with
+                        -- the v12 / v9_1 writers; the timestamp reflects first
+                        -- write, not last seen. Reviewer note H1 in PR review of
+                        -- feat/v9_2_post_iso_column_and_strategies.
+                        probability_lgb_v9_2_post_iso = COALESCE(
+                            signal_evaluations.probability_lgb_v9_2_post_iso,
+                            EXCLUDED.probability_lgb_v9_2_post_iso
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_2_post_iso),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_2_post_iso_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_2_post_iso_failed",
                 error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,

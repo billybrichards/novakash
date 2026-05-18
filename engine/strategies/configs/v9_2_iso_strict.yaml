@@ -1,0 +1,58 @@
+name: v9_2_iso_strict
+strategy_id: v9_2_iso_strict
+version: "1.0.0"
+# v9_2_iso_strict — 2026-05-18 — iso-calibrated v9.2 high-conviction variant.
+#
+# Fires at calibrated probability >= 0.85 (UP) or <= 0.12 (DOWN).
+# At iso >= 0.85 the underlying raw probability is ~0.72-0.85+ and the iso
+# curve is near-saturated (raw 0.85+ → calibrated ~1.0, hub note #536 table).
+# This selects only the highest-conviction iso-calibrated signals.
+#
+# Expected: ~0.5× fires/day vs v9_2_iso_expand, ~95% WR projected.
+# Purpose: "survival variant" — if iso_expand suffers from regime drift,
+# this variant provides high-WR signal on a lower volume.
+#
+# Iso calibration metrics (hub note #536):
+#   test ECE: 0.1644 → 0.0216  (-86.9%)
+#   At iso >= 0.85: subset of v9_2_iso_expand ticks, higher average conviction
+#   At iso <= 0.12: tighter than volmatch DOWN threshold (0.098)
+#
+# Enabled hours: all except 09 and 15 UTC (per-hour WR cliffs,
+#   hub note #524, bg-agent #2 analysis).
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md.
+# Hub notes: #536 (iso findings), #531 (tightening analysis), session ~#538.
+# Companion timesfm PR: feat/v9_2_post_iso_layer.
+#
+status: GHOST
+description: |
+  High-conviction iso-calibrated v9.2 strategy. Gates at 0.85/0.12 on
+  calibrated probability. Expected ~half the volume of iso_expand at ~95%
+  projected WR. GHOST mode, $5 max_position.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_iso_strict.py
+pre_gate_hook: evaluate_v9_2_iso_strict
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.85
+  down_threshold: 0.12
+  eval_offset_min: 60
+  eval_offset_max: 210
+  min_consecutive_pass_ticks: 1
+  # Hours 09 and 15 UTC excluded — per-hour WR cliffs (hub note #524).
+  blocked_hours_utc: [9, 15]
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

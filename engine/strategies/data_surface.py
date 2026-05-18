@@ -232,6 +232,15 @@ class FullDataSurface:
     # Hub note #356 — PR-B handover. timesfm docs/V9_2_GATE_CONFIG.html — spec.
     probability_lgb_v9_2: Optional[float] = None
 
+    # v9.2 post-hoc isotonic calibration — layer-2 calibrated probability.
+    # Emitted by timesfm-service on /v4/snapshot when V9_2_POST_ISO_ENABLED=true.
+    # ISO candidate fit 2026-05-18; test ECE 0.1644 → 0.0216 (-87%), Brier -10.6%.
+    # Read by v9_2_iso_volmatch / v9_2_iso_expand / v9_2_iso_strict strategy hooks.
+    # Default None — forward-compatible; prod snapshots without this field remain valid.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # Hub note #536 (iso architecture); companion timesfm PR: feat/v9_2_post_iso_layer.
+    probability_lgb_v9_2_post_iso: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1338,6 +1347,11 @@ class DataSurfaceManager:
             probability_lgb_v9_2=(
                 float(ts_data["probability_lgb_v9_2"])
                 if ts_data.get("probability_lgb_v9_2") is not None
+                else None
+            ),
+            probability_lgb_v9_2_post_iso=(
+                float(ts_data["probability_lgb_v9_2_post_iso"])
+                if ts_data.get("probability_lgb_v9_2_post_iso") is not None
                 else None
             ),
             probability_v2_meta_gate=(
