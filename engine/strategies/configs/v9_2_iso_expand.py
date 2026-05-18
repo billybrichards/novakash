@@ -99,7 +99,7 @@ def evaluate_v9_2_iso_expand(surface: "FullDataSurface") -> StrategyDecision:
     down_threshold = _gp.get_float("down_threshold", None, _DEFAULT_DOWN_THRESHOLD)
     eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
     eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
-    blocked_hours = _gp.get_list("blocked_hours_utc", None, _DEFAULT_BLOCKED_HOURS)
+    blocked_hours = _gp.get_list("blocked_hours_utc", _DEFAULT_BLOCKED_HOURS)
 
     meta = {
         "probability_lgb_v9_2_post_iso": p_iso,
