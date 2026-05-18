@@ -1560,6 +1560,35 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.2 post-hoc iso persistence — write probability_lgb_v9_2_post_iso
+        # on every tick where the field is populated so the iso strategy variants
+        # (v9_2_iso_volmatch / v9_2_iso_expand / v9_2_iso_strict) can be analysed
+        # via signal_evaluations the same way as v9_2 / v9_1 / v12.
+        # Hub note #536 (architecture). Fire-and-forget, same pattern as v9_1.
+        v9_2_iso = getattr(surface, "probability_lgb_v9_2_post_iso", None)
+        if v9_2_iso is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_2_post_iso"
+        ):
+            try:
+                _v9_2_iso_p = float(v9_2_iso)
+            except (TypeError, ValueError):
+                _v9_2_iso_p = None
+            if _v9_2_iso_p is not None:
+                v9_2_iso_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_2_post_iso(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_2_post_iso=_v9_2_iso_p,
+                    )
+                )
+                v9_2_iso_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_2_post_iso_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
