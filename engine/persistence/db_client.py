@@ -1930,6 +1930,16 @@ class DBClient:
                         $1, $2, $3, $4, $5, NOW()
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        -- First-write-wins (mirrors v12 / v9_1 upsert behaviour).
+                        -- Iso probability is computed once per tick by the timesfm
+                        -- scorer and is stable for that (window, eval_offset). If
+                        -- multiple writers attempt the same upsert (e.g. registry
+                        -- trace + ensemble surface), the first non-NULL wins and
+                        -- subsequent attempts are no-ops. evaluated_at is NOT
+                        -- refreshed on conflict — that's intentional parity with
+                        -- the v12 / v9_1 writers; the timestamp reflects first
+                        -- write, not last seen. Reviewer note H1 in PR review of
+                        -- feat/v9_2_post_iso_column_and_strategies.
                         probability_lgb_v9_2_post_iso = COALESCE(
                             signal_evaluations.probability_lgb_v9_2_post_iso,
                             EXCLUDED.probability_lgb_v9_2_post_iso
