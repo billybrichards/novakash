@@ -354,7 +354,36 @@ class ExecuteTradeUseCase:
         self._clock = clock
         self._paper_mode = paper_mode
 
-        # Guardrails (stateful -- mirrors five_min_vpin guardrails)
+        # Guardrails (stateful -- mirrors five_min_vpin guardrails).
+        #
+        # Hub note #541 (2026-05-19) — cross-strategy rate-limit collision:
+        # the original implementation kept a SINGLE process-wide
+        # `_last_order_time` / `_order_timestamps`. When two LIVE strategies
+        # qualified the same (window_ts, direction), the first to fire ticked
+        # the global clock and every subsequent LIVE strategy was
+        # `guardrail_blocked: rate_limit` for 30s. Forensics on the
+        # 2026-05-18→05-19 v12_meta_gate LIVE window: 26 TRADE candidates,
+        # only 6 fired; the engine systematically selected the losing UP set
+        # and skipped 11/11 winning DOWN candidates.
+        #
+        # Fix: scope `_last_order_time` and `_order_timestamps` per
+        # strategy_id. The 30s inter-order interval was designed to prevent
+        # SAME-strategy spam within a single window, not to gate parallel
+        # strategies. Hourly cap stays global as a safety backstop.
+        #
+        # Feature flag `EXECUTE_PER_STRATEGY_GUARDRAILS=false` reverts to the
+        # legacy global behaviour for emergency rollback. Default is on.
+        self._per_strategy_guardrails = (
+            os.environ.get(
+                "EXECUTE_PER_STRATEGY_GUARDRAILS", "true"
+            ).strip().lower()
+            not in ("false", "0", "no", "off")
+        )
+        # Per-strategy state (used when _per_strategy_guardrails is True):
+        self._order_timestamps_by_strategy: dict[str, list[float]] = {}
+        self._last_order_time_by_strategy: dict[str, float] = {}
+        # Legacy global state (used when the flag is False, and as a backing
+        # store for the global hourly cap regardless of flag):
         self._order_timestamps: list[float] = []
         self._last_order_time: float = 0.0
         self._consecutive_errors: int = 0
@@ -813,7 +842,10 @@ class ExecuteTradeUseCase:
             )
 
         # ── Step 4: Guardrails ─────────────────────────────────────────
-        ok, guard_reason = self._check_guardrails()
+        # Hub note #541: pass strategy_id so the 30s rate-limit interval
+        # is scoped per-strategy (parallel LIVE strategies no longer
+        # collide on a single global timer).
+        ok, guard_reason = self._check_guardrails(strategy_id=sid)
         if not ok:
             log.info(
                 "execute_trade.guardrail_blocked",
@@ -1415,7 +1447,10 @@ class ExecuteTradeUseCase:
                 )
 
             # ── Step 10: Update guardrail state ────────────────────────────
-            self._record_order_placed()
+            # Hub note #541: thread strategy_id so the 30s rate-limit
+            # interval is recorded against the firing strategy (parallel
+            # LIVE strategies don't share each other's clocks).
+            self._record_order_placed(strategy_id=sid)
             self._on_order_success()
 
             log.info(
@@ -1859,22 +1894,38 @@ class ExecuteTradeUseCase:
 
     # ─── Guardrails ────────────────────────────────────────────────────
 
-    def _check_guardrails(self) -> tuple[bool, str]:
-        """Rate limit + circuit breaker checks."""
+    def _check_guardrails(self, strategy_id: str = "") -> tuple[bool, str]:
+        """Rate limit + circuit breaker checks.
+
+        Hub note #541 (2026-05-19): the 30s inter-order interval is now
+        scoped PER strategy_id when ``EXECUTE_PER_STRATEGY_GUARDRAILS`` is
+        set (default on). The global hourly cap stays as a process-wide
+        safety backstop irrespective of the flag. The circuit breaker
+        remains global — it indexes on CLOB/infra errors that affect every
+        strategy.
+        """
         now = self._clock.now()
 
-        # Circuit breaker
+        # Circuit breaker (global — guards against CLOB / signer infra
+        # failures that aren't strategy-specific)
         if self._circuit_break_until > now:
             remaining = self._circuit_break_until - now
             return False, f"circuit_breaker: {remaining:.0f}s remaining"
 
-        # Rate limit: min interval between orders
-        if self._last_order_time > 0:
-            elapsed = now - self._last_order_time
+        # Rate limit: min interval between orders for THIS strategy
+        if self._per_strategy_guardrails:
+            last = self._last_order_time_by_strategy.get(strategy_id or "", 0.0)
+        else:
+            last = self._last_order_time
+        if last > 0:
+            elapsed = now - last
             if elapsed < MIN_ORDER_INTERVAL_S:
                 return False, f"rate_limit: {elapsed:.1f}s < {MIN_ORDER_INTERVAL_S}s"
 
-        # Hourly cap
+        # Hourly cap — kept GLOBAL as a process-wide safety backstop.
+        # A single misbehaving strategy stack should never be able to push
+        # the engine past 20 orders/hour even if the rate-limit interval is
+        # cleared by per-strategy scoping.
         cutoff = now - 3600.0
         self._order_timestamps = [ts for ts in self._order_timestamps if ts > cutoff]
         if len(self._order_timestamps) >= MAX_ORDERS_PER_HOUR:
@@ -1885,9 +1936,18 @@ class ExecuteTradeUseCase:
 
         return True, ""
 
-    def _record_order_placed(self) -> None:
-        """Track order timestamp for rate limiting."""
+    def _record_order_placed(self, strategy_id: str = "") -> None:
+        """Track order timestamp for rate limiting.
+
+        Hub note #541: updates BOTH per-strategy and global state so the
+        per-strategy 30s interval and the global hourly cap stay accurate
+        regardless of the feature flag.
+        """
         now = self._clock.now()
+        # Per-strategy (consumed by the 30s interval check)
+        self._last_order_time_by_strategy[strategy_id or ""] = now
+        # Legacy global (kept in sync so the flag flip is safe at any time
+        # and the global hourly cap below sees the order)
         self._last_order_time = now
         self._order_timestamps.append(now)
 
