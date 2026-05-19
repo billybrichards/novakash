@@ -42,11 +42,20 @@ gates:
   - type: chainlink_freshness
 
 gate_params:
-  conf_distance_min: 0.25  # = probability_classifier in [0, 0.25] OR [0.75, 1.0]
-  eval_offset_min: 60      # standard 15m band (sec-to-close)
-  eval_offset_max: 450     # half the 15m window
-  min_consecutive_pass_ticks: 2  # mild confirmation
+  # Direction-specific thresholds (per Hub #546):
+  #   UP   conf>=0.20 → 91.5% WR n=94
+  #   DOWN conf>=0.24 → 90.0% WR n=40
+  # Weighted-avg WR ≈ 91.1% on 134 fires / 19.4d (~6.9 fires/day).
+  conf_distance_min: 0.20       # legacy/fallback floor
+  up_conf_distance_min: 0.20
+  down_conf_distance_min: 0.24
+  eval_offset_min: 60           # standard 15m band (sec-to-close)
+  eval_offset_max: 450          # half the 15m window
+  min_consecutive_pass_ticks: 2
   blocked_hours_utc: []
+  entry_cap: 0.80               # FAK fill ceiling — bet cap 0.80
+  gtc_cap: 0.80
+  collateral_pct: 0.025
 
 risk:
   max_position_usd: 5

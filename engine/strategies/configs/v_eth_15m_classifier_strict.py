@@ -100,15 +100,23 @@ def evaluate_v_eth_15m_classifier_strict(
     conf_min = _gp.get_float(
         "conf_distance_min", None, _DEFAULT_CONF_DISTANCE_MIN
     )
+    # Direction-specific overrides fall back to conf_distance_min when unset.
+    up_conf_min = _gp.get_float("up_conf_distance_min", None, conf_min)
+    down_conf_min = _gp.get_float("down_conf_distance_min", None, conf_min)
     eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
     eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
     blocked_hours = _gp.get_list("blocked_hours_utc", _DEFAULT_BLOCKED_HOURS)
 
     conf_dist = abs(p_cls - 0.5)
+    direction = "UP" if p_cls > 0.5 else "DOWN"
+    side_min = up_conf_min if direction == "UP" else down_conf_min
     meta = {
         "probability_classifier": p_cls,
         "conf_distance": conf_dist,
         "conf_distance_min": conf_min,
+        "up_conf_distance_min": up_conf_min,
+        "down_conf_distance_min": down_conf_min,
+        "side_threshold": side_min,
         "eval_offset": eval_offset,
         "eval_offset_min": eval_min,
         "eval_offset_max": eval_max,
@@ -120,10 +128,8 @@ def evaluate_v_eth_15m_classifier_strict(
     if eval_offset is None or eval_offset < eval_min or eval_offset > eval_max:
         return _skip("outside_eval_band", meta)
 
-    if conf_dist < conf_min:
+    if conf_dist < side_min:
         return _skip("conviction_below_threshold", meta)
-
-    direction = "UP" if p_cls > 0.5 else "DOWN"
 
     # N-consecutive-tick confirmation gate
     window_ts = getattr(surface, "window_ts", None)
