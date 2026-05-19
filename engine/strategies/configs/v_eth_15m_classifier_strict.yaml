@@ -1,0 +1,53 @@
+name: v_eth_15m_classifier_strict
+strategy_id: v_eth_15m_classifier_strict
+version: "1.0.0"
+# v_eth_15m_classifier_strict — 2026-05-19 — tightened ETH 15m classifier variant.
+#
+# Fires only when |probability_classifier - 0.5| >= 0.25 (i.e. prob in
+# [0, 0.25] for DOWN or [0.75, 1.0] for UP) — the top-conviction tail
+# of the ETH 15m classifier head.
+#
+# Per Hub note #546 ghost backtest (Gamma-resolved, 19.4d):
+#   UP   at conf>=0.25: 96.2% WR n=52
+#   DOWN at conf>=0.25: 88.9% WR n=36
+#   UP   at conf>=0.20: 91.5% WR n=94
+#
+# Companion wiring fix (this PR) routes probability_classifier through the
+# ConfidenceGate via ``source: classifier`` for the existing four classifier
+# strategy variants (v_eth/v_xrp × top10/top20). Same fix unblocks this one.
+#
+# Defaults GHOST — Billy promotes manually per feedback_no_auto_promote.md.
+# Hub notes: #546 (wiring gap + alpha), #226 (classifier shadow read).
+#
+status: GHOST
+description: |
+  Tightened ETH 15m classifier — fires only when |probability_classifier - 0.5| >= 0.25.
+  Per Hub note #546 ghost backtest (Gamma-resolved, 19.4d):
+    UP at conf>=0.25: 96.2% WR n=52
+    DOWN at conf>=0.25: 88.9% WR n=36
+  Default GHOST. $5 cap.
+mode: GHOST
+asset: ETH
+timescale: 15m
+
+hooks_file: v_eth_15m_classifier_strict.py
+pre_gate_hook: evaluate_v_eth_15m_classifier_strict
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  conf_distance_min: 0.25  # = probability_classifier in [0, 0.25] OR [0.75, 1.0]
+  eval_offset_min: 60      # standard 15m band (sec-to-close)
+  eval_offset_max: 450     # half the 15m window
+  min_consecutive_pass_ticks: 2  # mild confirmation
+  blocked_hours_utc: []
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
