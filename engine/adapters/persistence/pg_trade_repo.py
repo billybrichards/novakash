@@ -1087,3 +1087,62 @@ class PgTradeRepository:
                 trade_id=trade_id,
                 error=str(exc)[:200],
             )
+
+    async def has_fill_for_strategy_window_direction(
+        self,
+        *,
+        strategy_id: str,
+        window_ts: int,
+        direction: str,
+        timeframe: str,
+        asset: str,
+        is_live: bool = True,
+    ) -> bool:
+        """HARD lock primitive — see TradeRepository.has_fill_for_strategy_window_direction.
+
+        Authoritative dedup query against the trades table. Independent of
+        every TTL/marker mechanism that failed during the 2026-05-20 ETH
+        incident (window 1779312000, v9_2_eth_raw_lgb fired DOWN 3x in 40s).
+
+        FAIL-CLOSED on any error: return True (block the trade).
+        """
+        if not self._pool:
+            log.warning(
+                "pg_trade_repo.has_fill_no_pool_fail_closed",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=direction,
+            )
+            return True
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT 1
+                    FROM trades
+                    WHERE strategy_id = $1
+                      AND direction = $2
+                      AND COALESCE(metadata->>'window_ts', '')::text = $3::text
+                      AND COALESCE(metadata->>'asset', 'BTC') = $4
+                      AND COALESCE(metadata->>'timeframe', '5m') = $5
+                      AND is_live = $6
+                      AND status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')
+                    LIMIT 1
+                    """,
+                    strategy_id,
+                    direction,
+                    str(int(window_ts)),
+                    asset,
+                    timeframe,
+                    bool(is_live),
+                )
+                return row is not None
+        except Exception as exc:
+            log.error(
+                "pg_trade_repo.has_fill_query_failed_fail_closed",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=direction,
+                error=str(exc)[:200],
+            )
+            return True
