@@ -1,0 +1,63 @@
+name: v9_2_xrp_raw_lgb
+strategy_id: v9_2_xrp_raw_lgb
+version: "1.0.0"
+# v9_2_xrp_raw_lgb — 2026-05-20
+# Clean raw v9.2-style XRP 5m signal strategy.
+#
+# Fires purely on probability_lgb_v9_2_xrp (no v9_ensemble base-gate delegation,
+# no cohort gates, no sister-pair veto, no cell pauses, no blocked hours).
+# Asset: XRP only. Strategy will SKIP defensively on any non-XRP surface.
+#
+# Operating point per hub note #550 corrected WR-at-threshold table for the
+# XRP-trained v9.2-style head. XRP did NOT show the δ=180 weakness ETH showed,
+# so the eval-offset band is wider [60, 210] (compared to ETH's [120, 210]
+# v1.1.0 retune):
+#   UP   p >= 0.92  -> projected WR ~92-94% on v1 test set
+#   DOWN p <= 0.06  -> projected WR ~92-94% on v1 test set
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md.
+# $5 max_position_usd for the initial shadow window.
+#
+# Hub notes:
+#   #545 (data inventory / labelled signal availability)
+#   #547 (training-pipeline spec)
+#   #550 (training results + corrected WR-at-threshold tables)
+#   #552 (v2 corpus feasibility — blocked, recommend GHOST v1 + organic growth)
+# Companion timesfm PRs: #153 (training pipeline), #154 (ETH wiring),
+# #155 (v5_feature_loader ETH/XRP path — required for emission),
+# this PR's companion timesfm PR (XRP wiring).
+# Engine precedent: feat/v9_2_eth_raw_lgb_ghost.
+#
+status: GHOST
+description: |
+  Clean raw v9.2-style XRP 5m signal strategy. Fires on probability_lgb_v9_2_xrp
+  alone: UP at p >= 0.92, DOWN at p <= 0.06, within eval_offset [60, 210],
+  any single qualifying tick. XRP-only (defensive asset guard). No v9_ensemble
+  delegation, no cohort gates, no veto layers, no cell pauses, no blocked hours.
+  GHOST mode, $5 max_position_usd for the initial shadow window.
+mode: GHOST
+asset: XRP
+timescale: 5m
+
+hooks_file: v9_2_xrp_raw_lgb.py
+pre_gate_hook: evaluate_v9_2_xrp_raw_lgb
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.92
+  down_threshold: 0.06
+  eval_offset_min: 60
+  eval_offset_max: 210
+  min_consecutive_pass_ticks: 1
+  expected_asset: XRP
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

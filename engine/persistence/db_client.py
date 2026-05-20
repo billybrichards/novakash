@@ -1449,10 +1449,11 @@ class DBClient:
                         ensemble_mode, ensemble_disagreement, ensemble_model_version,
                         probability_lgb_v12, probability_lgb_v9_2,
                         probability_lgb_v9_2_post_iso,
+                        probability_lgb_v9_2_xrp,
                         probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -1464,6 +1465,7 @@ class DBClient:
                         probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12),
                         probability_lgb_v9_2   = COALESCE(EXCLUDED.probability_lgb_v9_2, window_snapshots.probability_lgb_v9_2),
                         probability_lgb_v9_2_post_iso = COALESCE(EXCLUDED.probability_lgb_v9_2_post_iso, window_snapshots.probability_lgb_v9_2_post_iso),
+                        probability_lgb_v9_2_xrp = COALESCE(EXCLUDED.probability_lgb_v9_2_xrp, window_snapshots.probability_lgb_v9_2_xrp),
                         probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
                         probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
                         probability_v12_meta_gate   = COALESCE(EXCLUDED.probability_v12_meta_gate, window_snapshots.probability_v12_meta_gate)
@@ -1481,6 +1483,7 @@ class DBClient:
                     ensemble_fields.get("probability_lgb_v12"),
                     ensemble_fields.get("probability_lgb_v9_2"),
                     ensemble_fields.get("probability_lgb_v9_2_post_iso"),
+                    ensemble_fields.get("probability_lgb_v9_2_xrp"),
                     ensemble_fields.get("probability_v2_meta_gate"),
                     ensemble_fields.get("probability_v9_2_meta_gate"),
                     ensemble_fields.get("probability_v12_meta_gate"),
@@ -1964,6 +1967,84 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_2_post_iso_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v9_2_xrp(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_2_xrp: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_2_xrp`` onto signal_evaluations row.
+
+        Mirror of update_signal_evaluations_lgb_v9_2_post_iso for the
+        XRP-trained v9.2-style LGB head. Column added by
+        migrations/add_probability_lgb_v9_2_xrp.sql (2026-05-20).
+
+        The probability is emitted by timesfm-service when V9_2_XRP_ENABLED=true
+        (companion bg-agent-1 PR). Read by the v9_2_xrp_raw_lgb GHOST strategy.
+
+        Idempotent: COALESCE preserves any existing value on conflict
+        (first-write-wins, mirrors the v12 / v9_1 / post_iso writer parity).
+        Returns row count affected (1 = upsert ok, 0 = no-op).
+
+        Hub notes #545 (data inventory), #547 (pipeline), #550 (training results).
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_2_xrp is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_2_xrp, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        -- First-write-wins (mirrors v12 / v9_1 / post_iso upsert
+                        -- behaviour). The XRP probability is computed once per
+                        -- tick by the timesfm scorer and is stable for that
+                        -- (window, eval_offset). If multiple writers attempt
+                        -- the same upsert (registry trace + ensemble surface),
+                        -- the first non-NULL wins and subsequent attempts are
+                        -- no-ops. evaluated_at is NOT refreshed on conflict —
+                        -- intentional parity with sibling writers.
+                        probability_lgb_v9_2_xrp = COALESCE(
+                            signal_evaluations.probability_lgb_v9_2_xrp,
+                            EXCLUDED.probability_lgb_v9_2_xrp
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_2_xrp),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_2_xrp_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_2_xrp_failed",
                 error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,

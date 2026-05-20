@@ -241,6 +241,12 @@ def _ensemble_surface_fields(surface) -> dict:
         # timesfm V9_2_POST_ISO_ENABLED=true. Default None when absent.
         # Read by v9_2_iso_* strategy hooks; hub note #536 (architecture).
         "probability_lgb_v9_2_post_iso": getattr(surface, "probability_lgb_v9_2_post_iso", None),
+        # 2026-05-20: v9.2-style XRP 5m LGB head — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v9_2_xrp. Emitted when
+        # timesfm V9_2_XRP_ENABLED=true (companion bg-agent-1 PR). Default
+        # None when absent. Read by v9_2_xrp_raw_lgb GHOST strategy
+        # (asset=XRP, 5m). Hub notes #545/#547/#550.
+        "probability_lgb_v9_2_xrp": getattr(surface, "probability_lgb_v9_2_xrp", None),
         # 2026-05-12: meta gate scores — emitted by timesfm-service on
         # /v4/snapshot. Written to window_snapshots via ensemble_fields
         # upsert so SQL analysis has first-class access.
