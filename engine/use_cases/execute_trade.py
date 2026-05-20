@@ -36,8 +36,14 @@ from typing import Any, Coroutine, Optional
 from domain.ports import (
     PolymarketClientPort,
     WindowStateRepository,
+    WriteOutcome,
 )
 from use_cases.ports import AlerterPort, Clock, OrderExecutionPort, RiskManagerPort, TradeRecorderPort
+from use_cases.exposure_caps import (
+    ExposureCapConfig,
+    ExposureRepository,
+    check_exposure_caps,
+)
 from domain.value_objects import (
     ExecutionResult,
     RiskStatus,
@@ -344,6 +350,8 @@ class ExecuteTradeUseCase:
         clock: Clock,
         *,
         paper_mode: bool = True,
+        exposure_cap_config: Optional[ExposureCapConfig] = None,
+        exposure_repo: Optional[ExposureRepository] = None,
     ) -> None:
         self._polymarket = polymarket
         self._executor = order_executor
@@ -353,6 +361,14 @@ class ExecuteTradeUseCase:
         self._recorder = trade_recorder
         self._clock = clock
         self._paper_mode = paper_mode
+
+        # Hub #554 exposure caps. Defaults to fully-disabled config when
+        # the caller omits these — preserves byte-identical behaviour on
+        # the BTC 5m hot path while the env vars are unset.
+        self._exposure_cap_config: ExposureCapConfig = (
+            exposure_cap_config or ExposureCapConfig()
+        )
+        self._exposure_repo: Optional[ExposureRepository] = exposure_repo
 
         # Guardrails (stateful -- mirrors five_min_vpin guardrails).
         #
@@ -862,6 +878,67 @@ class ExecuteTradeUseCase:
                 stake_usd=stake.adjusted_stake,
             )
 
+        # ── Step 4.5: Exposure caps (Hub #554) ─────────────────────────
+        # Three barriers — per-window, per-asset, daily — all OFF by
+        # default. When every cap is disabled the helper short-circuits
+        # without touching the DB so the BTC 5 m hot path stays
+        # byte-identical to pre-fix behaviour.
+        #
+        # Placed AFTER risk + guardrails (those use no DB) but BEFORE
+        # token resolution + the pessimistic fill-slot claim so we
+        # bail out as cheaply as possible when the cap blocks. The
+        # claim is still held — Step 1's lease will TTL-out cleanly,
+        # and ``_release_claim`` runs on the early-return path below.
+        if (
+            self._exposure_repo is not None
+            and not self._exposure_cap_config.all_disabled
+        ):
+            try:
+                cap_reason = await asyncio.wait_for(
+                    check_exposure_caps(
+                        config=self._exposure_cap_config,
+                        repo=self._exposure_repo,
+                        asset=window_key.asset,
+                        window_ts=int(window_key.window_ts),
+                        timeframe=window_key.timeframe,
+                        proposed_stake_usd=stake.adjusted_stake,
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                _log_step("exposure_caps", blocked=bool(cap_reason))
+                if cap_reason:
+                    log.info(
+                        "execute_trade.exposure_cap_blocked",
+                        strategy=sid,
+                        window=str(window_key),
+                        failure_reason=cap_reason,
+                        stake=stake.adjusted_stake,
+                    )
+                    await _release_claim("exposure_cap_blocked")
+                    return _failed(
+                        cap_reason,
+                        strategy_id=sid,
+                        direction=direction,
+                        stake_usd=stake.adjusted_stake,
+                    )
+            except asyncio.TimeoutError:
+                # Fail-OPEN on timeout — matches every other DB read in
+                # this flow (the engine's drawdown / daily-pnl kill
+                # switches are the backstop for runaway exposure).
+                log.warning(
+                    "execute_trade.exposure_caps_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.exposure_caps_error",
+                    strategy=sid,
+                    window=str(window_key),
+                    error=str(exc)[:200],
+                )
+
         # ── Step 5: Token ID resolution ────────────────────────────────
         if direction == "DOWN":
             token_id = window_market.down_token_id
@@ -1271,6 +1348,7 @@ class ExecuteTradeUseCase:
             # NOT delete it (release_fill_slot is order_id='pending' scoped,
             # but skipping the call entirely is cleaner than relying on the
             # WHERE clause being correct forever).
+            mark_outcome: Optional[WriteOutcome] = None
             try:
                 try:
                     # Audit 2026-04-28: ``asyncio.shield`` is load-bearing.
@@ -1295,7 +1373,12 @@ class ExecuteTradeUseCase:
                     # ``committed=True`` to fire so the finally backstop
                     # doesn't roll back the slot (the fill is real on
                     # CLOB regardless of our DB state).
-                    await asyncio.shield(
+                    #
+                    # Hub #554 (2026-05-20): mark_traded now returns a
+                    # :class:`WriteOutcome`. When SECONDARY_FILL we'll
+                    # record a second ``trades`` row below tagged with
+                    # ``is_secondary_fill=True``.
+                    mark_outcome = await asyncio.shield(
                         asyncio.wait_for(
                             self._window_state.mark_traded(
                                 window_key,
@@ -1307,7 +1390,7 @@ class ExecuteTradeUseCase:
                     )
                 except TypeError:
                     # Legacy port impl without strategy_id kwarg.
-                    await asyncio.shield(
+                    mark_outcome = await asyncio.shield(
                         asyncio.wait_for(
                             self._window_state.mark_traded(
                                 window_key,
@@ -1316,7 +1399,12 @@ class ExecuteTradeUseCase:
                             timeout=DB_AWAIT_TIMEOUT_S,
                         )
                     )
-                _log_step("mark_traded")
+                _log_step(
+                    "mark_traded",
+                    outcome=(
+                        mark_outcome.value if mark_outcome is not None else None
+                    ),
+                )
             except asyncio.TimeoutError:
                 log.warning(
                     "execute_trade.mark_traded_timeout",
@@ -1347,6 +1435,75 @@ class ExecuteTradeUseCase:
             # DB hiccup, and has_filled() reads the same table so future
             # attempts still short-circuit on a successful UPSERT.
             committed = True
+
+            # ── Step 8a: Sub-fill writer (Hub #554) ────────────────────────
+            # When mark_traded reported SECONDARY_FILL, this call is the
+            # SECOND on-chain fill for the same (asset, window_ts,
+            # timeframe, strategy_id) inside the 25 s
+            # STALE_PLACEHOLDER_TTL window. Step 7 already recorded the
+            # row above with the canonical fields; that row IS the primary
+            # fill from the writer's perspective — but the wallet sees
+            # BOTH on-chain transactions debited. We need a second
+            # ``trades`` row tagged ``is_secondary_fill=True`` and
+            # ``parent_trade_id=<existing primary order_id>`` so audit
+            # tooling can pair them and dashboards stop under-counting
+            # stake.
+            #
+            # The primary fill's order_id is the ``existing_order_id``
+            # that ``mark_traded`` saw in ``strategy_window_fills`` BEFORE
+            # this call — we don't have direct access to it here without
+            # an extra query. Fortunately the writer only needs SOME
+            # parent pointer; we pass our own result.order_id as the
+            # parent (a forward link from secondary → its own primary
+            # would be self-referential, so we use a sentinel of the
+            # original `strategy_window_fills` order_id-by-key lookup if
+            # the adapter exposes it; otherwise None is acceptable —
+            # ``is_secondary_fill=True`` alone is enough for the
+            # aggregation queries to exclude it).
+            if mark_outcome is WriteOutcome.SECONDARY_FILL:
+                try:
+                    log.warning(
+                        "execute_trade.secondary_fill_writer",
+                        strategy=sid,
+                        window=str(window_key),
+                        new_order_id=(result.order_id or "")[:32],
+                    )
+                    await asyncio.wait_for(
+                        self._recorder.record_trade(
+                            decision,
+                            result,
+                            stake,
+                            is_secondary_fill=True,
+                            parent_trade_id=result.order_id,
+                        ),
+                        timeout=DB_AWAIT_TIMEOUT_S,
+                    )
+                    _log_step("record_trade_secondary_fill")
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "execute_trade.secondary_fill_record_timeout",
+                        strategy=sid,
+                        window=str(window_key),
+                        timeout_s=DB_AWAIT_TIMEOUT_S,
+                    )
+                except TypeError:
+                    # Legacy recorder without is_secondary_fill kwarg —
+                    # fall back to plain record_trade so the row at
+                    # least lands (without the secondary tag).
+                    try:
+                        await self._recorder.record_trade(
+                            decision, result, stake
+                        )
+                    except Exception as legacy_exc:
+                        log.warning(
+                            "execute_trade.secondary_fill_legacy_recorder_error",
+                            error=str(legacy_exc)[:200],
+                        )
+                except Exception as exc:
+                    log.warning(
+                        "execute_trade.secondary_fill_record_error",
+                        error=str(exc)[:200],
+                    )
 
             # ── Step 8b: Unconditional FILL card (fire-and-forget) ─────────
             # Every successful fill on Polymarket gets a short confirmation

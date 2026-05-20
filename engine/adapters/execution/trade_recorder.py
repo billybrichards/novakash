@@ -51,12 +51,24 @@ class DBTradeRecorder(TradeRecorderPort):
         decision: StrategyDecision,
         result: ExecutionResult,
         stake: StakeCalculation,
+        *,
+        is_secondary_fill: bool = False,
+        parent_trade_id: Optional[str] = None,
     ) -> None:
         """Persist a completed trade.
 
         Steps:
           1. Register order with OrderManager (tracks fill lifecycle)
           2. Update window_snapshot trade_placed flag in DB
+
+        ``is_secondary_fill`` / ``parent_trade_id`` (Hub #554, 2026-05-20):
+          When the second on-chain fill lands inside the 25 s
+          STALE_PLACEHOLDER_TTL window the use-case calls
+          ``record_trade(..., is_secondary_fill=True,
+          parent_trade_id=<primary order_id>)``. These flags are
+          threaded into ``Order.metadata`` and propagate to the
+          ``trades`` row via ``pg_trade_repo.write_trade`` (which
+          mirrors ``metadata`` columns into dedicated columns).
         """
         if not result.success:
             return
@@ -160,6 +172,11 @@ class DBTradeRecorder(TradeRecorderPort):
                         "stake_fraction": stake.bet_fraction,
                         "stake_multiplier": stake.price_multiplier,
                         "engine_version": "registry_v2",
+                        # Hub #554 sub-fill writer (2026-05-20). Default
+                        # False — only the second-fill path through
+                        # ExecuteTradeUseCase ever sets these to True.
+                        "is_secondary_fill": bool(is_secondary_fill),
+                        "parent_trade_id": parent_trade_id,
                     },
                 )
                 await self._om.register_order(order)

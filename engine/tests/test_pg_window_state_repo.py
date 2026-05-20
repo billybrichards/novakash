@@ -12,6 +12,13 @@ class MockConnection:
         self.execute_calls = []
         self.fetchval_result = None
         self.fetch_result = []
+        # Hub #554: ``mark_traded`` now uses fetchrow on the
+        # strategy_window_fills CTE so it can detect SECONDARY_FILL
+        # (a different existing order_id). The default mimics a
+        # fresh INSERT — no prior row, upsert inserted, final
+        # order_id matches whatever the call passed in. Tests that
+        # care override ``conn.fetchrow_result`` directly.
+        self.fetchrow_result: dict | None = None
 
     async def execute(self, q, *a):
         self.execute_calls.append((q, a))
@@ -23,6 +30,17 @@ class MockConnection:
     async def fetch(self, q, *a):
         self.execute_calls.append((q, a))
         return self.fetch_result
+
+    async def fetchrow(self, q, *a):
+        self.execute_calls.append((q, a))
+        # Default: fresh INSERT, no prior row.
+        if self.fetchrow_result is None:
+            return {
+                "existing_order_id": None,
+                "inserted": True,
+                "final_order_id": a[4] if len(a) > 4 else None,
+            }
+        return self.fetchrow_result
 
 
 class MockPool:
