@@ -35,13 +35,13 @@ from strategies.data_surface import FullDataSurface
 def _make_surface(**overrides) -> FullDataSurface:
     """Default surface for ETH strategy tests.
 
-    asset=ETH, eval_offset=120 (in band [60,150]), hour_utc=12,
-    probability_lgb_v9_2_eth=0.90 (above the 0.85 UP threshold).
+    asset=ETH, eval_offset=150 (in band [120, 210]), hour_utc=12,
+    probability_lgb_v9_2_eth=0.97 (above the 0.96 UP threshold).
     """
     defaults = dict(
         asset="ETH", timescale="5m",
         window_ts=1713009600,
-        eval_offset=120, assembled_at=time.time(),
+        eval_offset=150, assembled_at=time.time(),
         current_price=3400.0, open_price=3380.0,
         delta_binance=0.005, delta_tiingo=0.004, delta_chainlink=0.005,
         delta_pct=0.005, delta_source="chainlink",
@@ -77,7 +77,7 @@ def _make_surface(**overrides) -> FullDataSurface:
         cg_liq_short=200_000.0, cg_long_short_ratio=1.2,
         timesfm_expected_move_bps=50.0, timesfm_vol_forecast_bps=80.0,
         hour_utc=12, seconds_to_close=120,
-        probability_lgb_v9_2_eth=0.90,
+        probability_lgb_v9_2_eth=0.97,
     )
     defaults.update(overrides)
     return FullDataSurface(**defaults)
@@ -86,10 +86,12 @@ def _make_surface(**overrides) -> FullDataSurface:
 # ── Gate-params helpers ────────────────────────────────────────────────────
 
 _BASE_PARAMS: dict[str, Any] = {
-    "up_threshold": 0.85,
-    "down_threshold": 0.20,
-    "eval_offset_min": 60,
-    "eval_offset_max": 150,
+    # v1.1.0 retune per hub note #550 fire-level WR sweep:
+    # tighter thresholds + widened eval_offset to [120, 210].
+    "up_threshold": 0.96,
+    "down_threshold": 0.04,
+    "eval_offset_min": 120,
+    "eval_offset_max": 210,
     "min_consecutive_pass_ticks": 1,
     "expected_asset": "ETH",
     "entry_cap": 0.85,
@@ -140,14 +142,14 @@ class TestAssetGuard:
     def test_btc_surface_skips_even_with_high_prob(self):
         """ETH strategy refuses to fire on a BTC surface even at high
         conviction — defensive guard since the model is ETH-only."""
-        surface = _make_surface(asset="BTC", probability_lgb_v9_2_eth=0.95)
+        surface = _make_surface(asset="BTC", probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
     def test_xrp_surface_skips(self):
-        surface = _make_surface(asset="XRP", probability_lgb_v9_2_eth=0.95)
+        surface = _make_surface(asset="XRP", probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
@@ -158,33 +160,42 @@ class TestAssetGuard:
 
 class TestEvalOffsetBand:
     def test_below_min_skips(self):
-        surface = _make_surface(eval_offset=30)
+        """eval_offset=110 is below the new ETH band min of 120."""
+        surface = _make_surface(eval_offset=110)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
     def test_above_max_skips(self):
-        """eval_offset=180 is OUT of the ETH band (tighter than BTC's 60-210)."""
-        surface = _make_surface(eval_offset=180)
+        """eval_offset=220 is above the new ETH band max of 210."""
+        surface = _make_surface(eval_offset=220)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
-    def test_at_min_60_fires(self):
-        surface = _make_surface(eval_offset=60, probability_lgb_v9_2_eth=0.90)
+    def test_at_min_120_fires(self):
+        surface = _make_surface(eval_offset=120, probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
-    def test_at_max_150_fires(self):
-        surface = _make_surface(eval_offset=150, probability_lgb_v9_2_eth=0.90)
+    def test_at_max_210_fires(self):
+        surface = _make_surface(eval_offset=210, probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
+
+    def test_late_window_skips(self):
+        """eval_offset=80 (late window) is now OUT — captured by v9_2_eth_down_late."""
+        surface = _make_surface(eval_offset=80, probability_lgb_v9_2_eth=0.03)
+        with _params():
+            d = evaluate_v9_2_eth_raw_lgb(surface)
+        assert d.action == "SKIP"
+        assert d.skip_reason == "outside_eval_band"
 
     def test_none_eval_offset_skips(self):
         surface = _make_surface(eval_offset=None)
@@ -197,8 +208,9 @@ class TestEvalOffsetBand:
 # ── Threshold gating ───────────────────────────────────────────────────────
 
 class TestThresholds:
-    def test_up_fires_at_0_85(self):
-        surface = _make_surface(probability_lgb_v9_2_eth=0.85)
+    def test_up_fires_at_0_96(self):
+        """New UP threshold is 0.96 per the v1.1.0 retune."""
+        surface = _make_surface(probability_lgb_v9_2_eth=0.96)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
@@ -206,29 +218,30 @@ class TestThresholds:
         assert d.strategy_id == "v9_2_eth_raw_lgb"
         assert d.entry_reason == "v9_2_eth_raw_lgb_pass"
 
-    def test_up_fires_above_0_85(self):
-        surface = _make_surface(probability_lgb_v9_2_eth=0.95)
+    def test_up_fires_above_0_96(self):
+        surface = _make_surface(probability_lgb_v9_2_eth=0.99)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
-    def test_down_fires_at_0_20(self):
-        surface = _make_surface(probability_lgb_v9_2_eth=0.20)
+    def test_down_fires_at_0_04(self):
+        """New DOWN threshold is 0.04 per the v1.1.0 retune."""
+        surface = _make_surface(probability_lgb_v9_2_eth=0.04)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
-    def test_down_fires_below_0_20(self):
-        surface = _make_surface(probability_lgb_v9_2_eth=0.10)
+    def test_down_fires_below_0_04(self):
+        surface = _make_surface(probability_lgb_v9_2_eth=0.02)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
     def test_between_thresholds_skips(self):
-        # 0.50 is neither >= 0.85 nor <= 0.20
+        # 0.50 is neither >= 0.96 nor <= 0.04
         surface = _make_surface(probability_lgb_v9_2_eth=0.50)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
@@ -236,16 +249,16 @@ class TestThresholds:
         assert d.skip_reason == "conviction_below_threshold"
 
     def test_just_below_up_skips(self):
-        # 0.84 < 0.85 — below the UP threshold
-        surface = _make_surface(probability_lgb_v9_2_eth=0.84)
+        # 0.95 < 0.96 — below the new UP threshold
+        surface = _make_surface(probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
     def test_just_above_down_skips(self):
-        # 0.21 > 0.20 — above the DOWN threshold
-        surface = _make_surface(probability_lgb_v9_2_eth=0.21)
+        # 0.05 > 0.04 — above the new DOWN threshold
+        surface = _make_surface(probability_lgb_v9_2_eth=0.05)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
@@ -257,46 +270,48 @@ class TestThresholds:
 class TestRuntimeOverride:
     def test_runtime_override_lowers_up_threshold(self):
         """gate_params runtime override changes thresholds."""
-        surface = _make_surface(probability_lgb_v9_2_eth=0.75)
-        # with default 0.85 threshold: SKIP
+        surface = _make_surface(probability_lgb_v9_2_eth=0.90)
+        # with default 0.96 threshold: SKIP
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"
-        # with overridden 0.70 threshold: TRADE
-        with _params(up_threshold=0.70):
+        # with overridden 0.85 threshold: TRADE
+        with _params(up_threshold=0.85):
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
-    def test_runtime_override_expands_eval_band(self):
-        # surface at eval_offset=180 normally skips (above max 150)
-        surface = _make_surface(eval_offset=180, probability_lgb_v9_2_eth=0.90)
+    def test_runtime_override_narrows_eval_band(self):
+        # surface at eval_offset=130 fires under default [120, 210]
+        surface = _make_surface(eval_offset=130, probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
-        assert d.action == "SKIP"
-        with _params(eval_offset_max=210):
-            d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
+        # narrow to [150, 210] — 130 now out of band
+        with _params(eval_offset_min=150):
+            d = evaluate_v9_2_eth_raw_lgb(surface)
+        assert d.action == "SKIP"
+        assert d.skip_reason == "outside_eval_band"
 
 
 # ── Metadata shape ─────────────────────────────────────────────────────────
 
 class TestMetadata:
     def test_metadata_contains_probability_on_trade(self):
-        surface = _make_surface(probability_lgb_v9_2_eth=0.90)
+        surface = _make_surface(probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert "probability_lgb_v9_2_eth" in d.metadata
-        assert d.metadata["probability_lgb_v9_2_eth"] == pytest.approx(0.90)
-        assert d.metadata["up_threshold"] == pytest.approx(0.85)
-        assert d.metadata["down_threshold"] == pytest.approx(0.20)
-        assert d.metadata["eval_offset_min"] == 60
-        assert d.metadata["eval_offset_max"] == 150
+        assert d.metadata["probability_lgb_v9_2_eth"] == pytest.approx(0.97)
+        assert d.metadata["up_threshold"] == pytest.approx(0.96)
+        assert d.metadata["down_threshold"] == pytest.approx(0.04)
+        assert d.metadata["eval_offset_min"] == 120
+        assert d.metadata["eval_offset_max"] == 210
         assert d.metadata["asset"] == "ETH"
 
     def test_metadata_contains_sizing_on_trade(self):
-        surface = _make_surface(probability_lgb_v9_2_eth=0.90)
+        surface = _make_surface(probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
@@ -304,11 +319,11 @@ class TestMetadata:
         assert d.metadata["collateral_pct"] == pytest.approx(0.025)
         assert d.metadata["gtc_cap"] == pytest.approx(0.90)
 
-    def test_confidence_score_is_high_at_0_90(self):
-        # |0.90 - 0.5| * 2 = 0.80 >= 0.40 -> HIGH
-        surface = _make_surface(probability_lgb_v9_2_eth=0.90)
+    def test_confidence_score_is_high_at_0_97(self):
+        # |0.97 - 0.5| * 2 = 0.94 >= 0.40 -> HIGH
+        surface = _make_surface(probability_lgb_v9_2_eth=0.97)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "TRADE"
         assert d.confidence == "HIGH"
-        assert d.confidence_score == pytest.approx(0.80)
+        assert d.confidence_score == pytest.approx(0.94)

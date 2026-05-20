@@ -1,0 +1,65 @@
+name: v9_2_eth_down_late
+strategy_id: v9_2_eth_down_late
+version: "1.0.0"
+# v9_2_eth_down_late — 2026-05-20 — DOWN-only late-window ETH 5m strategy.
+#
+# Companion to v9_2_eth_raw_lgb. Reads the same probability_lgb_v9_2_eth field
+# but operates in a DIFFERENT eval_offset band ([60, 90] — the "late window"
+# closest to resolution) at a softer DOWN threshold (p <= 0.10).
+#
+# Per hub note #550 corrected WR-at-threshold sweep, this band has its own
+# strong DOWN pocket that the main v9_2_eth_raw_lgb strategy at [120, 210]
+# does NOT catch (different band, tighter threshold there). The two strategies
+# may overlap on the same DOWN-winning window if it has low-prob ticks in
+# both bands — that's intentional (each strategy stakes $5 independently).
+#
+# Criteria:
+#   DOWN when probability_lgb_v9_2_eth <= 0.10  -> 93.3% WR / ~22 fires/day on test
+#   eval_offset in [60, 90]                     -> last 30s of window
+#   UP gate disabled (up_threshold: 2.0 — calibrated p never reaches 2.0)
+#   One qualifying tick is enough (no N-of-M cohort gate)
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md.
+# $5 max_position_usd. Same daily-loss cap as v9_2_eth_raw_lgb.
+#
+# Hub notes:
+#   #545 (data inventory)
+#   #547 (training-pipeline spec)
+#   #550 (granular WR-at-threshold sweep — late-band DOWN pocket source)
+# Companion strategy: v9_2_eth_raw_lgb (UP/DOWN at [120, 210], thresholds 0.96/0.04).
+# Engine precedent: feat/v9_2_post_iso_column_and_strategies (PR #555).
+#
+status: GHOST
+description: |
+  DOWN-only late-window ETH 5m strategy. Fires on probability_lgb_v9_2_eth
+  <= 0.10 within eval_offset [60, 90] — the strongest DOWN pocket in the
+  late-window region per hub note #550. UP gate disabled. ETH-only
+  (defensive asset guard). No v9_ensemble delegation, no cohort gates, no
+  veto layers, no cell pauses, no blocked hours. GHOST mode, $5
+  max_position_usd. Projected ~22 fires/day at 93.3% WR.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_2_eth_down_late.py
+pre_gate_hook: evaluate_v9_2_eth_down_late
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 2.0       # impossible — disables UP firing entirely (calibrated p ≤ 1.0)
+  down_threshold: 0.10
+  eval_offset_min: 60
+  eval_offset_max: 90
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
