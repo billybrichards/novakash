@@ -385,7 +385,7 @@ async def test_gtc_window_expired_cancel_removes_resting_order():
     )
     assert result.success is True
     assert result.execution_mode == "gtc_resting"
-    assert ("token-expiring", "YES") in executor._active_gtc
+    assert ("", "token-expiring", "YES") in executor._active_gtc
 
     # Simulate window close.
     await executor.cancel_expired_gtc_orders(["token-expiring"])
@@ -395,7 +395,7 @@ async def test_gtc_window_expired_cancel_removes_resting_order():
     assert "0xgtc-open" in client.cancel_calls[0]
 
     # Dedup registry must be cleared — new GTC attempt should be allowed.
-    assert ("token-expiring", "YES") not in executor._active_gtc
+    assert ("", "token-expiring", "YES") not in executor._active_gtc
 
 
 @pytest.mark.asyncio
