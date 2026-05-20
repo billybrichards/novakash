@@ -30,7 +30,16 @@ from domain.value_objects import WindowKey, WindowOutcome
 log = structlog.get_logger(__name__)
 
 _GAMMA_BASE = "https://gamma-api.polymarket.com"
-_SLUG_PREFIX = "btc-updown-5m-"
+_SLUG_PREFIX = "btc-updown-5m-"  # legacy single-asset BTC-5m prefix (kept for back-compat)
+
+# (asset, timeframe) → Polymarket Gamma slug prefix. Markets follow the
+# convention ``<asset>-updown-<tf>-<window_ts>``. Add new pairs here when
+# enabling forward-writer coverage for additional asset/timeframe combos.
+# Source: https://gamma-api.polymarket.com/events?slug=<prefix><window_ts>
+_GAMMA_SLUG_PREFIXES: dict[tuple[str, str], str] = {
+    ("BTC", "5m"): "btc-updown-5m-",
+    ("ETH", "5m"): "eth-updown-5m-",
+}
 
 
 def _coerce_directional_outcome(outcome, poly_winner) -> Optional[str]:
@@ -1831,13 +1840,53 @@ class PgWindowRepository(WindowStateRepository):
     async def populate_oracle_outcomes(
         self, lookback_seconds: int = 900, min_age_seconds: int = 360
     ) -> int:
-        """Poll Polymarket Gamma for resolved 5m BTC UP/DOWN markets and stamp
-        oracle_outcome on window_snapshots. Windows must be between
+        """Poll Polymarket Gamma for resolved UP/DOWN markets and stamp
+        oracle_outcome on window_snapshots for every supported (asset, tf)
+        pair in :data:`_GAMMA_SLUG_PREFIXES`. Windows must be between
         min_age_seconds and lookback_seconds old.
 
         Windows resolve every 5 min; this runs on the 2-min reconcile loop so
         every newly-closed window gets oracle_outcome within ~2 min of Gamma
         publishing resolution.
+
+        Returns total rows updated across all asset/tf pairs.
+        """
+        if not self._pool:
+            return 0
+
+        grand_total = 0
+        for (asset, timeframe), slug_prefix in _GAMMA_SLUG_PREFIXES.items():
+            try:
+                updated = await self._populate_oracle_outcomes_for_pair(
+                    asset=asset,
+                    timeframe=timeframe,
+                    slug_prefix=slug_prefix,
+                    lookback_seconds=lookback_seconds,
+                    min_age_seconds=min_age_seconds,
+                )
+                grand_total += updated
+            except Exception as exc:
+                # Per-pair failure must not abort other pairs. Surface so the
+                # reconciler loop sees the error in logs.
+                log.warning(
+                    "pg_window_repo.poll_oracle_pair_failed",
+                    asset=asset,
+                    timeframe=timeframe,
+                    error=str(exc)[:100],
+                )
+        return grand_total
+
+    async def _populate_oracle_outcomes_for_pair(
+        self,
+        asset: str,
+        timeframe: str,
+        slug_prefix: str,
+        lookback_seconds: int,
+        min_age_seconds: int,
+    ) -> int:
+        """Implementation of populate_oracle_outcomes for a single (asset, tf)
+        pair. Same logic as the legacy BTC-only path, but parameterised so
+        ETH 5m (and future pairs) share the writer.
         """
         if not self._pool:
             return 0
@@ -1846,16 +1895,23 @@ class PgWindowRepository(WindowStateRepository):
                 rows = await conn.fetch(
                     """SELECT DISTINCT window_ts
                        FROM window_snapshots
-                       WHERE asset = 'BTC' AND timeframe = '5m'
+                       WHERE asset = $1 AND timeframe = $2
                          AND oracle_outcome IS NULL
-                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1
-                         AND window_ts > EXTRACT(EPOCH FROM NOW())::bigint - $2
+                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $3
+                         AND window_ts > EXTRACT(EPOCH FROM NOW())::bigint - $4
                        ORDER BY window_ts""",
+                    asset,
+                    timeframe,
                     min_age_seconds,
                     lookback_seconds,
                 )
         except Exception as exc:
-            log.warning("pg_window_repo.poll_oracle_list_failed", error=str(exc)[:100])
+            log.warning(
+                "pg_window_repo.poll_oracle_list_failed",
+                asset=asset,
+                timeframe=timeframe,
+                error=str(exc)[:100],
+            )
             return 0
 
         windows = [r["window_ts"] for r in rows]
@@ -1871,7 +1927,7 @@ class PgWindowRepository(WindowStateRepository):
 
             async def _fetch(ts: int) -> Optional[str]:
                 async with sem:
-                    slug = f"{_SLUG_PREFIX}{ts}"
+                    slug = f"{slug_prefix}{ts}"
                     try:
                         r = await client.get(
                             f"{_GAMMA_BASE}/events", params={"slug": slug}
@@ -1923,6 +1979,8 @@ class PgWindowRepository(WindowStateRepository):
         if not outcomes:
             log.info(
                 "pg_window_repo.poll_oracle_no_resolutions",
+                asset=asset,
+                timeframe=timeframe,
                 polled=len(windows),
             )
             return 0
@@ -1934,21 +1992,27 @@ class PgWindowRepository(WindowStateRepository):
         # paths, but on Montreal those almost never fire — this oracle poll
         # is the only bulk path covering every closed window. Result was that
         # ``window_snapshots.outcome`` stayed NULL on 65% of rows post-deploy.
+        #
+        # 2026-05-20: extended to ETH 5m (was BTC-5m-only). asset/timeframe
+        # now parameterised; ``_GAMMA_SLUG_PREFIXES`` is the source of truth
+        # for which pairs the forward writer covers.
         signal_eval_total = 0
         try:
             async with self._pool.acquire() as conn:
                 for ts, outcome in outcomes:
                     result = await conn.execute(
                         """UPDATE window_snapshots
-                           SET oracle_outcome        = $2,
-                               poly_resolved_outcome = $2,
-                               poly_winner           = $2,
-                               outcome               = COALESCE(outcome, $2)
-                           WHERE asset = 'BTC' AND timeframe = '5m'
-                             AND window_ts = $1
+                           SET oracle_outcome        = $3,
+                               poly_resolved_outcome = $3,
+                               poly_winner           = $3,
+                               outcome               = COALESCE(outcome, $3)
+                           WHERE asset = $1 AND timeframe = $2
+                             AND window_ts = $4
                              AND oracle_outcome IS NULL""",
-                        ts,
+                        asset,
+                        timeframe,
                         outcome,
+                        ts,
                     )
                     total_updated += int(result.split()[-1]) if result else 0
 
@@ -1960,11 +2024,13 @@ class PgWindowRepository(WindowStateRepository):
                             """UPDATE signal_evaluations
                                   SET outcome = $1
                                 WHERE window_ts = $2
-                                  AND asset     = 'BTC'
-                                  AND timeframe = '5m'
+                                  AND asset     = $3
+                                  AND timeframe = $4
                                   AND outcome IS NULL""",
                             outcome,
                             ts,
+                            asset,
+                            timeframe,
                         )
                         signal_eval_total += (
                             int(se_result.split()[-1]) if se_result else 0
@@ -1974,17 +2040,24 @@ class PgWindowRepository(WindowStateRepository):
                         # here is what hid the original regression.
                         log.warning(
                             "pg_window_repo.poll_oracle_signal_eval_failed",
+                            asset=asset,
+                            timeframe=timeframe,
                             error=str(se_exc)[:100],
                             window_ts=ts,
                         )
         except Exception as exc:
             log.warning(
-                "pg_window_repo.poll_oracle_write_failed", error=str(exc)[:100]
+                "pg_window_repo.poll_oracle_write_failed",
+                asset=asset,
+                timeframe=timeframe,
+                error=str(exc)[:100],
             )
             return total_updated
 
         log.info(
             "pg_window_repo.poll_oracle_done",
+            asset=asset,
+            timeframe=timeframe,
             polled=len(windows),
             resolved=len(outcomes),
             rows_updated=total_updated,
