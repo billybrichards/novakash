@@ -35,6 +35,7 @@ from typing import Any, Coroutine, Optional
 
 from domain.ports import (
     PolymarketClientPort,
+    TradeRepository,
     WindowStateRepository,
     WriteOutcome,
 )
@@ -352,6 +353,7 @@ class ExecuteTradeUseCase:
         paper_mode: bool = True,
         exposure_cap_config: Optional[ExposureCapConfig] = None,
         exposure_repo: Optional[ExposureRepository] = None,
+        trade_repo: Optional["TradeRepository"] = None,
     ) -> None:
         self._polymarket = polymarket
         self._executor = order_executor
@@ -361,6 +363,11 @@ class ExecuteTradeUseCase:
         self._recorder = trade_recorder
         self._clock = clock
         self._paper_mode = paper_mode
+        # Authoritative dedup port — drives the strict
+        # (strategy_id, window_ts, direction) HARD lock added after the
+        # 2026-05-20 ETH incident (window 1779312000). Optional for
+        # backward-compat with tests that don't inject it.
+        self._trade_repo: Optional["TradeRepository"] = trade_repo
 
         # Hub #554 exposure caps. Defaults to fully-disabled config when
         # the caller omits these — preserves byte-identical behaviour on
@@ -546,6 +553,77 @@ class ExecuteTradeUseCase:
                 "execute_trade.entry_diag_error",
                 error=str(_diag_exc)[:200],
             )
+
+        # ── Step -0.5: STRICT HARD LOCK (audit 2026-05-20 ETH incident) ───
+        # Authoritative dedup: query trades table directly for any
+        # non-cancelled fill on (strategy_id, window_ts, direction). This is
+        # the FIRST gate because every TTL-based mechanism (lease 15s /
+        # placeholder 25s / order-interval 30s) cleared between the 3 fires
+        # 40s apart on eth-updown-5m-1779312000 (-$21.91 wallet hit).
+        #
+        # Per-direction granularity: locking only (sid, window) would block
+        # legitimate UP after a DOWN-side conviction flip. Per-direction
+        # means: once DOWN fires, DOWN is locked; UP is still open.
+        #
+        # FAIL-CLOSED: adapter returns True on DB error/timeout. Worst case:
+        # one legitimate fire skipped. Best case: prevents another $22 loss.
+        if self._trade_repo is not None and hasattr(
+            self._trade_repo, "has_fill_for_strategy_window_direction"
+        ):
+            try:
+                _hl_tf = getattr(window_key, "timeframe", "5m")
+                _hl_asset = getattr(window_key, "asset", "BTC")
+                _hl_already = await asyncio.wait_for(
+                    self._trade_repo.has_fill_for_strategy_window_direction(
+                        strategy_id=sid,
+                        window_ts=int(window_key.window_ts),
+                        direction=direction,
+                        timeframe=_hl_tf,
+                        asset=_hl_asset,
+                        is_live=(not self._paper_mode),
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                if _hl_already:
+                    log.warning(
+                        "execute_trade.hard_lock_blocked",
+                        strategy=sid,
+                        window=str(window_key),
+                        direction=direction,
+                        window_ts=int(window_key.window_ts),
+                        timeframe=_hl_tf,
+                        asset=_hl_asset,
+                    )
+                    return _failed(
+                        "already_fired_this_window_direction",
+                        strategy_id=sid,
+                        direction=direction,
+                    )
+            except asyncio.TimeoutError:
+                log.error(
+                    "execute_trade.hard_lock_timeout_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                    direction=direction,
+                )
+                return _failed(
+                    "hard_lock_timeout_fail_closed",
+                    strategy_id=sid,
+                    direction=direction,
+                )
+            except Exception as _hl_exc:
+                log.error(
+                    "execute_trade.hard_lock_error_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                    direction=direction,
+                    error=str(_hl_exc)[:200],
+                )
+                return _failed(
+                    "hard_lock_error_fail_closed",
+                    strategy_id=sid,
+                    direction=direction,
+                )
 
         # ── Step 0: Timing recheck (BEFORE claim acquisition) ──────────
         # CRITICAL ORDERING (audit #317 root-cause, 2026-04-26): the

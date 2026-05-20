@@ -594,6 +594,7 @@ class EngineRuntime:
                         paper_mode=_paper,
                         exposure_cap_config=_exposure_cfg,
                         exposure_repo=_exposure_repo,
+                        trade_repo=self._trade_repo_adapter,
                     )
                     self._strategy_registry.wire_execute_uc(self._execute_uc)
                     log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)

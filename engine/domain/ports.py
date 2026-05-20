@@ -702,6 +702,34 @@ class TradeRepository(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    async def has_fill_for_strategy_window_direction(
+        self,
+        *,
+        strategy_id: str,
+        window_ts: int,
+        direction: str,
+        timeframe: str,
+        asset: str,
+        is_live: bool = True,
+    ) -> bool:
+        """HARD lock primitive — returns True if any non-cancelled trade row
+        exists for the (strategy_id, window_ts, direction, timeframe, asset,
+        is_live) tuple.
+
+        Drives the strict single-fire-per-(strategy, window, direction) gate
+        introduced after the 2026-05-20 ETH incident (window 1779312000,
+        v9_2_eth_raw_lgb fired DOWN 3x in 40s, -$21.91 net).
+
+        Implementation MUST:
+        - Filter status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')
+        - Match metadata->>'window_ts'/asset/timeframe with appropriate defaults
+        - Match is_live so paper and live are separate domains
+        - Be FAIL-CLOSED on any DB exception — better to skip ONE legitimate
+          fire than repeat a multi-fire loss.
+        """
+        ...
+
 
 # =====================================================================
 # 4.10  RiskManagerPort  (canonical location: use_cases/ports/risk.py)
