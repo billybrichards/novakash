@@ -1589,6 +1589,35 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.2-style ETH 5m head persistence — write probability_lgb_v9_2_eth
+        # on every tick where the field is populated so the v9_2_eth_raw_lgb
+        # GHOST strategy can be analysed via signal_evaluations the same way
+        # as v9_2 / v9_1 / v12 / post_iso. Hub notes #545/#547/#550.
+        # Fire-and-forget, same pattern as v9_1 / post_iso.
+        v9_2_eth = getattr(surface, "probability_lgb_v9_2_eth", None)
+        if v9_2_eth is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_2_eth"
+        ):
+            try:
+                _v9_2_eth_p = float(v9_2_eth)
+            except (TypeError, ValueError):
+                _v9_2_eth_p = None
+            if _v9_2_eth_p is not None:
+                v9_2_eth_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_2_eth(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_2_eth=_v9_2_eth_p,
+                    )
+                )
+                v9_2_eth_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_2_eth_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
