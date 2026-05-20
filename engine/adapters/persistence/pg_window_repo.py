@@ -24,7 +24,7 @@ import asyncpg
 import httpx
 import structlog
 
-from domain.ports import WindowStateRepository
+from domain.ports import WindowStateRepository, WriteOutcome
 from domain.value_objects import WindowKey, WindowOutcome
 
 log = structlog.get_logger(__name__)
@@ -1092,7 +1092,7 @@ class PgWindowRepository(WindowStateRepository):
         key: WindowKey,
         order_id: str,
         strategy_id: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[WriteOutcome]:
         """Record a fill on the given window.
 
         Audit #321 (2026-04-26): when ``strategy_id`` is provided we ALSO
@@ -1105,9 +1105,35 @@ class PgWindowRepository(WindowStateRepository):
         the legacy ``window_states`` row is still written, but no
         strategy-fill marker. New callsites SHOULD always pass
         ``strategy_id``.
+
+        Returns a :class:`WriteOutcome`:
+
+          * ``COMMITTED``               — this call wrote the canonical
+                                          fill row (NULL/'pending' →
+                                          real ``order_id``).
+          * ``ALREADY_COMMITTED_SAME``  — existing row already had THIS
+                                          ``order_id`` (idempotent replay).
+          * ``SECONDARY_FILL``          — existing row had a DIFFERENT
+                                          real ``order_id``. Caller is
+                                          the second on-chain fill for
+                                          the same (asset, window_ts,
+                                          timeframe, strategy_id) bucket
+                                          and should record a secondary
+                                          ``trades`` row marked
+                                          ``is_secondary_fill=True``.
+
+        Detection is per-strategy: it inspects
+        ``strategy_window_fills`` for the (asset, window_ts, timeframe,
+        strategy_id) row that ``try_claim_fill_slot`` would have
+        written. When ``strategy_id`` is not provided we fall back to
+        the legacy single-row UPSERT semantics and return ``None``.
+
+        Returns ``None`` on DB error or pool absence so callers can
+        treat the unknown outcome as ``COMMITTED`` (safe default —
+        record the trade normally).
         """
         if not self._pool:
-            return
+            return None
         try:
             async with self._pool.acquire() as conn:
                 now = datetime.now(timezone.utc)
@@ -1126,22 +1152,58 @@ class PgWindowRepository(WindowStateRepository):
                     now,
                     order_id,
                 )
+                outcome: Optional[WriteOutcome] = None
                 if strategy_id:
                     # Audit #322 (2026-04-26): when a pessimistic claim
                     # was placed via try_claim_fill_slot the row already
                     # exists with order_id = 'pending'. UPSERT to stamp
                     # the real order_id; without DO UPDATE the row
                     # would stay as the placeholder forever.
-                    await conn.execute(
+                    #
+                    # 2026-05-20 (Hub #554 — sub-fill writer): the
+                    # RETURNING clause now surfaces the row's PREVIOUS
+                    # order_id so the caller can detect SECONDARY_FILL:
+                    # a real fill landing while the row already had a
+                    # DIFFERENT real order_id. This happens when two
+                    # CLOB orders are submitted within the 25 s
+                    # STALE_PLACEHOLDER_TTL window — both end up filling
+                    # on Polymarket but only one strategy_window_fills
+                    # row exists. Without surfacing the conflict, the
+                    # second fill is silently dropped from `trades`
+                    # while the wallet sees both shares booked.
+                    #
+                    # ``xmax = 0`` distinguishes pure INSERT (no row
+                    # existed) from any ON CONFLICT path (existing row
+                    # was updated OR no-op'd). The
+                    # ``existing_order_id`` field carries the previous
+                    # row's order_id when the UPSERT was a conflict
+                    # path; NULL for pure INSERT.
+                    row = await conn.fetchrow(
                         """
-                        INSERT INTO strategy_window_fills
-                            (asset, window_ts, timeframe, strategy_id, order_id, filled_at)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO UPDATE
-                            SET order_id = EXCLUDED.order_id,
-                                filled_at = EXCLUDED.filled_at
-                            WHERE strategy_window_fills.order_id = $7
-                               OR strategy_window_fills.order_id IS NULL
+                        WITH prior AS (
+                            SELECT order_id AS existing_order_id
+                              FROM strategy_window_fills
+                             WHERE asset = $1
+                               AND window_ts = $2
+                               AND timeframe = $3
+                               AND strategy_id = $4
+                            FOR UPDATE
+                        ),
+                        upsert AS (
+                            INSERT INTO strategy_window_fills
+                                (asset, window_ts, timeframe, strategy_id, order_id, filled_at)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO UPDATE
+                                SET order_id = EXCLUDED.order_id,
+                                    filled_at = EXCLUDED.filled_at
+                                WHERE strategy_window_fills.order_id = $7
+                                   OR strategy_window_fills.order_id IS NULL
+                            RETURNING xmax = 0 AS inserted, order_id AS final_order_id
+                        )
+                        SELECT
+                            (SELECT existing_order_id FROM prior)       AS existing_order_id,
+                            (SELECT inserted          FROM upsert)      AS inserted,
+                            (SELECT final_order_id    FROM upsert)      AS final_order_id
                         """,
                         key.asset,
                         key.window_ts,
@@ -1151,14 +1213,45 @@ class PgWindowRepository(WindowStateRepository):
                         now,
                         self.PLACEHOLDER_ORDER_ID,
                     )
+                    existing_order_id = (
+                        row["existing_order_id"] if row else None
+                    )
+                    upsert_inserted = bool(row["inserted"]) if row and row["inserted"] is not None else False
+                    # Outcome classification — order matters:
+                    #   1. No prior row → COMMITTED (pure INSERT).
+                    #   2. Prior was NULL or placeholder → COMMITTED
+                    #      (DO UPDATE path took our row from absent /
+                    #      'pending' to real order_id).
+                    #   3. Prior was THIS order_id → ALREADY_COMMITTED_SAME
+                    #      (idempotent replay — same call landed twice).
+                    #   4. Prior was a DIFFERENT real order_id → SECONDARY_FILL
+                    #      (the actual race we are defending against).
+                    if existing_order_id is None or upsert_inserted:
+                        outcome = WriteOutcome.COMMITTED
+                    elif existing_order_id == self.PLACEHOLDER_ORDER_ID:
+                        outcome = WriteOutcome.COMMITTED
+                    elif existing_order_id == order_id:
+                        outcome = WriteOutcome.ALREADY_COMMITTED_SAME
+                    else:
+                        outcome = WriteOutcome.SECONDARY_FILL
+                        log.warning(
+                            "db.mark_traded.secondary_fill_detected",
+                            key=str(key),
+                            strategy=strategy_id,
+                            existing_order_id=str(existing_order_id)[:32],
+                            new_order_id=str(order_id)[:32],
+                        )
             log.debug(
                 "db.mark_traded",
                 key=str(key),
                 order_id=order_id[:20] if order_id else None,
                 strategy=strategy_id,
+                outcome=outcome.value if outcome is not None else None,
             )
+            return outcome
         except Exception as exc:
             log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
+            return None
 
     async def has_filled(self, key: WindowKey, strategy_id: str) -> bool:
         """Return True if ``strategy_id`` already filled this window.

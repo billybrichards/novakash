@@ -61,10 +61,23 @@ class TradeRecorderPort(abc.ABC):
         decision: StrategyDecision,
         result: ExecutionResult,
         stake: StakeCalculation,
+        *,
+        is_secondary_fill: bool = False,
+        parent_trade_id: str | None = None,
     ) -> None:
         """Persist a completed trade to the trades table.
 
         Fire-and-forget safe -- callers may wrap in asyncio.create_task.
         MUST NOT raise.
+
+        Sub-fill writer (Hub #554, 2026-05-20):
+          When ``is_secondary_fill=True`` the recorder MUST persist the
+          row with the new ``trades.is_secondary_fill`` column set to
+          true and ``trades.parent_trade_id`` set to
+          ``parent_trade_id`` (the primary fill's order_id). This
+          surfaces the second on-chain fill that lands inside the
+          25 s STALE_PLACEHOLDER_TTL window — otherwise it would be
+          silently swallowed by the ``window_states`` UNIQUE
+          constraint while the wallet sees both fills booked.
         """
         ...
