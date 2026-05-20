@@ -241,6 +241,18 @@ class FullDataSurface:
     # Hub note #536 (iso architecture); companion timesfm PR: feat/v9_2_post_iso_layer.
     probability_lgb_v9_2_post_iso: Optional[float] = None
 
+    # v9.2-style ETH 5m LGB head — raw probability for the ETH-trained model.
+    # Emitted by timesfm-service on /v4/snapshot.timescales.5m when
+    # V9_2_ETH_ENABLED=true (companion bg-agent-1 timesfm PR, 2026-05-20).
+    # Read ONLY by the v9_2_eth_raw_lgb GHOST strategy (asset=ETH, 5m).
+    # Recommended operating point per hub note #550: UP >= 0.85, DOWN <= 0.20,
+    # eval_offset in [60, 150]. Projected WR ~92-94% on the v1 test set.
+    # Default None — forward-compatible; prod snapshots without this field
+    # remain valid until the timesfm-side flag is flipped.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # Hub notes #545 (data inventory), #547 (pipeline spec), #550 (training results).
+    probability_lgb_v9_2_eth: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1352,6 +1364,11 @@ class DataSurfaceManager:
             probability_lgb_v9_2_post_iso=(
                 float(ts_data["probability_lgb_v9_2_post_iso"])
                 if ts_data.get("probability_lgb_v9_2_post_iso") is not None
+                else None
+            ),
+            probability_lgb_v9_2_eth=(
+                float(ts_data["probability_lgb_v9_2_eth"])
+                if ts_data.get("probability_lgb_v9_2_eth") is not None
                 else None
             ),
             probability_v2_meta_gate=(
