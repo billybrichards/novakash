@@ -250,7 +250,7 @@ class TestThresholds:
 
     def test_just_below_up_skips(self):
         # 0.95 < 0.96 — below the new UP threshold
-        surface = _make_surface(probability_lgb_v9_2_eth=0.97)
+        surface = _make_surface(probability_lgb_v9_2_eth=0.95)
         with _params():
             d = evaluate_v9_2_eth_raw_lgb(surface)
         assert d.action == "SKIP"

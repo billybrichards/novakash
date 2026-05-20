@@ -152,10 +152,7 @@ def evaluate_v9_2_eth_down_late(surface: "FullDataSurface") -> StrategyDecision:
     meta["consec_tick_count"] = consec_count
     meta["min_consecutive_pass_ticks"] = min_consec
     if consec_count < min_consec:
-        return _skip(
-            f"awaiting_consec_ticks ({consec_count}/{min_consec})",
-            meta,
-        )
+        return _skip("awaiting_consec_ticks", meta)
 
     confidence_score = float(abs(p_eth - 0.5) * 2.0)
     confidence = "HIGH" if confidence_score >= 0.40 else "MODERATE"
