@@ -73,20 +73,42 @@ class DBTradeRecorder(TradeRecorderPort):
         if not result.success:
             return
 
-        # Reject phantom trades: success=True but no actual fill.
-        # gtc_resting returns success=True with fill_price=None when the
-        # order sits on the book unfilled. Recording these as trades
-        # poisons WR/P&L calculations (incident 2026-04-17, Hub note #147).
+        # ── Writer-bypass root-cause fix (2026-05-21, WRITER-BYPASS PR) ─────
+        # PRIOR behaviour (incident 2026-04-17, Hub note #147): we returned
+        # here for ``gtc_resting`` with ``fill_price=None`` to keep "phantom
+        # trades" out of WR/P&L. That patched a downstream poisoning but
+        # opened a much bigger hole: a GTC that LATER FILLS on-chain has
+        # NO trade row to update. Wallet sees the debit, engine sees
+        # nothing — disaster window 1779336900 (2026-05-21 04:18) leaked
+        # ~$42.65 to a GTC fill that landed without ever producing a
+        # ``trades`` row, because Step 7's recorder skipped it.
+        #
+        # NEW behaviour: ALWAYS record a row for a successful
+        # ``execute_order``. For ``gtc_resting`` the row is provisional —
+        # ``fill_price``/``fill_size`` start NULL and only get stamped
+        # when the reconciler matches an on-chain fill against
+        # ``clob_order_id``. Exposure queries already filter
+        # ``COALESCE(fill_size, 0) > 0`` so the provisional row never
+        # double-counts the cap; PR #561's ``v59_mark_phantom_trades``
+        # migration sweeps any never-filled GTCs to ``status='PHANTOM'``
+        # so WR/P&L stays clean. The net is: every on-chain fill now
+        # has a corresponding ``trades`` row, no exception.
+        #
+        # We log the path so audit tooling can grep for ``gtc_resting``
+        # provisional rows that later got matched / phantom-swept.
         if result.fill_price is None and result.execution_mode in ("gtc_resting", "gtc"):
-            logger.warning(
-                "trade_recorder.phantom_rejected",
+            logger.info(
+                "trade_recorder.gtc_resting_provisional_row",
                 extra={
                     "order_id": result.order_id,
                     "execution_mode": result.execution_mode,
-                    "reason": "fill_price is None — refusing to record phantom trade",
+                    "note": (
+                        "recording provisional row with NULL fill_price — "
+                        "reconciler will stamp fill on-chain match or "
+                        "phantom-sweep on window close"
+                    ),
                 },
             )
-            return
 
         # 1. Register with OrderManager
         if self._om is not None:

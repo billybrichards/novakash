@@ -150,10 +150,16 @@ async def test_mark_executed_uses_metadata_window_ts_when_slug_fails():
 
 
 @pytest.mark.asyncio
-async def test_phantom_trade_does_not_mark_executed():
-    """A phantom gtc_resting trade (success=True, fill_price=None) must
-    NOT be recorded — we explicitly reject these upstream (incident
-    2026-04-17). mark_executed must NOT fire."""
+async def test_gtc_resting_records_provisional_row():
+    """Writer-bypass fix (2026-05-21).
+
+    A ``gtc_resting`` success-with-NULL-fill MUST now produce a trades
+    row. Previously the recorder bailed out (incident 2026-04-17 patch),
+    but that opened the worse "GTC fills later, no DB row" hole that
+    leaked ~$42.65 on window 1779336900 (2026-05-21 04:18). New
+    behaviour: provisional row with NULL fill_price/fill_size + the
+    reconciler stamps the real fill via clob_order_id when it lands.
+    """
     repo = _FakeRepo()
     db = MagicMock()
     db.update_window_trade_placed = AsyncMock()
@@ -164,8 +170,8 @@ async def test_phantom_trade_does_not_mark_executed():
     )
     result = ExecutionResult(
         success=True,
-        order_id="0xphantom",
-        fill_price=None,         # phantom
+        order_id="0xresting",
+        fill_price=None,         # GTC sitting on book
         fill_size=None,
         stake_usd=4.0,
         fee_usd=0.0,
@@ -178,8 +184,15 @@ async def test_phantom_trade_does_not_mark_executed():
 
     await recorder.record_trade(_decision(), result, _stake())
 
-    # Recorder returned early — no strategy_decisions update either.
-    assert repo.calls == []
+    # mark_executed IS called for the provisional row so the
+    # strategy_decisions row gets the GTC's clob_order_id attached.
+    # fill_price / fill_size stay NULL until reconciler stamps them.
+    assert len(repo.calls) == 1
+    c = repo.calls[0]
+    assert c["strategy_id"] == "v6_sniper"
+    assert c["order_id"] == "0xresting"
+    assert c["fill_price"] is None
+    assert c["fill_size"] is None
 
 
 @pytest.mark.asyncio
