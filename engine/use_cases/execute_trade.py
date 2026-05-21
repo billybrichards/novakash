@@ -45,6 +45,10 @@ from use_cases.exposure_caps import (
     ExposureRepository,
     check_exposure_caps,
 )
+from use_cases.onchain_position_cap import (
+    check_onchain_window_cap,
+    get_window_cap_pm_usd,
+)
 from domain.value_objects import (
     ExecutionResult,
     RiskStatus,
@@ -1015,6 +1019,81 @@ class ExecuteTradeUseCase:
                     strategy=sid,
                     window=str(window_key),
                     error=str(exc)[:200],
+                )
+
+        # ── Step 4.6: ON-CHAIN authoritative per-window cap ─────────────
+        # Audit 2026-05-21 disaster window 1779336900: ~$69 actual on-chain
+        # loss but DB only recorded $26.70 — sub-fill writer (PR #561) drops
+        # rungs on FAK rebound + cross-strategy rapid fires. The trades-table
+        # cap (Step 4.5) can't see those missing fills. The data-api positions
+        # endpoint sees the truth.
+        #
+        # OPT-IN via env RISK_MAX_STAKE_PER_WINDOW_USD_PM (default OFF).
+        # FAIL-CLOSED on any error: block the trade. Better to skip ONE
+        # legit fire than repeat a $69 multi-fill writer-bypass loss.
+        _pm_cap = get_window_cap_pm_usd()
+        if _pm_cap is not None:
+            _funder = (
+                os.environ.get("POLY_FUNDER_ADDRESS", "")
+                or "0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10"
+            )
+            _cond = getattr(window_market, "condition_id", "") or ""
+            try:
+                _pm_skip = await asyncio.wait_for(
+                    check_onchain_window_cap(
+                        funder_address=_funder,
+                        condition_id=_cond,
+                        direction=direction,
+                        new_stake_usd=stake.adjusted_stake,
+                        cap_usd=_pm_cap,
+                    ),
+                    timeout=1.5,  # 0.8s HTTP + 0.5s slack + buffer
+                )
+                _log_step("onchain_cap", blocked=bool(_pm_skip))
+                if _pm_skip:
+                    log.warning(
+                        "execute_trade.onchain_cap_blocked",
+                        strategy=sid,
+                        window=str(window_key),
+                        failure_reason=_pm_skip,
+                        stake=stake.adjusted_stake,
+                        cap_usd=_pm_cap,
+                    )
+                    await _release_claim(_pm_skip)
+                    return _failed(
+                        _pm_skip,
+                        strategy_id=sid,
+                        direction=direction,
+                        stake_usd=stake.adjusted_stake,
+                    )
+            except asyncio.TimeoutError:
+                # FAIL-CLOSED on timeout (different from Step 4.5 which is
+                # fail-OPEN). The whole point of this cap is to catch
+                # writer-gap scenarios — letting it fail-open would
+                # defeat the purpose.
+                log.warning(
+                    "execute_trade.onchain_cap_timeout_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                )
+                await _release_claim("onchain_cap_timeout")
+                return _failed(
+                    "exposure_cap_window_pm_unavailable",
+                    strategy_id=sid,
+                    direction=direction,
+                )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.onchain_cap_error_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                    error=str(exc)[:200],
+                )
+                await _release_claim("onchain_cap_error")
+                return _failed(
+                    "exposure_cap_window_pm_unavailable",
+                    strategy_id=sid,
+                    direction=direction,
                 )
 
         # ── Step 5: Token ID resolution ────────────────────────────────
