@@ -1047,7 +1047,7 @@ class ExecuteTradeUseCase:
                         new_stake_usd=stake.adjusted_stake,
                         cap_usd=_pm_cap,
                     ),
-                    timeout=1.5,  # 0.8s HTTP + 0.5s slack + buffer
+                    timeout=4.0,  # 3.0s HTTP + slack — observed 1.0-1.5s typical, p99 2.5s from Montreal
                 )
                 _log_step("onchain_cap", blocked=bool(_pm_skip))
                 if _pm_skip:

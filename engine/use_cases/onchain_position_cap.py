@@ -33,7 +33,11 @@ log = structlog.get_logger(__name__)
 
 _POSITIONS_URL = "https://data-api.polymarket.com/positions"
 _CACHE_TTL_S = 5.0
-_HTTP_TIMEOUT_S = 0.8
+# data-api positions endpoint observed latency from Montreal:
+# typical 1.0-1.5s, p99 ~2.5s. Original 0.8s timeout failed every call
+# (-3rd recurrence pattern). Bumped to 3.5s outer / 3.0s inner with the
+# 5s in-process cache absorbing repeated lookups within the same tick burst.
+_HTTP_TIMEOUT_S = 3.0
 
 # {(funder, condition_id): (timestamp, total_cost_usdc_for_outcome_yes, total_cost_usdc_for_outcome_no)}
 _cache: dict[tuple[str, str], tuple[float, float, float]] = {}
