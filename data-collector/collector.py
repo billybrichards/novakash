@@ -16,6 +16,7 @@ Rate-limit aware:
 import asyncio
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -254,6 +255,173 @@ class RateLimiter:
 _limiter = RateLimiter()
 
 
+# ─── Polymarket HTML priceToBeat fallback ─────────────────────────────────────
+# audit #533 (2026-05-16): Gamma's eventMetadata.priceToBeat publishes
+# 60-180s+ after window open and frequently lags or stays None for the
+# active window. The engine's PolymarketHTMLPriceToBeatFeed reads the
+# canonical priceToBeat directly from the polymarket.com event page
+# (server-rendered into __NEXT_DATA__) within 1-3s of window boundary —
+# the value the UI displays. Mirror that fallback here so market_data.
+# open_price gets populated for ACTIVE windows, otherwise v9_2 LGB sees
+# train-serve skew (priceToBeat-aligned features expected; gets None
+# during the entire window).
+
+_POLY_HTML_BASE = "https://polymarket.com/event"
+_POLY_HTML_TIMEOUT_SECS = 8.0
+_POLY_HTML_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) "
+    "Gecko/20100101 Firefox/120.0"
+)
+_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+    re.DOTALL,
+)
+# Process-wide positive cache for HTML priceToBeat lookups. Once captured
+# for a (asset, tf, window_ts) tuple, the value never changes — store
+# it permanently for the lifetime of the process. FIFO eviction at 256.
+_HTML_PTB_CACHE: dict = {}
+_HTML_PTB_CACHE_MAX = 256
+
+
+def _epoch_to_iso_z(epoch_seconds: int) -> Optional[str]:
+    """Convert epoch seconds to Polymarket past-results ISO format."""
+    try:
+        dt = datetime.fromtimestamp(int(epoch_seconds), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+async def fetch_html_price_to_beat(
+    session: aiohttp.ClientSession,
+    asset: str,
+    timeframe: str,
+    window_ts: int,
+) -> Optional[float]:
+    """Scrape Polymarket public event HTML for canonical priceToBeat.
+
+    Mirrors engine/data/feeds/polymarket_html_pricetobeat.py logic:
+      1. Try ``eventMetadata.priceToBeat`` from __NEXT_DATA__.
+      2. Fall back to scanning ``past-results`` for the entry whose
+         ``endTime`` equals window_ts (= priceToBeat for THIS window).
+
+    Returns None on any failure — never raises.
+    """
+    cache_key = (asset, timeframe, int(window_ts))
+    cached = _HTML_PTB_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    slug = f"{asset.lower()}-updown-{timeframe}-{int(window_ts)}"
+    url = f"{_POLY_HTML_BASE}/{slug}"
+    headers = {"User-Agent": _POLY_HTML_UA, "Accept": "text/html"}
+    try:
+        async with session.get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=_POLY_HTML_TIMEOUT_SECS)
+        ) as resp:
+            if resp.status != 200:
+                log.debug("html_ptb.http", status=resp.status, slug=slug)
+                return None
+            html = await resp.text()
+    except Exception as exc:
+        log.debug("html_ptb.fetch_error", slug=slug, error=str(exc)[:120])
+        return None
+
+    m = _NEXT_DATA_RE.search(html)
+    if not m:
+        return None
+    try:
+        next_data = json.loads(m.group(1))
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    # ── Source 1: queryKey == ['/api/event/slug', slug] eventMetadata.priceToBeat ──
+    # Mirrors engine/data/feeds/polymarket_html_pricetobeat.py:_parse_price_to_beat_from_html.
+    # Populated for resolved windows. For ACTIVE windows it's usually None
+    # and we fall through to source 2.
+    try:
+        queries = next_data["props"]["pageProps"]["dehydratedState"]["queries"]
+    except (KeyError, TypeError):
+        return None
+    if not isinstance(queries, list):
+        return None
+
+    ptb_val: Optional[float] = None
+    for q in queries:
+        if not isinstance(q, dict):
+            continue
+        qk = q.get("queryKey")
+        if not isinstance(qk, list) or len(qk) < 2:
+            continue
+        if qk[0] != "/api/event/slug" or qk[1] != slug:
+            continue
+        try:
+            em = q["state"]["data"]["eventMetadata"]
+        except (KeyError, TypeError):
+            em = None
+        if isinstance(em, dict):
+            raw = em.get("priceToBeat")
+            if raw is not None:
+                try:
+                    v = float(raw)
+                    if v > 0:
+                        ptb_val = v
+                except (TypeError, ValueError):
+                    pass
+        break  # found the slug entry; fall through to past-results if no PTB
+
+    # ── Source 2: past-results — find entry whose endTime == window_ts ──
+    # Polymarket samples the same Chainlink point for window N close and
+    # window N+1 priceToBeat, so the past-results entry whose endTime
+    # equals our window_ts has closePrice = our priceToBeat. Path is
+    # state.data.data.results (note double 'data' — react-query envelope).
+    if ptb_val is None:
+        target_iso = _epoch_to_iso_z(window_ts)
+        if target_iso is None:
+            return None
+        for q in queries:
+            if not isinstance(q, dict):
+                continue
+            qk = q.get("queryKey")
+            if not isinstance(qk, list) or len(qk) < 1:
+                continue
+            if qk[0] != "past-results":
+                continue
+            try:
+                results = q["state"]["data"]["data"]["results"]
+            except (KeyError, TypeError):
+                continue
+            if not isinstance(results, list):
+                continue
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                end_time = r.get("endTime")
+                if end_time == target_iso:
+                    cp = r.get("closePrice")
+                    if cp is not None:
+                        try:
+                            v = float(cp)
+                            if v > 0:
+                                ptb_val = v
+                                break
+                        except (TypeError, ValueError):
+                            pass
+            if ptb_val is not None:
+                break
+
+    if ptb_val is not None and ptb_val > 0:
+        if len(_HTML_PTB_CACHE) >= _HTML_PTB_CACHE_MAX:
+            # FIFO evict — drop oldest entry
+            try:
+                _HTML_PTB_CACHE.pop(next(iter(_HTML_PTB_CACHE)))
+            except StopIteration:
+                pass
+        _HTML_PTB_CACHE[cache_key] = ptb_val
+        return ptb_val
+    return None
+
+
 def _current_window_ts(duration: int) -> int:
     """Get the current window timestamp aligned to duration."""
     now = int(time.time())
@@ -301,6 +469,29 @@ async def fetch_current_markets(session: aiohttp.ClientSession, asset: str,
                                 price_to_beat = ptb_val
                         except (TypeError, ValueError):
                             pass
+
+                # ── audit #533 (2026-05-16): HTML fallback ──
+                # Gamma's eventMetadata.priceToBeat lags 60-180s+ behind
+                # window open and frequently stays None for the active
+                # window. Polymarket's HTML page server-renders the same
+                # value within 1-3s. When Gamma returns None, scrape
+                # the HTML page directly. Without this, market_data.
+                # open_price is NULL throughout the active window, which
+                # gives v9_2 LGB a permanent train-serve skew (it expects
+                # priceToBeat-aligned features but receives None).
+                if price_to_beat is None:
+                    ptb_html = await fetch_html_price_to_beat(
+                        session, asset, timeframe, window_ts
+                    )
+                    if ptb_html is not None and ptb_html > 0:
+                        price_to_beat = ptb_html
+                        log.info(
+                            "html_ptb.fallback_hit",
+                            asset=asset,
+                            timeframe=timeframe,
+                            window_ts=window_ts,
+                            price_to_beat=ptb_html,
+                        )
 
                 markets = event.get("markets", [])
                 for market in markets:
