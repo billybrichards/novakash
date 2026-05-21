@@ -35,9 +35,20 @@ from typing import Any, Coroutine, Optional
 
 from domain.ports import (
     PolymarketClientPort,
+    TradeRepository,
     WindowStateRepository,
+    WriteOutcome,
 )
 from use_cases.ports import AlerterPort, Clock, OrderExecutionPort, RiskManagerPort, TradeRecorderPort
+from use_cases.exposure_caps import (
+    ExposureCapConfig,
+    ExposureRepository,
+    check_exposure_caps,
+)
+from use_cases.onchain_position_cap import (
+    check_onchain_window_cap,
+    get_window_cap_pm_usd,
+)
 from domain.value_objects import (
     ExecutionResult,
     RiskStatus,
@@ -344,6 +355,9 @@ class ExecuteTradeUseCase:
         clock: Clock,
         *,
         paper_mode: bool = True,
+        exposure_cap_config: Optional[ExposureCapConfig] = None,
+        exposure_repo: Optional[ExposureRepository] = None,
+        trade_repo: Optional["TradeRepository"] = None,
     ) -> None:
         self._polymarket = polymarket
         self._executor = order_executor
@@ -353,8 +367,50 @@ class ExecuteTradeUseCase:
         self._recorder = trade_recorder
         self._clock = clock
         self._paper_mode = paper_mode
+        # Authoritative dedup port — drives the strict
+        # (strategy_id, window_ts, direction) HARD lock added after the
+        # 2026-05-20 ETH incident (window 1779312000). Optional for
+        # backward-compat with tests that don't inject it.
+        self._trade_repo: Optional["TradeRepository"] = trade_repo
 
-        # Guardrails (stateful -- mirrors five_min_vpin guardrails)
+        # Hub #554 exposure caps. Defaults to fully-disabled config when
+        # the caller omits these — preserves byte-identical behaviour on
+        # the BTC 5m hot path while the env vars are unset.
+        self._exposure_cap_config: ExposureCapConfig = (
+            exposure_cap_config or ExposureCapConfig()
+        )
+        self._exposure_repo: Optional[ExposureRepository] = exposure_repo
+
+        # Guardrails (stateful -- mirrors five_min_vpin guardrails).
+        #
+        # Hub note #541 (2026-05-19) — cross-strategy rate-limit collision:
+        # the original implementation kept a SINGLE process-wide
+        # `_last_order_time` / `_order_timestamps`. When two LIVE strategies
+        # qualified the same (window_ts, direction), the first to fire ticked
+        # the global clock and every subsequent LIVE strategy was
+        # `guardrail_blocked: rate_limit` for 30s. Forensics on the
+        # 2026-05-18→05-19 v12_meta_gate LIVE window: 26 TRADE candidates,
+        # only 6 fired; the engine systematically selected the losing UP set
+        # and skipped 11/11 winning DOWN candidates.
+        #
+        # Fix: scope `_last_order_time` and `_order_timestamps` per
+        # strategy_id. The 30s inter-order interval was designed to prevent
+        # SAME-strategy spam within a single window, not to gate parallel
+        # strategies. Hourly cap stays global as a safety backstop.
+        #
+        # Feature flag `EXECUTE_PER_STRATEGY_GUARDRAILS=false` reverts to the
+        # legacy global behaviour for emergency rollback. Default is on.
+        self._per_strategy_guardrails = (
+            os.environ.get(
+                "EXECUTE_PER_STRATEGY_GUARDRAILS", "true"
+            ).strip().lower()
+            not in ("false", "0", "no", "off")
+        )
+        # Per-strategy state (used when _per_strategy_guardrails is True):
+        self._order_timestamps_by_strategy: dict[str, list[float]] = {}
+        self._last_order_time_by_strategy: dict[str, float] = {}
+        # Legacy global state (used when the flag is False, and as a backing
+        # store for the global hourly cap regardless of flag):
         self._order_timestamps: list[float] = []
         self._last_order_time: float = 0.0
         self._consecutive_errors: int = 0
@@ -501,6 +557,77 @@ class ExecuteTradeUseCase:
                 "execute_trade.entry_diag_error",
                 error=str(_diag_exc)[:200],
             )
+
+        # ── Step -0.5: STRICT HARD LOCK (audit 2026-05-20 ETH incident) ───
+        # Authoritative dedup: query trades table directly for any
+        # non-cancelled fill on (strategy_id, window_ts, direction). This is
+        # the FIRST gate because every TTL-based mechanism (lease 15s /
+        # placeholder 25s / order-interval 30s) cleared between the 3 fires
+        # 40s apart on eth-updown-5m-1779312000 (-$21.91 wallet hit).
+        #
+        # Per-direction granularity: locking only (sid, window) would block
+        # legitimate UP after a DOWN-side conviction flip. Per-direction
+        # means: once DOWN fires, DOWN is locked; UP is still open.
+        #
+        # FAIL-CLOSED: adapter returns True on DB error/timeout. Worst case:
+        # one legitimate fire skipped. Best case: prevents another $22 loss.
+        if self._trade_repo is not None and hasattr(
+            self._trade_repo, "has_fill_for_strategy_window_direction"
+        ):
+            try:
+                _hl_tf = getattr(window_key, "timeframe", "5m")
+                _hl_asset = getattr(window_key, "asset", "BTC")
+                _hl_already = await asyncio.wait_for(
+                    self._trade_repo.has_fill_for_strategy_window_direction(
+                        strategy_id=sid,
+                        window_ts=int(window_key.window_ts),
+                        direction=direction,
+                        timeframe=_hl_tf,
+                        asset=_hl_asset,
+                        is_live=(not self._paper_mode),
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                if _hl_already:
+                    log.warning(
+                        "execute_trade.hard_lock_blocked",
+                        strategy=sid,
+                        window=str(window_key),
+                        direction=direction,
+                        window_ts=int(window_key.window_ts),
+                        timeframe=_hl_tf,
+                        asset=_hl_asset,
+                    )
+                    return _failed(
+                        "already_fired_this_window_direction",
+                        strategy_id=sid,
+                        direction=direction,
+                    )
+            except asyncio.TimeoutError:
+                log.error(
+                    "execute_trade.hard_lock_timeout_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                    direction=direction,
+                )
+                return _failed(
+                    "hard_lock_timeout_fail_closed",
+                    strategy_id=sid,
+                    direction=direction,
+                )
+            except Exception as _hl_exc:
+                log.error(
+                    "execute_trade.hard_lock_error_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                    direction=direction,
+                    error=str(_hl_exc)[:200],
+                )
+                return _failed(
+                    "hard_lock_error_fail_closed",
+                    strategy_id=sid,
+                    direction=direction,
+                )
 
         # ── Step 0: Timing recheck (BEFORE claim acquisition) ──────────
         # CRITICAL ORDERING (audit #317 root-cause, 2026-04-26): the
@@ -813,7 +940,10 @@ class ExecuteTradeUseCase:
             )
 
         # ── Step 4: Guardrails ─────────────────────────────────────────
-        ok, guard_reason = self._check_guardrails()
+        # Hub note #541: pass strategy_id so the 30s rate-limit interval
+        # is scoped per-strategy (parallel LIVE strategies no longer
+        # collide on a single global timer).
+        ok, guard_reason = self._check_guardrails(strategy_id=sid)
         if not ok:
             log.info(
                 "execute_trade.guardrail_blocked",
@@ -829,6 +959,142 @@ class ExecuteTradeUseCase:
                 direction=direction,
                 stake_usd=stake.adjusted_stake,
             )
+
+        # ── Step 4.5: Exposure caps (Hub #554) ─────────────────────────
+        # Three barriers — per-window, per-asset, daily — all OFF by
+        # default. When every cap is disabled the helper short-circuits
+        # without touching the DB so the BTC 5 m hot path stays
+        # byte-identical to pre-fix behaviour.
+        #
+        # Placed AFTER risk + guardrails (those use no DB) but BEFORE
+        # token resolution + the pessimistic fill-slot claim so we
+        # bail out as cheaply as possible when the cap blocks. The
+        # claim is still held — Step 1's lease will TTL-out cleanly,
+        # and ``_release_claim`` runs on the early-return path below.
+        if (
+            self._exposure_repo is not None
+            and not self._exposure_cap_config.all_disabled
+        ):
+            try:
+                cap_reason = await asyncio.wait_for(
+                    check_exposure_caps(
+                        config=self._exposure_cap_config,
+                        repo=self._exposure_repo,
+                        asset=window_key.asset,
+                        window_ts=int(window_key.window_ts),
+                        timeframe=window_key.timeframe,
+                        proposed_stake_usd=stake.adjusted_stake,
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                _log_step("exposure_caps", blocked=bool(cap_reason))
+                if cap_reason:
+                    log.info(
+                        "execute_trade.exposure_cap_blocked",
+                        strategy=sid,
+                        window=str(window_key),
+                        failure_reason=cap_reason,
+                        stake=stake.adjusted_stake,
+                    )
+                    await _release_claim("exposure_cap_blocked")
+                    return _failed(
+                        cap_reason,
+                        strategy_id=sid,
+                        direction=direction,
+                        stake_usd=stake.adjusted_stake,
+                    )
+            except asyncio.TimeoutError:
+                # Fail-OPEN on timeout — matches every other DB read in
+                # this flow (the engine's drawdown / daily-pnl kill
+                # switches are the backstop for runaway exposure).
+                log.warning(
+                    "execute_trade.exposure_caps_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.exposure_caps_error",
+                    strategy=sid,
+                    window=str(window_key),
+                    error=str(exc)[:200],
+                )
+
+        # ── Step 4.6: ON-CHAIN authoritative per-window cap ─────────────
+        # Audit 2026-05-21 disaster window 1779336900: ~$69 actual on-chain
+        # loss but DB only recorded $26.70 — sub-fill writer (PR #561) drops
+        # rungs on FAK rebound + cross-strategy rapid fires. The trades-table
+        # cap (Step 4.5) can't see those missing fills. The data-api positions
+        # endpoint sees the truth.
+        #
+        # OPT-IN via env RISK_MAX_STAKE_PER_WINDOW_USD_PM (default OFF).
+        # FAIL-CLOSED on any error: block the trade. Better to skip ONE
+        # legit fire than repeat a $69 multi-fill writer-bypass loss.
+        _pm_cap = get_window_cap_pm_usd()
+        if _pm_cap is not None:
+            _funder = (
+                os.environ.get("POLY_FUNDER_ADDRESS", "")
+                or "0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10"
+            )
+            _slug = getattr(window_market, "market_slug", "") or ""
+            try:
+                _pm_skip = await asyncio.wait_for(
+                    check_onchain_window_cap(
+                        funder_address=_funder,
+                        market_slug=_slug,
+                        direction=direction,
+                        new_stake_usd=stake.adjusted_stake,
+                        cap_usd=_pm_cap,
+                    ),
+                    timeout=4.0,  # 3.0s HTTP + slack — observed 1.0-1.5s typical, p99 2.5s from Montreal
+                )
+                _log_step("onchain_cap", blocked=bool(_pm_skip))
+                if _pm_skip:
+                    log.warning(
+                        "execute_trade.onchain_cap_blocked",
+                        strategy=sid,
+                        window=str(window_key),
+                        failure_reason=_pm_skip,
+                        stake=stake.adjusted_stake,
+                        cap_usd=_pm_cap,
+                    )
+                    await _release_claim(_pm_skip)
+                    return _failed(
+                        _pm_skip,
+                        strategy_id=sid,
+                        direction=direction,
+                        stake_usd=stake.adjusted_stake,
+                    )
+            except asyncio.TimeoutError:
+                # FAIL-CLOSED on timeout (different from Step 4.5 which is
+                # fail-OPEN). The whole point of this cap is to catch
+                # writer-gap scenarios — letting it fail-open would
+                # defeat the purpose.
+                log.warning(
+                    "execute_trade.onchain_cap_timeout_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                )
+                await _release_claim("onchain_cap_timeout")
+                return _failed(
+                    "exposure_cap_window_pm_unavailable",
+                    strategy_id=sid,
+                    direction=direction,
+                )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.onchain_cap_error_fail_closed",
+                    strategy=sid,
+                    window=str(window_key),
+                    error=str(exc)[:200],
+                )
+                await _release_claim("onchain_cap_error")
+                return _failed(
+                    "exposure_cap_window_pm_unavailable",
+                    strategy_id=sid,
+                    direction=direction,
+                )
 
         # ── Step 5: Token ID resolution ────────────────────────────────
         if direction == "DOWN":
@@ -1239,6 +1505,7 @@ class ExecuteTradeUseCase:
             # NOT delete it (release_fill_slot is order_id='pending' scoped,
             # but skipping the call entirely is cleaner than relying on the
             # WHERE clause being correct forever).
+            mark_outcome: Optional[WriteOutcome] = None
             try:
                 try:
                     # Audit 2026-04-28: ``asyncio.shield`` is load-bearing.
@@ -1263,7 +1530,12 @@ class ExecuteTradeUseCase:
                     # ``committed=True`` to fire so the finally backstop
                     # doesn't roll back the slot (the fill is real on
                     # CLOB regardless of our DB state).
-                    await asyncio.shield(
+                    #
+                    # Hub #554 (2026-05-20): mark_traded now returns a
+                    # :class:`WriteOutcome`. When SECONDARY_FILL we'll
+                    # record a second ``trades`` row below tagged with
+                    # ``is_secondary_fill=True``.
+                    mark_outcome = await asyncio.shield(
                         asyncio.wait_for(
                             self._window_state.mark_traded(
                                 window_key,
@@ -1275,7 +1547,7 @@ class ExecuteTradeUseCase:
                     )
                 except TypeError:
                     # Legacy port impl without strategy_id kwarg.
-                    await asyncio.shield(
+                    mark_outcome = await asyncio.shield(
                         asyncio.wait_for(
                             self._window_state.mark_traded(
                                 window_key,
@@ -1284,7 +1556,12 @@ class ExecuteTradeUseCase:
                             timeout=DB_AWAIT_TIMEOUT_S,
                         )
                     )
-                _log_step("mark_traded")
+                _log_step(
+                    "mark_traded",
+                    outcome=(
+                        mark_outcome.value if mark_outcome is not None else None
+                    ),
+                )
             except asyncio.TimeoutError:
                 log.warning(
                     "execute_trade.mark_traded_timeout",
@@ -1315,6 +1592,75 @@ class ExecuteTradeUseCase:
             # DB hiccup, and has_filled() reads the same table so future
             # attempts still short-circuit on a successful UPSERT.
             committed = True
+
+            # ── Step 8a: Sub-fill writer (Hub #554) ────────────────────────
+            # When mark_traded reported SECONDARY_FILL, this call is the
+            # SECOND on-chain fill for the same (asset, window_ts,
+            # timeframe, strategy_id) inside the 25 s
+            # STALE_PLACEHOLDER_TTL window. Step 7 already recorded the
+            # row above with the canonical fields; that row IS the primary
+            # fill from the writer's perspective — but the wallet sees
+            # BOTH on-chain transactions debited. We need a second
+            # ``trades`` row tagged ``is_secondary_fill=True`` and
+            # ``parent_trade_id=<existing primary order_id>`` so audit
+            # tooling can pair them and dashboards stop under-counting
+            # stake.
+            #
+            # The primary fill's order_id is the ``existing_order_id``
+            # that ``mark_traded`` saw in ``strategy_window_fills`` BEFORE
+            # this call — we don't have direct access to it here without
+            # an extra query. Fortunately the writer only needs SOME
+            # parent pointer; we pass our own result.order_id as the
+            # parent (a forward link from secondary → its own primary
+            # would be self-referential, so we use a sentinel of the
+            # original `strategy_window_fills` order_id-by-key lookup if
+            # the adapter exposes it; otherwise None is acceptable —
+            # ``is_secondary_fill=True`` alone is enough for the
+            # aggregation queries to exclude it).
+            if mark_outcome is WriteOutcome.SECONDARY_FILL:
+                try:
+                    log.warning(
+                        "execute_trade.secondary_fill_writer",
+                        strategy=sid,
+                        window=str(window_key),
+                        new_order_id=(result.order_id or "")[:32],
+                    )
+                    await asyncio.wait_for(
+                        self._recorder.record_trade(
+                            decision,
+                            result,
+                            stake,
+                            is_secondary_fill=True,
+                            parent_trade_id=result.order_id,
+                        ),
+                        timeout=DB_AWAIT_TIMEOUT_S,
+                    )
+                    _log_step("record_trade_secondary_fill")
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "execute_trade.secondary_fill_record_timeout",
+                        strategy=sid,
+                        window=str(window_key),
+                        timeout_s=DB_AWAIT_TIMEOUT_S,
+                    )
+                except TypeError:
+                    # Legacy recorder without is_secondary_fill kwarg —
+                    # fall back to plain record_trade so the row at
+                    # least lands (without the secondary tag).
+                    try:
+                        await self._recorder.record_trade(
+                            decision, result, stake
+                        )
+                    except Exception as legacy_exc:
+                        log.warning(
+                            "execute_trade.secondary_fill_legacy_recorder_error",
+                            error=str(legacy_exc)[:200],
+                        )
+                except Exception as exc:
+                    log.warning(
+                        "execute_trade.secondary_fill_record_error",
+                        error=str(exc)[:200],
+                    )
 
             # ── Step 8b: Unconditional FILL card (fire-and-forget) ─────────
             # Every successful fill on Polymarket gets a short confirmation
@@ -1415,7 +1761,10 @@ class ExecuteTradeUseCase:
                 )
 
             # ── Step 10: Update guardrail state ────────────────────────────
-            self._record_order_placed()
+            # Hub note #541: thread strategy_id so the 30s rate-limit
+            # interval is recorded against the firing strategy (parallel
+            # LIVE strategies don't share each other's clocks).
+            self._record_order_placed(strategy_id=sid)
             self._on_order_success()
 
             log.info(
@@ -1859,22 +2208,38 @@ class ExecuteTradeUseCase:
 
     # ─── Guardrails ────────────────────────────────────────────────────
 
-    def _check_guardrails(self) -> tuple[bool, str]:
-        """Rate limit + circuit breaker checks."""
+    def _check_guardrails(self, strategy_id: str = "") -> tuple[bool, str]:
+        """Rate limit + circuit breaker checks.
+
+        Hub note #541 (2026-05-19): the 30s inter-order interval is now
+        scoped PER strategy_id when ``EXECUTE_PER_STRATEGY_GUARDRAILS`` is
+        set (default on). The global hourly cap stays as a process-wide
+        safety backstop irrespective of the flag. The circuit breaker
+        remains global — it indexes on CLOB/infra errors that affect every
+        strategy.
+        """
         now = self._clock.now()
 
-        # Circuit breaker
+        # Circuit breaker (global — guards against CLOB / signer infra
+        # failures that aren't strategy-specific)
         if self._circuit_break_until > now:
             remaining = self._circuit_break_until - now
             return False, f"circuit_breaker: {remaining:.0f}s remaining"
 
-        # Rate limit: min interval between orders
-        if self._last_order_time > 0:
-            elapsed = now - self._last_order_time
+        # Rate limit: min interval between orders for THIS strategy
+        if self._per_strategy_guardrails:
+            last = self._last_order_time_by_strategy.get(strategy_id or "", 0.0)
+        else:
+            last = self._last_order_time
+        if last > 0:
+            elapsed = now - last
             if elapsed < MIN_ORDER_INTERVAL_S:
                 return False, f"rate_limit: {elapsed:.1f}s < {MIN_ORDER_INTERVAL_S}s"
 
-        # Hourly cap
+        # Hourly cap — kept GLOBAL as a process-wide safety backstop.
+        # A single misbehaving strategy stack should never be able to push
+        # the engine past 20 orders/hour even if the rate-limit interval is
+        # cleared by per-strategy scoping.
         cutoff = now - 3600.0
         self._order_timestamps = [ts for ts in self._order_timestamps if ts > cutoff]
         if len(self._order_timestamps) >= MAX_ORDERS_PER_HOUR:
@@ -1885,9 +2250,18 @@ class ExecuteTradeUseCase:
 
         return True, ""
 
-    def _record_order_placed(self) -> None:
-        """Track order timestamp for rate limiting."""
+    def _record_order_placed(self, strategy_id: str = "") -> None:
+        """Track order timestamp for rate limiting.
+
+        Hub note #541: updates BOTH per-strategy and global state so the
+        per-strategy 30s interval and the global hourly cap stay accurate
+        regardless of the feature flag.
+        """
         now = self._clock.now()
+        # Per-strategy (consumed by the 30s interval check)
+        self._last_order_time_by_strategy[strategy_id or ""] = now
+        # Legacy global (kept in sync so the flag flip is safe at any time
+        # and the global hourly cap below sees the order)
         self._last_order_time = now
         self._order_timestamps.append(now)
 

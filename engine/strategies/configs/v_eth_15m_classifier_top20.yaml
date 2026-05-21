@@ -18,7 +18,7 @@ gates:
   - type: direction
     params: { direction: ANY }
   - type: confidence
-    params: { min_dist: 0.12 }
+    params: { min_dist: 0.12, source: classifier }
   - type: session_hours
     params: { block_hours_utc: [0, 1, 4, 10, 12, 16, 18, 22] }
   - type: regime_v4

@@ -27,12 +27,50 @@ Reference implementation: ``margin_engine/domain/ports.py``.
 from __future__ import annotations
 
 import abc
+import enum
 from collections.abc import AsyncIterator
 from typing import Optional, Tuple
 
 from domain.alert_values import (
     CumulativeTally,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Mark-traded outcome enum
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class WriteOutcome(enum.Enum):
+    """Outcome of a ``WindowStateRepository.mark_traded`` call.
+
+    Used by ``ExecuteTradeUseCase`` to detect the "sub-fill" race: two
+    fills land for the same (asset, window_ts, timeframe, strategy_id)
+    inside the 25 s STALE_PLACEHOLDER_TTL window because the engine
+    fires two CLOB orders before the first has confirmed in DB.
+
+    Values:
+        COMMITTED              – first real fill for this window;
+                                 the row was inserted (or upgraded from
+                                 the 'pending' placeholder) with this
+                                 order_id.
+        ALREADY_COMMITTED_SAME – the row already had THIS order_id
+                                 (idempotent replay / restart recovery).
+                                 No second trade row needed.
+        SECONDARY_FILL         – the row already had a DIFFERENT real
+                                 order_id from this call. The caller is
+                                 the second (or later) fill; its
+                                 ExecuteTradeUseCase callsite is
+                                 responsible for recording a secondary
+                                 ``trades`` row tagged
+                                 ``is_secondary_fill=True`` and
+                                 ``parent_trade_id`` pointing at the
+                                 existing primary fill's order_id.
+    """
+
+    COMMITTED = "committed"
+    ALREADY_COMMITTED_SAME = "already_committed_same"
+    SECONDARY_FILL = "secondary_fill"
 from domain.value_objects import (
     ClobSnapshot,
     DeltaSet,
@@ -303,7 +341,7 @@ class WindowStateRepository(abc.ABC):
         key: WindowKey,
         order_id: str,
         strategy_id: Optional[str] = None,
-    ) -> None:
+    ) -> Optional["WriteOutcome"]:
         """Record that a trade was placed for the given window.
 
         Audit #321 (2026-04-26): ``strategy_id`` records WHICH strategy
@@ -311,6 +349,14 @@ class WindowStateRepository(abc.ABC):
         one-fill-per-strategy-per-window. Older callers passing only
         ``order_id`` still work (the column is nullable for backfill
         compatibility).
+
+        Returns a :class:`WriteOutcome` describing whether this call
+        committed the canonical fill row, was an idempotent replay of
+        the same ``order_id``, or detected a SECONDARY fill (existing
+        row had a different real ``order_id``). Legacy adapters may
+        return ``None`` for backwards compatibility — callers that
+        want to record sub-fill rows should treat ``None`` the same
+        as ``WriteOutcome.COMMITTED``.
         """
         ...
 
@@ -653,6 +699,34 @@ class TradeRepository(abc.ABC):
 
         ``window_ts`` is extracted from ``metadata->>'window_ts'`` — it is a
         string in the returned dict; callers must cast to ``int``.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def has_fill_for_strategy_window_direction(
+        self,
+        *,
+        strategy_id: str,
+        window_ts: int,
+        direction: str,
+        timeframe: str,
+        asset: str,
+        is_live: bool = True,
+    ) -> bool:
+        """HARD lock primitive — returns True if any non-cancelled trade row
+        exists for the (strategy_id, window_ts, direction, timeframe, asset,
+        is_live) tuple.
+
+        Drives the strict single-fire-per-(strategy, window, direction) gate
+        introduced after the 2026-05-20 ETH incident (window 1779312000,
+        v9_2_eth_raw_lgb fired DOWN 3x in 40s, -$21.91 net).
+
+        Implementation MUST:
+        - Filter status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')
+        - Match metadata->>'window_ts'/asset/timeframe with appropriate defaults
+        - Match is_live so paper and live are separate domains
+        - Be FAIL-CLOSED on any DB exception — better to skip ONE legitimate
+          fire than repeat a multi-fire loss.
         """
         ...
 

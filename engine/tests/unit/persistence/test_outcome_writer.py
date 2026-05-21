@@ -394,6 +394,49 @@ async def test_populate_oracle_outcomes_writes_outcome_column(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_populate_oracle_outcomes_covers_eth_5m(monkeypatch):
+    """ETH 5m must be polled too. Pre-2026-05-20 the bulk writer was hardcoded
+    BTC-only, so the 1,779+ signal_evaluations rows for ETH 5m that started
+    flowing 2026-05-20 had no outcome column populated. Forward-writer now
+    iterates ``_GAMMA_SLUG_PREFIXES`` and ETH 5m must be in there.
+    """
+    from adapters.persistence import pg_window_repo as repo_mod
+
+    # _GAMMA_SLUG_PREFIXES is the contract: which pairs the bulk writer
+    # actually polls. ETH 5m must be present.
+    assert ("ETH", "5m") in repo_mod._GAMMA_SLUG_PREFIXES
+    assert repo_mod._GAMMA_SLUG_PREFIXES[("ETH", "5m")] == "eth-updown-5m-"
+
+    pool = _RecordingPool(fetch_rows=[{"window_ts": 1779299100}])
+    repo = repo_mod.PgWindowRepository(pool)
+
+    # Stub Gamma so only the ETH-prefixed slug resolves. If the writer is
+    # still BTC-only it will ask for the btc- slug and find nothing →
+    # the test will fail on snap_calls == 0.
+    eth_slug = f"eth-updown-5m-1779299100"
+    monkeypatch.setattr(
+        repo_mod.httpx,
+        "AsyncClient",
+        lambda **_kw: _StubHttpxClient(
+            {eth_slug: _gamma_resolved_payload(eth_slug, "DOWN")}
+        ),
+    )
+
+    n = await repo.populate_oracle_outcomes()
+    assert n >= 1, "ETH 5m window must be resolved + written"
+
+    # The UPDATE for ETH must pass asset='ETH', timeframe='5m' as bind params.
+    update_calls = [c for c in pool.conn.calls if c["sql"].lstrip().startswith("UPDATE")]
+    snap_calls = [c for c in update_calls if "window_snapshots" in c["sql"]]
+    eth_snap = [c for c in snap_calls if "ETH" in c["args"] and "5m" in c["args"]]
+    assert eth_snap, "must UPDATE window_snapshots with asset=ETH timeframe=5m"
+
+    se_calls = [c for c in update_calls if "signal_evaluations" in c["sql"]]
+    eth_se = [c for c in se_calls if "ETH" in c["args"] and "5m" in c["args"]]
+    assert eth_se, "must also bulk-fill signal_evaluations.outcome for ETH 5m"
+
+
+@pytest.mark.asyncio
 async def test_populate_oracle_outcomes_no_resolutions_no_writes(monkeypatch):
     """If Gamma returns no resolved markets, no UPDATE statements should fire."""
     from adapters.persistence import pg_window_repo as repo_mod

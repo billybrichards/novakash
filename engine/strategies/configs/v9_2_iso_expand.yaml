@@ -1,0 +1,59 @@
+name: v9_2_iso_expand
+strategy_id: v9_2_iso_expand
+version: "1.0.0"
+# v9_2_iso_expand — 2026-05-18 — iso-calibrated v9.2 headline thesis variant.
+#
+# Same numerical thresholds as v9_2_raw_lgb (0.72 UP / 0.20 DOWN) but
+# applied to the CALIBRATED probability (probability_lgb_v9_2_post_iso).
+# Because the iso curve shifts probability mass upward in the 0.65-0.80
+# region, the same threshold admits ~44% more qualifying ticks at +1.6pp WR
+# (tick-level, test split, hub note #536).
+#
+# This is the headline thesis variant. If the tick-level lift converts to
+# trade-level lift in shadow, promote this first.
+#
+# Iso calibration metrics (hub note #536):
+#   test ECE: 0.1644 → 0.0216  (-86.9%)
+#   test Brier: 0.2613 → 0.2335  (-10.6%)
+#   UP gate at 0.72: 814 raw → 1,174 cal ticks (+44%), WR 88.3% → 89.9%
+#   DOWN gate at 0.20: 305 raw → 675 cal ticks (+121%), WR 100% → 91.4%
+#
+# Enabled hours: all except 09 and 15 UTC (per-hour WR cliffs,
+#   hub note #524, bg-agent #2 analysis).
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md.
+# Hub notes: #536 (iso architecture), session ~#538 (engine wiring).
+# Companion timesfm PR: feat/v9_2_post_iso_layer.
+#
+status: GHOST
+description: |
+  Headline thesis iso-calibrated v9.2 strategy. Same numerical thresholds
+  as v9_2_raw_lgb (0.72/0.20) applied to calibrated probability. Expected:
+  +44% fires/day, +1.6pp WR vs raw strategy (tick-level). GHOST mode, $5 cap.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_iso_expand.py
+pre_gate_hook: evaluate_v9_2_iso_expand
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.72
+  down_threshold: 0.20
+  eval_offset_min: 60
+  eval_offset_max: 210
+  min_consecutive_pass_ticks: 1
+  # Hours 09 and 15 UTC excluded — per-hour WR cliffs (hub note #524).
+  blocked_hours_utc: [9, 15]
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

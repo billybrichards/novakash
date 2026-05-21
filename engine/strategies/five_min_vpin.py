@@ -236,6 +236,17 @@ def _ensemble_surface_fields(surface) -> dict:
         # first-class access. signal_evaluations is fixed separately by
         # converting the sidecar writer to an upsert.
         "probability_lgb_v9_2": getattr(surface, "probability_lgb_v9_2", None),
+        # 2026-05-18: v9.2 post-hoc iso calibrated probability — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v9_2_post_iso. Emitted when
+        # timesfm V9_2_POST_ISO_ENABLED=true. Default None when absent.
+        # Read by v9_2_iso_* strategy hooks; hub note #536 (architecture).
+        "probability_lgb_v9_2_post_iso": getattr(surface, "probability_lgb_v9_2_post_iso", None),
+        # 2026-05-20: v9.2-style ETH 5m LGB head — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v9_2_eth. Emitted when
+        # timesfm V9_2_ETH_ENABLED=true (companion bg-agent-1 PR). Default
+        # None when absent. Read by v9_2_eth_raw_lgb GHOST strategy
+        # (asset=ETH, 5m). Hub notes #545/#547/#550.
+        "probability_lgb_v9_2_eth": getattr(surface, "probability_lgb_v9_2_eth", None),
         # 2026-05-12: meta gate scores — emitted by timesfm-service on
         # /v4/snapshot. Written to window_snapshots via ensemble_fields
         # upsert so SQL analysis has first-class access.

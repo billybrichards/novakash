@@ -56,9 +56,10 @@ class PgTradeRepository:
                 payout_usd, pnl_usd, created_at, resolved_at, metadata, mode,
                 is_live,
                 engine_version, clob_order_id, fill_price, fill_size, execution_mode,
-                strategy_id, strategy_version
+                strategy_id, strategy_version,
+                is_secondary_fill, parent_trade_id
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-                      $18,$19,$20,$21,$22,$23,$24)
+                      $18,$19,$20,$21,$22,$23,$24,$25,$26)
             ON CONFLICT (order_id) DO UPDATE SET
                 -- Forward transitions (OPEN -> FILLED -> RESOLVED_*) are
                 -- always allowed for status. EXCLUDED.outcome can promote
@@ -85,7 +86,21 @@ class PgTradeRepository:
                 fill_size        = COALESCE(EXCLUDED.fill_size, trades.fill_size),
                 execution_mode   = COALESCE(EXCLUDED.execution_mode, trades.execution_mode),
                 strategy_id      = COALESCE(EXCLUDED.strategy_id, trades.strategy_id),
-                strategy_version = COALESCE(EXCLUDED.strategy_version, trades.strategy_version)
+                strategy_version = COALESCE(EXCLUDED.strategy_version, trades.strategy_version),
+                -- Hub #554 sub-fill writer (2026-05-20).
+                -- ``is_secondary_fill`` is a monotonic upgrade: once
+                -- TRUE it stays TRUE, but a row first persisted as
+                -- primary (FALSE) can be PROMOTED to secondary by a
+                -- later call from ExecuteTradeUseCase.Step 8a — that's
+                -- exactly how the sub-fill writer works (Step 7 lands
+                -- the row with the default FALSE, Step 8 detects the
+                -- mark_traded SECONDARY_FILL race and re-stamps the
+                -- same row with TRUE + parent_trade_id).
+                is_secondary_fill = (
+                    COALESCE(trades.is_secondary_fill, FALSE)
+                    OR COALESCE(EXCLUDED.is_secondary_fill, FALSE)
+                ),
+                parent_trade_id   = COALESCE(EXCLUDED.parent_trade_id, trades.parent_trade_id)
         """
 
         try:
@@ -112,6 +127,12 @@ class PgTradeRepository:
             # by DBTradeRecorder).
             strategy_id = meta.get("strategy_id") or order.strategy or None
             strategy_version = meta.get("strategy_version") or None
+            # Hub #554 sub-fill writer (2026-05-20). Pulled from metadata
+            # (set by DBTradeRecorder when ExecuteTradeUseCase calls
+            # record_trade with is_secondary_fill=True). Default False
+            # / None preserves legacy callers that never set these.
+            is_secondary_fill = bool(meta.get("is_secondary_fill") or False)
+            parent_trade_id = meta.get("parent_trade_id")
 
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -142,6 +163,9 @@ class PgTradeRepository:
                     # strategy identity fields
                     strategy_id,
                     strategy_version,
+                    # Hub #554 sub-fill writer fields
+                    is_secondary_fill,
+                    parent_trade_id,
                 )
             log.debug("db.trade_written", order_id=order.order_id)
         except Exception as exc:
@@ -429,6 +453,13 @@ class PgTradeRepository:
                     ("is_live", "BOOLEAN DEFAULT FALSE"),
                     ("strategy_id", "VARCHAR(64)"),
                     ("strategy_version", "VARCHAR(32)"),
+                    # Hub #554 sub-fill writer (2026-05-20). Canonical
+                    # schema lives in
+                    # hub/db/migrations/versions/20260520_01_trades_sub_fill_columns.sql.
+                    # Added here as defence-in-depth so tests + fresh
+                    # dev DBs don't need the migration to run first.
+                    ("is_secondary_fill", "BOOLEAN DEFAULT FALSE"),
+                    ("parent_trade_id", "TEXT"),
                 ]:
                     await conn.execute(
                         f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {col_type}"
@@ -1056,3 +1087,62 @@ class PgTradeRepository:
                 trade_id=trade_id,
                 error=str(exc)[:200],
             )
+
+    async def has_fill_for_strategy_window_direction(
+        self,
+        *,
+        strategy_id: str,
+        window_ts: int,
+        direction: str,
+        timeframe: str,
+        asset: str,
+        is_live: bool = True,
+    ) -> bool:
+        """HARD lock primitive — see TradeRepository.has_fill_for_strategy_window_direction.
+
+        Authoritative dedup query against the trades table. Independent of
+        every TTL/marker mechanism that failed during the 2026-05-20 ETH
+        incident (window 1779312000, v9_2_eth_raw_lgb fired DOWN 3x in 40s).
+
+        FAIL-CLOSED on any error: return True (block the trade).
+        """
+        if not self._pool:
+            log.warning(
+                "pg_trade_repo.has_fill_no_pool_fail_closed",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=direction,
+            )
+            return True
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT 1
+                    FROM trades
+                    WHERE strategy_id = $1
+                      AND direction = $2
+                      AND COALESCE(metadata->>'window_ts', '')::text = $3::text
+                      AND COALESCE(metadata->>'asset', 'BTC') = $4
+                      AND COALESCE(metadata->>'timeframe', '5m') = $5
+                      AND is_live = $6
+                      AND status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')
+                    LIMIT 1
+                    """,
+                    strategy_id,
+                    direction,
+                    str(int(window_ts)),
+                    asset,
+                    timeframe,
+                    bool(is_live),
+                )
+                return row is not None
+        except Exception as exc:
+            log.error(
+                "pg_trade_repo.has_fill_query_failed_fail_closed",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=direction,
+                error=str(exc)[:200],
+            )
+            return True

@@ -24,13 +24,22 @@ import asyncpg
 import httpx
 import structlog
 
-from domain.ports import WindowStateRepository
+from domain.ports import WindowStateRepository, WriteOutcome
 from domain.value_objects import WindowKey, WindowOutcome
 
 log = structlog.get_logger(__name__)
 
 _GAMMA_BASE = "https://gamma-api.polymarket.com"
-_SLUG_PREFIX = "btc-updown-5m-"
+_SLUG_PREFIX = "btc-updown-5m-"  # legacy single-asset BTC-5m prefix (kept for back-compat)
+
+# (asset, timeframe) → Polymarket Gamma slug prefix. Markets follow the
+# convention ``<asset>-updown-<tf>-<window_ts>``. Add new pairs here when
+# enabling forward-writer coverage for additional asset/timeframe combos.
+# Source: https://gamma-api.polymarket.com/events?slug=<prefix><window_ts>
+_GAMMA_SLUG_PREFIXES: dict[tuple[str, str], str] = {
+    ("BTC", "5m"): "btc-updown-5m-",
+    ("ETH", "5m"): "eth-updown-5m-",
+}
 
 
 def _coerce_directional_outcome(outcome, poly_winner) -> Optional[str]:
@@ -1083,7 +1092,7 @@ class PgWindowRepository(WindowStateRepository):
         key: WindowKey,
         order_id: str,
         strategy_id: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[WriteOutcome]:
         """Record a fill on the given window.
 
         Audit #321 (2026-04-26): when ``strategy_id`` is provided we ALSO
@@ -1096,9 +1105,35 @@ class PgWindowRepository(WindowStateRepository):
         the legacy ``window_states`` row is still written, but no
         strategy-fill marker. New callsites SHOULD always pass
         ``strategy_id``.
+
+        Returns a :class:`WriteOutcome`:
+
+          * ``COMMITTED``               — this call wrote the canonical
+                                          fill row (NULL/'pending' →
+                                          real ``order_id``).
+          * ``ALREADY_COMMITTED_SAME``  — existing row already had THIS
+                                          ``order_id`` (idempotent replay).
+          * ``SECONDARY_FILL``          — existing row had a DIFFERENT
+                                          real ``order_id``. Caller is
+                                          the second on-chain fill for
+                                          the same (asset, window_ts,
+                                          timeframe, strategy_id) bucket
+                                          and should record a secondary
+                                          ``trades`` row marked
+                                          ``is_secondary_fill=True``.
+
+        Detection is per-strategy: it inspects
+        ``strategy_window_fills`` for the (asset, window_ts, timeframe,
+        strategy_id) row that ``try_claim_fill_slot`` would have
+        written. When ``strategy_id`` is not provided we fall back to
+        the legacy single-row UPSERT semantics and return ``None``.
+
+        Returns ``None`` on DB error or pool absence so callers can
+        treat the unknown outcome as ``COMMITTED`` (safe default —
+        record the trade normally).
         """
         if not self._pool:
-            return
+            return None
         try:
             async with self._pool.acquire() as conn:
                 now = datetime.now(timezone.utc)
@@ -1117,22 +1152,58 @@ class PgWindowRepository(WindowStateRepository):
                     now,
                     order_id,
                 )
+                outcome: Optional[WriteOutcome] = None
                 if strategy_id:
                     # Audit #322 (2026-04-26): when a pessimistic claim
                     # was placed via try_claim_fill_slot the row already
                     # exists with order_id = 'pending'. UPSERT to stamp
                     # the real order_id; without DO UPDATE the row
                     # would stay as the placeholder forever.
-                    await conn.execute(
+                    #
+                    # 2026-05-20 (Hub #554 — sub-fill writer): the
+                    # RETURNING clause now surfaces the row's PREVIOUS
+                    # order_id so the caller can detect SECONDARY_FILL:
+                    # a real fill landing while the row already had a
+                    # DIFFERENT real order_id. This happens when two
+                    # CLOB orders are submitted within the 25 s
+                    # STALE_PLACEHOLDER_TTL window — both end up filling
+                    # on Polymarket but only one strategy_window_fills
+                    # row exists. Without surfacing the conflict, the
+                    # second fill is silently dropped from `trades`
+                    # while the wallet sees both shares booked.
+                    #
+                    # ``xmax = 0`` distinguishes pure INSERT (no row
+                    # existed) from any ON CONFLICT path (existing row
+                    # was updated OR no-op'd). The
+                    # ``existing_order_id`` field carries the previous
+                    # row's order_id when the UPSERT was a conflict
+                    # path; NULL for pure INSERT.
+                    row = await conn.fetchrow(
                         """
-                        INSERT INTO strategy_window_fills
-                            (asset, window_ts, timeframe, strategy_id, order_id, filled_at)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO UPDATE
-                            SET order_id = EXCLUDED.order_id,
-                                filled_at = EXCLUDED.filled_at
-                            WHERE strategy_window_fills.order_id = $7
-                               OR strategy_window_fills.order_id IS NULL
+                        WITH prior AS (
+                            SELECT order_id AS existing_order_id
+                              FROM strategy_window_fills
+                             WHERE asset = $1
+                               AND window_ts = $2
+                               AND timeframe = $3
+                               AND strategy_id = $4
+                            FOR UPDATE
+                        ),
+                        upsert AS (
+                            INSERT INTO strategy_window_fills
+                                (asset, window_ts, timeframe, strategy_id, order_id, filled_at)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO UPDATE
+                                SET order_id = EXCLUDED.order_id,
+                                    filled_at = EXCLUDED.filled_at
+                                WHERE strategy_window_fills.order_id = $7
+                                   OR strategy_window_fills.order_id IS NULL
+                            RETURNING xmax = 0 AS inserted, order_id AS final_order_id
+                        )
+                        SELECT
+                            (SELECT existing_order_id FROM prior)       AS existing_order_id,
+                            (SELECT inserted          FROM upsert)      AS inserted,
+                            (SELECT final_order_id    FROM upsert)      AS final_order_id
                         """,
                         key.asset,
                         key.window_ts,
@@ -1142,14 +1213,45 @@ class PgWindowRepository(WindowStateRepository):
                         now,
                         self.PLACEHOLDER_ORDER_ID,
                     )
+                    existing_order_id = (
+                        row["existing_order_id"] if row else None
+                    )
+                    upsert_inserted = bool(row["inserted"]) if row and row["inserted"] is not None else False
+                    # Outcome classification — order matters:
+                    #   1. No prior row → COMMITTED (pure INSERT).
+                    #   2. Prior was NULL or placeholder → COMMITTED
+                    #      (DO UPDATE path took our row from absent /
+                    #      'pending' to real order_id).
+                    #   3. Prior was THIS order_id → ALREADY_COMMITTED_SAME
+                    #      (idempotent replay — same call landed twice).
+                    #   4. Prior was a DIFFERENT real order_id → SECONDARY_FILL
+                    #      (the actual race we are defending against).
+                    if existing_order_id is None or upsert_inserted:
+                        outcome = WriteOutcome.COMMITTED
+                    elif existing_order_id == self.PLACEHOLDER_ORDER_ID:
+                        outcome = WriteOutcome.COMMITTED
+                    elif existing_order_id == order_id:
+                        outcome = WriteOutcome.ALREADY_COMMITTED_SAME
+                    else:
+                        outcome = WriteOutcome.SECONDARY_FILL
+                        log.warning(
+                            "db.mark_traded.secondary_fill_detected",
+                            key=str(key),
+                            strategy=strategy_id,
+                            existing_order_id=str(existing_order_id)[:32],
+                            new_order_id=str(order_id)[:32],
+                        )
             log.debug(
                 "db.mark_traded",
                 key=str(key),
                 order_id=order_id[:20] if order_id else None,
                 strategy=strategy_id,
+                outcome=outcome.value if outcome is not None else None,
             )
+            return outcome
         except Exception as exc:
             log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
+            return None
 
     async def has_filled(self, key: WindowKey, strategy_id: str) -> bool:
         """Return True if ``strategy_id`` already filled this window.
@@ -1831,13 +1933,53 @@ class PgWindowRepository(WindowStateRepository):
     async def populate_oracle_outcomes(
         self, lookback_seconds: int = 900, min_age_seconds: int = 360
     ) -> int:
-        """Poll Polymarket Gamma for resolved 5m BTC UP/DOWN markets and stamp
-        oracle_outcome on window_snapshots. Windows must be between
+        """Poll Polymarket Gamma for resolved UP/DOWN markets and stamp
+        oracle_outcome on window_snapshots for every supported (asset, tf)
+        pair in :data:`_GAMMA_SLUG_PREFIXES`. Windows must be between
         min_age_seconds and lookback_seconds old.
 
         Windows resolve every 5 min; this runs on the 2-min reconcile loop so
         every newly-closed window gets oracle_outcome within ~2 min of Gamma
         publishing resolution.
+
+        Returns total rows updated across all asset/tf pairs.
+        """
+        if not self._pool:
+            return 0
+
+        grand_total = 0
+        for (asset, timeframe), slug_prefix in _GAMMA_SLUG_PREFIXES.items():
+            try:
+                updated = await self._populate_oracle_outcomes_for_pair(
+                    asset=asset,
+                    timeframe=timeframe,
+                    slug_prefix=slug_prefix,
+                    lookback_seconds=lookback_seconds,
+                    min_age_seconds=min_age_seconds,
+                )
+                grand_total += updated
+            except Exception as exc:
+                # Per-pair failure must not abort other pairs. Surface so the
+                # reconciler loop sees the error in logs.
+                log.warning(
+                    "pg_window_repo.poll_oracle_pair_failed",
+                    asset=asset,
+                    timeframe=timeframe,
+                    error=str(exc)[:100],
+                )
+        return grand_total
+
+    async def _populate_oracle_outcomes_for_pair(
+        self,
+        asset: str,
+        timeframe: str,
+        slug_prefix: str,
+        lookback_seconds: int,
+        min_age_seconds: int,
+    ) -> int:
+        """Implementation of populate_oracle_outcomes for a single (asset, tf)
+        pair. Same logic as the legacy BTC-only path, but parameterised so
+        ETH 5m (and future pairs) share the writer.
         """
         if not self._pool:
             return 0
@@ -1846,16 +1988,23 @@ class PgWindowRepository(WindowStateRepository):
                 rows = await conn.fetch(
                     """SELECT DISTINCT window_ts
                        FROM window_snapshots
-                       WHERE asset = 'BTC' AND timeframe = '5m'
+                       WHERE asset = $1 AND timeframe = $2
                          AND oracle_outcome IS NULL
-                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1
-                         AND window_ts > EXTRACT(EPOCH FROM NOW())::bigint - $2
+                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $3
+                         AND window_ts > EXTRACT(EPOCH FROM NOW())::bigint - $4
                        ORDER BY window_ts""",
+                    asset,
+                    timeframe,
                     min_age_seconds,
                     lookback_seconds,
                 )
         except Exception as exc:
-            log.warning("pg_window_repo.poll_oracle_list_failed", error=str(exc)[:100])
+            log.warning(
+                "pg_window_repo.poll_oracle_list_failed",
+                asset=asset,
+                timeframe=timeframe,
+                error=str(exc)[:100],
+            )
             return 0
 
         windows = [r["window_ts"] for r in rows]
@@ -1871,7 +2020,7 @@ class PgWindowRepository(WindowStateRepository):
 
             async def _fetch(ts: int) -> Optional[str]:
                 async with sem:
-                    slug = f"{_SLUG_PREFIX}{ts}"
+                    slug = f"{slug_prefix}{ts}"
                     try:
                         r = await client.get(
                             f"{_GAMMA_BASE}/events", params={"slug": slug}
@@ -1923,6 +2072,8 @@ class PgWindowRepository(WindowStateRepository):
         if not outcomes:
             log.info(
                 "pg_window_repo.poll_oracle_no_resolutions",
+                asset=asset,
+                timeframe=timeframe,
                 polled=len(windows),
             )
             return 0
@@ -1934,21 +2085,27 @@ class PgWindowRepository(WindowStateRepository):
         # paths, but on Montreal those almost never fire — this oracle poll
         # is the only bulk path covering every closed window. Result was that
         # ``window_snapshots.outcome`` stayed NULL on 65% of rows post-deploy.
+        #
+        # 2026-05-20: extended to ETH 5m (was BTC-5m-only). asset/timeframe
+        # now parameterised; ``_GAMMA_SLUG_PREFIXES`` is the source of truth
+        # for which pairs the forward writer covers.
         signal_eval_total = 0
         try:
             async with self._pool.acquire() as conn:
                 for ts, outcome in outcomes:
                     result = await conn.execute(
                         """UPDATE window_snapshots
-                           SET oracle_outcome        = $2,
-                               poly_resolved_outcome = $2,
-                               poly_winner           = $2,
-                               outcome               = COALESCE(outcome, $2)
-                           WHERE asset = 'BTC' AND timeframe = '5m'
-                             AND window_ts = $1
+                           SET oracle_outcome        = $3,
+                               poly_resolved_outcome = $3,
+                               poly_winner           = $3,
+                               outcome               = COALESCE(outcome, $3)
+                           WHERE asset = $1 AND timeframe = $2
+                             AND window_ts = $4
                              AND oracle_outcome IS NULL""",
-                        ts,
+                        asset,
+                        timeframe,
                         outcome,
+                        ts,
                     )
                     total_updated += int(result.split()[-1]) if result else 0
 
@@ -1960,11 +2117,13 @@ class PgWindowRepository(WindowStateRepository):
                             """UPDATE signal_evaluations
                                   SET outcome = $1
                                 WHERE window_ts = $2
-                                  AND asset     = 'BTC'
-                                  AND timeframe = '5m'
+                                  AND asset     = $3
+                                  AND timeframe = $4
                                   AND outcome IS NULL""",
                             outcome,
                             ts,
+                            asset,
+                            timeframe,
                         )
                         signal_eval_total += (
                             int(se_result.split()[-1]) if se_result else 0
@@ -1974,17 +2133,24 @@ class PgWindowRepository(WindowStateRepository):
                         # here is what hid the original regression.
                         log.warning(
                             "pg_window_repo.poll_oracle_signal_eval_failed",
+                            asset=asset,
+                            timeframe=timeframe,
                             error=str(se_exc)[:100],
                             window_ts=ts,
                         )
         except Exception as exc:
             log.warning(
-                "pg_window_repo.poll_oracle_write_failed", error=str(exc)[:100]
+                "pg_window_repo.poll_oracle_write_failed",
+                asset=asset,
+                timeframe=timeframe,
+                error=str(exc)[:100],
             )
             return total_updated
 
         log.info(
             "pg_window_repo.poll_oracle_done",
+            asset=asset,
+            timeframe=timeframe,
             polled=len(windows),
             resolved=len(outcomes),
             rows_updated=total_updated,

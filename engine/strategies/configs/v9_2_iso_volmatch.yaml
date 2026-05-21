@@ -1,0 +1,58 @@
+name: v9_2_iso_volmatch
+strategy_id: v9_2_iso_volmatch
+version: "1.0.0"
+# v9_2_iso_volmatch — 2026-05-18 — iso-calibrated v9.2 at volume-matched thresholds.
+#
+# SANITY-CHECK BASELINE. Reads probability_lgb_v9_2_post_iso (emitted by
+# timesfm-service when V9_2_POST_ISO_ENABLED=true). Thresholds are calibrated
+# iso-curve lookups of the raw 0.72 / 0.20 gates used by v9_2_raw_lgb, so
+# qualifying tick population should be ~identical to the live strategy.
+#
+# Expected: ~same fires/day and ~same WR as v9_2_raw_lgb. Divergence implies
+# an iso implementation bug — halt the iso rollout if this variant diverges.
+#
+# Iso calibration metrics (hub note #536):
+#   test ECE: 0.1644 → 0.0216  (-86.9%)
+#   test Brier: 0.2613 → 0.2335  (-10.6%)
+#   calibrated UP gate (iso(0.72)): 0.797
+#   calibrated DOWN gate (iso(0.20)): 0.098
+#
+# Enabled hours: all except 09 and 15 UTC (per-hour WR cliffs,
+#   hub note #524, bg-agent #2 analysis).
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md.
+# Hub notes: #536 (iso architecture), session ~#538 (engine wiring).
+# Companion timesfm PR: feat/v9_2_post_iso_layer.
+#
+status: GHOST
+description: |
+  Iso-calibrated v9.2. Sanity-check baseline: thresholds volume-matched to
+  raw v9_2_raw_lgb (0.797 UP / 0.098 DOWN on calibrated prob). Expected
+  fires/day ~same as live strategy. GHOST mode, $5 max_position.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_iso_volmatch.py
+pre_gate_hook: evaluate_v9_2_iso_volmatch
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.797
+  down_threshold: 0.098
+  eval_offset_min: 60
+  eval_offset_max: 210
+  min_consecutive_pass_ticks: 1
+  # Hours 09 and 15 UTC excluded — per-hour WR cliffs (hub note #524).
+  blocked_hours_utc: [9, 15]
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

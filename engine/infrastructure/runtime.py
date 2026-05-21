@@ -549,6 +549,40 @@ class EngineRuntime:
                         else None
                     )
 
+                    # Hub #554 (2026-05-20): exposure caps. Defaults to
+                    # fully-disabled config + None repo when the three
+                    # RISK_MAX_* env vars are unset — preserves
+                    # byte-identical hot-path behaviour. When ANY cap is
+                    # enabled, also instantiate the PG repo.
+                    from use_cases.exposure_caps import ExposureCapConfig
+                    _exposure_cfg = ExposureCapConfig.from_env()
+                    _exposure_repo = None
+                    if (not _exposure_cfg.all_disabled) and self._db is not None:
+                        try:
+                            from adapters.persistence.pg_exposure_repo import (
+                                PgExposureCapRepository,
+                            )
+                            _exposure_repo = PgExposureCapRepository(
+                                pool=self._db._pool
+                            )
+                            log.info(
+                                "orchestrator.exposure_caps_enabled",
+                                window_cap=_exposure_cfg.max_stake_per_window_usd,
+                                asset_cap=_exposure_cfg.max_open_exposure_per_asset_usd,
+                                daily_cap=_exposure_cfg.max_daily_fresh_stake_usd,
+                            )
+                        except Exception as _exp_exc:
+                            log.warning(
+                                "orchestrator.exposure_caps_repo_failed",
+                                error=str(_exp_exc)[:200],
+                            )
+                            _exposure_repo = None
+                    else:
+                        log.info(
+                            "orchestrator.exposure_caps_disabled",
+                            reason="env_unset" if _exposure_cfg.all_disabled else "no_db",
+                        )
+
                     self._execute_uc = ExecuteTradeUseCase(
                         polymarket=self._poly_client,
                         order_executor=_executor,
@@ -558,6 +592,9 @@ class EngineRuntime:
                         trade_recorder=_recorder,
                         clock=SystemClock(),
                         paper_mode=_paper,
+                        exposure_cap_config=_exposure_cfg,
+                        exposure_repo=_exposure_repo,
+                        trade_repo=self._trade_repo_adapter,
                     )
                     self._strategy_registry.wire_execute_uc(self._execute_uc)
                     log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)
