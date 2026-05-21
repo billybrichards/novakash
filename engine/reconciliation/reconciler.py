@@ -146,6 +146,16 @@ class CLOBReconciler:
         # automatic trades #42, hiding a real divergence.
         self._sot_alerted_trade_ids: set[str] = set()
 
+        # Hub #578 follow-up #1: dedupe set for the post-reconciler
+        # FILL card. Keyed by "trades:<id>" so a TG card fires AT MOST
+        # ONCE per provisional row across the lifetime of this engine
+        # process. The DB-level guard (``fill_price IS NULL`` in the
+        # UPDATE clause of ``update_trade_sot``) is the durable
+        # idempotency guarantee; this set is the in-memory belt-and-
+        # braces so a flap of the SOT loop within the same boot doesn't
+        # double-fire even if the DB-level guard ever loosens.
+        self._sot_alerted_fill_trade_ids: set[str] = set()
+
         # Periodic janitor: clean stale 'pending' rows from
         # strategy_window_fills every ~120s (every 60th poll at 2s interval).
         # Dead windows never get re-queried so the 25s TTL in has_filled()
@@ -2060,7 +2070,7 @@ class CLOBReconciler:
 
             state = decision["state"]
 
-            await db.update_trade_sot(
+            fill_first_stamped = await db.update_trade_sot(
                 trade_id=trade_id,
                 polymarket_confirmed_status=decision["confirmed_status"],
                 polymarket_confirmed_fill_price=decision["confirmed_price"],
@@ -2070,6 +2080,19 @@ class CLOBReconciler:
                 sot_reconciliation_notes=decision["notes"],
                 polymarket_tx_hash=decision.get("tx_hash"),
             )
+
+            # Hub #578 follow-up #1: fire ``send_fill_confirmed`` when this
+            # SOT pass just stamped a previously-NULL fill_price on a
+            # provisional row (gtc_resting fill confirmed on-chain).
+            # Guarded twice: (a) DB-level — update_trade_sot only stamps
+            # when fill_price IS NULL; (b) in-memory dedupe set so a flap
+            # of the SOT loop within the same boot can't double-emit.
+            if fill_first_stamped and state in ("agrees", "diverged"):
+                await self._fire_reconciler_fill_confirmed(
+                    trade_id=trade_id,
+                    trade_row=trade_row,
+                    decision=decision,
+                )
 
             if state == "agrees":
                 summary.agrees += 1
@@ -2120,7 +2143,7 @@ class CLOBReconciler:
                             )
                         else:
                             state = decision["state"]
-                            await db.update_trade_sot(
+                            fill_first_stamped = await db.update_trade_sot(
                                 trade_id=trade_id,
                                 polymarket_confirmed_status=decision["confirmed_status"],
                                 polymarket_confirmed_fill_price=decision["confirmed_price"],
@@ -2130,6 +2153,19 @@ class CLOBReconciler:
                                 sot_reconciliation_notes=decision["notes"],
                                 polymarket_tx_hash=decision.get("tx_hash"),
                             )
+                            # Hub #578 follow-up #1: same fill-confirmed
+                            # emission as the primary path. The recheck
+                            # path is the one that catches the typical
+                            # case (engine_optimistic on first JOIN →
+                            # poly_fills_reconciler lands the fill →
+                            # recheck flips to agrees + first-stamps
+                            # fill_price). DB-level guard still applies.
+                            if fill_first_stamped and state in ("agrees", "diverged"):
+                                await self._fire_reconciler_fill_confirmed(
+                                    trade_id=trade_id,
+                                    trade_row=trade_row,
+                                    decision=decision,
+                                )
                             # Summary counters were incremented under the
                             # old state; decrement + re-increment to stay
                             # accurate. engine_optimistic is what we had.
@@ -2170,6 +2206,147 @@ class CLOBReconciler:
             alerts=summary.alerts_fired,
         )
         return summary
+
+    async def _fire_reconciler_fill_confirmed(
+        self,
+        *,
+        trade_id,
+        trade_row: dict,
+        decision: dict,
+    ) -> None:
+        """Hub #578 follow-up #1: post-reconciler-confirmed-fill TG card.
+
+        Fires ``alerter.send_fill_confirmed`` once when the SOT reconciler
+        first-stamps a previously-NULL ``fill_price`` on a provisional
+        ``gtc_resting`` row. This closes the visibility gap introduced
+        by PR #567: prior to this hook, the synchronous ``execute_trade``
+        path was the only thing emitting a FILL card, so a gtc_resting
+        order that matched on-chain 30-60s later was silent.
+
+        Guarded twice:
+          1. DB-level — ``update_trade_sot`` only stamps ``fill_price``
+             when previously NULL, so a re-pass of the SOT loop over the
+             same already-stamped row never returns ``first_stamp=True``
+             and this method is never invoked a second time.
+          2. In-memory — ``self._sot_alerted_fill_trade_ids`` belts-and-
+             braces against a same-boot flap (e.g. the row got cleared
+             back to NULL by a corrective migration mid-session).
+
+        Best-effort: any error here is swallowed with a warning log so
+        a TG outage never blocks the reconciler from progressing.
+        """
+        dedupe_key = f"trades:{trade_id}"
+        if dedupe_key in self._sot_alerted_fill_trade_ids:
+            return
+        self._sot_alerted_fill_trade_ids.add(dedupe_key)
+
+        try:
+            alerter = self._alerter
+            # The alerter port is optional in the constructor; if the
+            # injected impl doesn't expose ``send_fill_confirmed`` (e.g.
+            # an older stub used in tests) fall back to ``send_raw_message``
+            # with a short text card. Either way, never raise upward.
+            send_fc = getattr(alerter, "send_fill_confirmed", None)
+
+            # Pull the bits the FILL card needs out of the trade_row.
+            # All defaults match what the synchronous path emits.
+            strategy = (
+                trade_row.get("strategy")
+                or trade_row.get("strategy_id")
+                or "unknown"
+            )
+            direction = (trade_row.get("direction") or "?").upper()
+            # Direction normalisation: trades.direction is YES/NO; the
+            # synchronous path uses UP/DOWN. Map for parity so an
+            # operator can't tell the two cards apart at a glance.
+            side = {"YES": "UP", "NO": "DOWN"}.get(direction, direction)
+
+            confirmed_price = decision.get("confirmed_price")
+            confirmed_size = decision.get("confirmed_size")
+            tx_hash = decision.get("tx_hash")
+            stake_usd = float(trade_row.get("stake_usd") or 0.0)
+            market_slug = trade_row.get("market_slug") or ""
+
+            # Parse timeframe / window_ts from market_slug (the
+            # synchronous path uses the same source). Falls back to
+            # metadata.window_ts if the slug doesn't decompose cleanly.
+            timeframe = "5m"
+            window_ts = 0
+            try:
+                parts = market_slug.split("-")
+                if len(parts) >= 3:
+                    timeframe = parts[2] or "5m"
+                if parts:
+                    window_ts = int(parts[-1])
+            except (ValueError, IndexError):
+                pass
+            if window_ts == 0:
+                # metadata is JSON in DB; may already be dict from
+                # asyncpg or still a string depending on the codec
+                # path. Be defensive.
+                meta_raw = trade_row.get("metadata")
+                meta_dict: dict = {}
+                if isinstance(meta_raw, dict):
+                    meta_dict = meta_raw
+                elif isinstance(meta_raw, str):
+                    try:
+                        import json as _json
+                        meta_dict = _json.loads(meta_raw) or {}
+                    except Exception:
+                        meta_dict = {}
+                try:
+                    window_ts = int(meta_dict.get("window_ts") or 0)
+                except (ValueError, TypeError):
+                    window_ts = 0
+
+            if send_fc is None:
+                # Plain-text fallback for non-Telegram alerter impls.
+                send_raw = getattr(alerter, "send_raw_message", None)
+                if send_raw is None:
+                    return
+                msg = (
+                    f"🎯 *FILL (reconciler-confirmed)* {strategy} — "
+                    f"{side} `{timeframe}`\n"
+                    f"`{float(confirmed_size or 0):.2f}` @ "
+                    f"`${float(confirmed_price or 0):.3f}` · "
+                    f"stake `${stake_usd:.2f}`\n"
+                    f"window: `{window_ts}`"
+                    + (f"\ntx: `{(tx_hash or '')[:20]}`" if tx_hash else "")
+                )
+                await send_raw(msg)
+                self._log.info(
+                    "reconciler.fill_confirmed_raw",
+                    trade_id=trade_id,
+                    strategy=strategy,
+                    side=side,
+                )
+                return
+
+            await send_fc(
+                strategy=strategy,
+                window_ts=window_ts,
+                side=side,
+                price=float(confirmed_price or 0.0),
+                shares=float(confirmed_size or 0.0),
+                stake_usd=stake_usd,
+                condition_id=None,
+                tx_hash=tx_hash,
+                timeframe=timeframe,
+            )
+            self._log.info(
+                "reconciler.fill_confirmed",
+                trade_id=trade_id,
+                strategy=strategy,
+                side=side,
+                price=float(confirmed_price or 0.0),
+                stake_usd=stake_usd,
+            )
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.fill_confirmed_failed",
+                trade_id=trade_id,
+                error=str(exc)[:200],
+            )
 
     async def _fire_sot_alert(
         self,
@@ -2711,24 +2888,71 @@ class _TradesPoolDBClient:
         sot_reconciliation_state: str,
         sot_reconciliation_notes: Optional[str],
         polymarket_tx_hash: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """POLY-SOT-d: also accepts `polymarket_tx_hash` — the Polygon
         on-chain tx hash stamped from the matched poly_fills row.
+
+        Hub #578 follow-up #1 (TG-on-reconciler-confirmed-fill):
+        when the prior trade row had ``fill_price IS NULL`` (provisional
+        ``gtc_resting`` row created by PR #567's writer-bypass fix) and
+        the SOT pass landed a non-NULL ``polymarket_confirmed_fill_price``,
+        also stamp the trade row's ``fill_price`` / ``fill_size`` columns.
+        The boolean returned to the caller (``True`` iff this UPDATE just
+        performed the NULL → non-NULL transition on ``fill_price``) drives
+        the post-update ``send_fill_confirmed`` Telegram emission in
+        ``reconcile_trades_sot``.
+
+        Returns ``True`` when this UPDATE first-stamped a previously-NULL
+        ``fill_price``, ``False`` otherwise (including all error paths,
+        no-op updates, and re-runs that hit an already-stamped row).
         """
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute(
+                # CTE form: snapshot the OLD fill_price BEFORE the UPDATE
+                # in a single round-trip so the first-stamp flag is
+                # race-free against any concurrent reader of the same row.
+                # ``first_stamp`` is TRUE iff (a) the row existed AND was
+                # previously NULL on fill_price, AND (b) the new SOT pass
+                # is supplying a non-NULL confirmed_fill_price (i.e. we
+                # actually wrote a real number rather than another NULL).
+                row = await conn.fetchrow(
                     """
-                    UPDATE trades
-                    SET polymarket_confirmed_status = $1,
-                        polymarket_confirmed_fill_price = $2,
-                        polymarket_confirmed_size = $3,
-                        polymarket_confirmed_at = $4,
-                        polymarket_last_verified_at = NOW(),
-                        sot_reconciliation_state = $5,
-                        sot_reconciliation_notes = $6,
-                        polymarket_tx_hash = $7
-                    WHERE id = $8
+                    WITH prior AS (
+                        SELECT fill_price AS old_fill_price
+                        FROM trades
+                        WHERE id = $8
+                    ),
+                    upd AS (
+                        UPDATE trades
+                        SET polymarket_confirmed_status = $1,
+                            polymarket_confirmed_fill_price = $2,
+                            polymarket_confirmed_size = $3,
+                            polymarket_confirmed_at = $4,
+                            polymarket_last_verified_at = NOW(),
+                            sot_reconciliation_state = $5,
+                            sot_reconciliation_notes = $6,
+                            polymarket_tx_hash = $7,
+                            fill_price = CASE
+                                WHEN fill_price IS NULL
+                                 AND $2::DOUBLE PRECISION IS NOT NULL
+                                    THEN $2::DOUBLE PRECISION
+                                ELSE fill_price
+                            END,
+                            fill_size = CASE
+                                WHEN fill_size IS NULL
+                                 AND $3::DOUBLE PRECISION IS NOT NULL
+                                    THEN $3::DOUBLE PRECISION
+                                ELSE fill_size
+                            END
+                        WHERE id = $8
+                        RETURNING id
+                    )
+                    SELECT
+                        (prior.old_fill_price IS NULL
+                         AND $2::DOUBLE PRECISION IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM upd))
+                            AS first_stamp
+                    FROM prior
                     """,
                     polymarket_confirmed_status,
                     polymarket_confirmed_fill_price,
@@ -2739,6 +2963,9 @@ class _TradesPoolDBClient:
                     polymarket_tx_hash,
                     int(trade_id),
                 )
+                if row is None:
+                    return False
+                return bool(row["first_stamp"])
         except Exception as exc:
             log.warning(
                 "reconcile_trades_sot.update_row_failed",
@@ -2746,6 +2973,7 @@ class _TradesPoolDBClient:
                 state=sot_reconciliation_state,
                 error=str(exc)[:200],
             )
+            return False
 
     async def fetch_trades_joined_poly_fills(
         self,
@@ -2798,6 +3026,13 @@ class _TradesPoolDBClient:
                             polymarket_last_verified_at,
                             sot_reconciliation_state,
                             sot_reconciliation_notes,
+                            -- TG-on-confirmed-fill (Hub #578 follow-up #1):
+                            -- need strategy + metadata so the fill_confirmed
+                            -- card can carry strategy_id, window_ts, condition_id,
+                            -- timeframe when the SOT reconciler first stamps
+                            -- fill_price on a provisional gtc_resting row.
+                            strategy,
+                            metadata,
                             CASE
                                 WHEN UPPER(direction) IN ('YES','UP')   THEN 'Up'
                                 WHEN UPPER(direction) IN ('NO','DOWN')  THEN 'Down'
