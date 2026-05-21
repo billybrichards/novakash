@@ -93,7 +93,10 @@ _startup_log.info(
 
 # Guardrail constants
 MIN_ORDER_INTERVAL_S = 30
-MAX_ORDERS_PER_HOUR = 20
+# Hourly cap: process-wide safety backstop on order rate.
+# Configurable via env MAX_ORDERS_PER_HOUR (default 20). Higher values allow
+# more parallel-strategy fires per window across longer trading runs.
+MAX_ORDERS_PER_HOUR = int(os.environ.get("MAX_ORDERS_PER_HOUR", "20"))
 CIRCUIT_BREAKER_ERRORS = 3
 CIRCUIT_BREAKER_COOLDOWN_S = 180  # 3 minutes
 
