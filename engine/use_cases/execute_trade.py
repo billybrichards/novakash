@@ -1037,12 +1037,12 @@ class ExecuteTradeUseCase:
                 os.environ.get("POLY_FUNDER_ADDRESS", "")
                 or "0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10"
             )
-            _cond = getattr(window_market, "condition_id", "") or ""
+            _slug = getattr(window_market, "market_slug", "") or ""
             try:
                 _pm_skip = await asyncio.wait_for(
                     check_onchain_window_cap(
                         funder_address=_funder,
-                        condition_id=_cond,
+                        market_slug=_slug,
                         direction=direction,
                         new_stake_usd=stake.adjusted_stake,
                         cap_usd=_pm_cap,

@@ -39,7 +39,7 @@ async def test_cap_blocks_when_onchain_already_at_cap():
     ):
         skip = await check_onchain_window_cap(
             funder_address="0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10",
-            condition_id="0xabc",
+            market_slug="btc-updown-5m-1779336900",
             direction="YES",
             new_stake_usd=5.0,
             cap_usd=25.0,
@@ -57,7 +57,7 @@ async def test_cap_allows_when_room_remaining():
     ):
         skip = await check_onchain_window_cap(
             funder_address="0x181D",
-            condition_id="0xabc",
+            market_slug="btc-updown-5m-1779336900",
             direction="YES",
             new_stake_usd=5.0,
             cap_usd=25.0,
@@ -79,7 +79,7 @@ async def test_cap_blocks_even_when_db_silent():
     ):
         skip = await check_onchain_window_cap(
             funder_address="0x181D",
-            condition_id="0xabc",
+            market_slug="btc-updown-5m-1779336900",
             direction="YES",
             new_stake_usd=5.0,
             cap_usd=25.0,
@@ -99,7 +99,7 @@ async def test_fail_closed_on_fetch_error():
     ):
         skip = await check_onchain_window_cap(
             funder_address="0x181D",
-            condition_id="0xabc",
+            market_slug="btc-updown-5m-1779336900",
             direction="YES",
             new_stake_usd=5.0,
             cap_usd=25.0,
@@ -120,7 +120,7 @@ async def test_cap_disabled_when_zero():
     ):
         skip = await check_onchain_window_cap(
             funder_address="0x181D",
-            condition_id="0xabc",
+            market_slug="btc-updown-5m-1779336900",
             direction="YES",
             new_stake_usd=5.0,
             cap_usd=0.0,
@@ -156,7 +156,7 @@ async def test_direction_yes_and_up_both_mapped():
     # at upper layer in real flow). Pure logic test:
     skip_yes = await check_onchain_window_cap(
         funder_address="0x181D",
-        condition_id="0xabc",
+        market_slug="btc-updown-5m-1779336900",
         direction="YES",
         new_stake_usd=5.0,
         cap_usd=25.0,
