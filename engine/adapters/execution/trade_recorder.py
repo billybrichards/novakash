@@ -160,6 +160,16 @@ class DBTradeRecorder(TradeRecorderPort):
                         "stake_fraction": stake.bet_fraction,
                         "stake_multiplier": stake.price_multiplier,
                         "engine_version": "registry_v2",
+                        # Sub-fill capture (2026-05-21, hub note #BLOCKING_v9_4):
+                        # Persist the raw `transactionsHashes` / `tradeIDs`
+                        # arrays from the CLOB FAK response so on-chain
+                        # attribution + reconciliation can see every
+                        # maker matched, not just the aggregate. Empty
+                        # list = single-maker fill (or GTC/RFQ leg —
+                        # those don't carry sub-fills today).
+                        "sub_fill_tx_hashes": list(result.transactions_hashes),
+                        "sub_fill_trade_ids": list(result.trade_ids),
+                        "sub_fill_count": len(result.transactions_hashes),
                     },
                 )
                 await self._om.register_order(order)

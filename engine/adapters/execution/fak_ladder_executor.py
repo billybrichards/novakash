@@ -242,6 +242,8 @@ class FAKLadderExecutor(OrderExecutionPort):
                     token_id=token_id,
                     execution_start=start,
                     execution_end=time.time(),
+                    transactions_hashes=tuple(fok_result.transactions_hashes),
+                    trade_ids=tuple(fok_result.trade_ids),
                 )
 
             # Surface CLOB auth/infra abort reasons so they propagate to

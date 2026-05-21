@@ -71,6 +71,13 @@ class FOKResult:
     abort_reason: Optional[str] = None
     partial: bool = False           # True if FAK partial fill
     order_type: str = "FAK"
+    # Sub-fill arrays from the matching FAK leg (2026-05-21):
+    # Polymarket can fill a single FAK order across N maker offers,
+    # producing N on-chain transactions. Captured here so downstream
+    # writers (trade_recorder, persistence layers) can record each
+    # sub-fill separately for proper attribution.
+    transactions_hashes: list[str] = field(default_factory=list)
+    trade_ids: list[str] = field(default_factory=list)
 
 
 class FOKLadder:
@@ -364,12 +371,18 @@ class FOKLadder:
             fill_price=f"${fill_price:.4f}", shares=f"{size_matched:.2f}",
             partial=is_partial)
 
+        # Capture sub-fill arrays surfaced by the polymarket client.
+        tx_hashes = result.get("transactions_hashes") or []
+        trade_ids = result.get("trade_ids") or []
+
         return FOKResult(
             filled=True, fill_price=fill_price, fill_step=attempt,
             shares=size_matched, attempts=attempt,
             order_id=str(order_id) if order_id else None,
             attempted_prices=attempted_prices,
             partial=is_partial, order_type=order_type,
+            transactions_hashes=list(tx_hashes),
+            trade_ids=list(trade_ids),
         )
 
     # Polymarket minimum order size (shares). Orders below this are rejected with 400.

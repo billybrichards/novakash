@@ -820,6 +820,18 @@ class PolymarketClient:
         # "unmatched" = killed without fill, "live" = resting (shouldn't happen for FOK)
         filled = (status == "matched") or (size_matched > 0)
 
+        # Sub-fill capture (2026-05-21, hub note #BLOCKING_v9_4):
+        # The CLOB response carries `transactionsHashes` + `tradeIDs` arrays
+        # — one entry per maker matched. A single FAK order can sweep
+        # multiple maker offers, producing N sub-fills. Prior to this fix
+        # these arrays were silently dropped: only aggregate making/taking
+        # amounts survived into the trade row. We now surface the raw
+        # arrays so downstream writers can persist per-sub-fill rows.
+        tx_hashes_raw = _get(response, "transactionsHashes", None)
+        trade_ids_raw = _get(response, "tradeIDs", None)
+        transactions_hashes = list(tx_hashes_raw) if tx_hashes_raw else []
+        trade_ids = list(trade_ids_raw) if trade_ids_raw else []
+
         self._log.info(
             "place_fok_order.result",
             token_id=token_id[:20] + "...",
@@ -832,6 +844,8 @@ class PolymarketClient:
             taking_amount=taking_amount,
             size_matched=size_matched,
             filled=filled,
+            sub_fill_count=len(transactions_hashes),
+            tx_hashes=[h[:18] + "..." for h in transactions_hashes[:5]],
             error_msg=error_msg if error_msg else None,
         )
 
@@ -842,6 +856,8 @@ class PolymarketClient:
             "making_amount": making_amount,
             "taking_amount": taking_amount,
             "status": status,
+            "transactions_hashes": transactions_hashes,
+            "trade_ids": trade_ids,
         }
 
     async def place_market_order(
@@ -984,6 +1000,12 @@ class PolymarketClient:
         size_matched = taking_amount
         filled = (status == "matched") or (size_matched > 0)
 
+        # Sub-fill capture — see place_fok_order for full rationale.
+        tx_hashes_raw = _get(response, "transactionsHashes", None)
+        trade_ids_raw = _get(response, "tradeIDs", None)
+        transactions_hashes = list(tx_hashes_raw) if tx_hashes_raw else []
+        trade_ids = list(trade_ids_raw) if trade_ids_raw else []
+
         self._log.info(
             "place_market_order.result",
             order_type=ot,
@@ -994,6 +1016,8 @@ class PolymarketClient:
             order_id=str(order_id)[:20],
             status=status,
             success=success,
+            sub_fill_count=len(transactions_hashes),
+            tx_hashes=[h[:18] + "..." for h in transactions_hashes[:5]],
             error_msg=error_msg if error_msg else None,
         )
 
@@ -1004,6 +1028,8 @@ class PolymarketClient:
             "making_amount": making_amount,
             "taking_amount": taking_amount,
             "status": status,
+            "transactions_hashes": transactions_hashes,
+            "trade_ids": trade_ids,
         }
 
     async def get_order_book_spread(self, token_id: str) -> float:

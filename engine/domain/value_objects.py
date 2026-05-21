@@ -1256,6 +1256,14 @@ class ExecutionResult:
     strategy_id: str = ""
     direction: str = ""
 
+    # Sub-fill arrays (2026-05-21): a single FAK/FOK order can fill against
+    # N maker offers — Polymarket returns `transactionsHashes` + `tradeIDs`
+    # arrays in the post_order response. Surfaced here so the trade
+    # recorder can persist per-sub-fill rows for proper attribution.
+    # Empty list = single-maker fill (or unfilled).
+    transactions_hashes: tuple = field(default_factory=tuple)
+    trade_ids: tuple = field(default_factory=tuple)
+
 
 @dataclass(frozen=True)
 class PreTradeCheckResult:
