@@ -247,6 +247,12 @@ def _ensemble_surface_fields(surface) -> dict:
         # None when absent. Read by v9_2_eth_raw_lgb GHOST strategy
         # (asset=ETH, 5m). Hub notes #545/#547/#550.
         "probability_lgb_v9_2_eth": getattr(surface, "probability_lgb_v9_2_eth", None),
+        # 2026-05-22: v9.3-style BTC 5m LGB head — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v9_3_btc. Emitted when
+        # timesfm V9_3_BTC_ENABLED=true (companion PR not yet opened). Default
+        # None when absent. Read by v9_3_btc_raw_lgb + v9_3_btc_tight GHOST
+        # strategies (asset=BTC, 5m). Timesfm-repo notes #585/#587/#589/#590.
+        "probability_lgb_v9_3_btc": getattr(surface, "probability_lgb_v9_3_btc", None),
         # 2026-05-12: meta gate scores — emitted by timesfm-service on
         # /v4/snapshot. Written to window_snapshots via ensemble_fields
         # upsert so SQL analysis has first-class access.

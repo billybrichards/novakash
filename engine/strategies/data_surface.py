@@ -253,6 +253,22 @@ class FullDataSurface:
     # Hub notes #545 (data inventory), #547 (pipeline spec), #550 (training results).
     probability_lgb_v9_2_eth: Optional[float] = None
 
+    # v9.3-style BTC 5m LGB head — raw probability for the v9.3 BTC-trained model.
+    # Next-generation peer of probability_lgb_v9_2 on the BTC corpus: walk-forward
+    # CV (24-day backtest) with v9.3-style enriched feature set. Emitted by
+    # timesfm-service on /v4/snapshot.timescales.5m when V9_3_BTC_ENABLED=true
+    # (companion timesfm PR not yet opened — Billy approves before that's created).
+    # Read by BOTH new BTC GHOST strategies:
+    #   - v9_3_btc_raw_lgb (drop-in replacement, UP p>=0.72 / DOWN p<=0.20)
+    #   - v9_3_btc_tight (high-precision, UP p>=0.935 / DOWN p<=0.065,
+    #     early-window subsegment eval_offset in [20, 170])
+    # Walk-forward CV: raw_lgb 79.9% UP / 82.8% DOWN; tight 90.3% UP / 90.4% DOWN.
+    # Default None — forward-compatible; prod snapshots without this field
+    # remain valid until the timesfm-side flag is flipped.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # Timesfm-repo notes #585, #587, #589, #590 (walk-forward CV).
+    probability_lgb_v9_3_btc: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1369,6 +1385,11 @@ class DataSurfaceManager:
             probability_lgb_v9_2_eth=(
                 float(ts_data["probability_lgb_v9_2_eth"])
                 if ts_data.get("probability_lgb_v9_2_eth") is not None
+                else None
+            ),
+            probability_lgb_v9_3_btc=(
+                float(ts_data["probability_lgb_v9_3_btc"])
+                if ts_data.get("probability_lgb_v9_3_btc") is not None
                 else None
             ),
             probability_v2_meta_gate=(
