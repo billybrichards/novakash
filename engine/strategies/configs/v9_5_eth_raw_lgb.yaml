@@ -1,0 +1,80 @@
+name: v9_5_eth_raw_lgb
+strategy_id: v9_5_eth_raw_lgb
+version: "1.0.0"
+# v9_5_eth_raw_lgb — 2026-05-22 (Billy approved)
+#
+# Parallel sibling of v9_2_eth_raw_lgb. Reads the NEW probability_lgb_v9_5_eth
+# signal that the v9.5 ETH LGB head emits (companion timesfm PR
+# feat/v9_5_eth_emission). v9.5 is the next-generation ETH 5m model: 22-day
+# corpus, walk-forward CV (5x4d), new feature sources (Polymarket gamma at
+# 5m, Binance depth book, Polymarket CLOB pre-event aggregates).
+#
+# Per dedup analysis (RDS notes #579, #584), tight thresholds (UP p >= 0.96,
+# DOWN p <= 0.04) deliver ~91-92% per-window WR with ~36% fire rate on the
+# walk-forward OOF data. About 3-4x more fires per day than v9.4 LIVE at
+# matched selectivity, with similar or better realised WR. Same operating
+# thresholds as the v9_2_eth_raw_lgb v1.1.0 retune (see hub note #550).
+#
+# Co-exists with v9_2_eth_raw_lgb without interference — both read DIFFERENT
+# probability fields (probability_lgb_v9_5_eth vs probability_lgb_v9_2_eth)
+# and have independent consecutive-tick state.
+#
+# Asset: ETH only. Strategy will SKIP defensively on any non-ETH surface.
+# No v9_ensemble base-gate delegation, no cohort gates, no sister-pair veto,
+# no cell pauses, no blocked hours. Single qualifying tick is enough.
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md
+# (post-2026-04-17 rule — no auto-promote). $5 max_position_usd for the
+# initial shadow window; raise once shadow data validates the thresholds.
+#
+# DEPENDENCIES (all required before this strategy can contribute non-NULL
+# probability_lgb_v9_5_eth on the surface):
+#   1. timesfm-service: load v9.5 ETH booster(s)
+#   2. timesfm-service: emit probability_lgb_v9_5_eth on /v4/snapshot
+#      timescales.5m when V9_5_ETH_ENABLED=true
+#   3. engine data_surface.py: probability_lgb_v9_5_eth field (added this PR)
+#   4. migrations/add_probability_lgb_v9_5_eth.sql applied to prod DB
+#   5. engine signal-writer hooked up (added this PR)
+#
+# RDS notes #579 (dedup analysis intermediate), #584 (final operating point).
+# Companion timesfm PR: feat/v9_5_eth_emission (sibling agent).
+# Engine precedent: feat/v9_2_eth_raw_lgb_ghost (PR landed 2026-05-20).
+#
+status: GHOST
+description: |
+  Clean raw v9.5-style ETH 5m signal strategy. Fires on probability_lgb_v9_5_eth
+  alone: UP at p >= 0.96, DOWN at p <= 0.04, within eval_offset [60, 240],
+  any single qualifying tick. ETH-only (defensive asset guard). No v9_ensemble
+  delegation, no cohort gates, no veto layers, no cell pauses, no blocked hours.
+  GHOST mode, $5 max_position_usd for the initial shadow window. Tight-corner
+  operating point per RDS dedup analysis #579/#584 — projected ~91-92% per-window
+  WR with ~36% fire rate on walk-forward OOF.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_5_eth_raw_lgb.py
+pre_gate_hook: evaluate_v9_5_eth_raw_lgb
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.96
+  down_threshold: 0.04
+  eval_offset_min: 60
+  eval_offset_max: 240
+  min_consecutive_pass_ticks: 2
+  expected_asset: ETH
+  entry_cap: 0.96
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
