@@ -198,13 +198,26 @@ async def save_snapshot(pool: asyncpg.Pool, data: dict):
 
 
 async def resolve_window(pool: asyncpg.Pool, window_ts: int, asset: str,
-                         timeframe: str, close_price: float, outcome: str,
+                         timeframe: str, close_price: Optional[float], outcome: str,
                          open_price: Optional[float] = None):
-    """Mark a window as resolved with outcome (and open_price if available)."""
+    """Mark a window as resolved with outcome (and open_price if available).
+
+    2026-05-24 (RDS note #617): ``close_price`` is now Optional. When None,
+    we still write ``resolved=true`` + ``outcome``, but use COALESCE so we
+    NEVER overwrite an existing close_price with NULL (idempotent), and
+    NEVER write the historic 0.0 placeholder that broke close-price
+    cross-checks for 100% of resolved rows.
+    """
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE market_data
-            SET resolved = TRUE, close_price = $1, outcome = $2, resolved_at = NOW(),
+            SET resolved = TRUE,
+                -- audit #617: keep an existing non-NULL close_price; never
+                -- clobber with NULL. The previous writer hardcoded 0.0,
+                -- which silently nuked every resolved row's close price.
+                close_price = COALESCE($1, market_data.close_price),
+                outcome = $2,
+                resolved_at = NOW(),
                 -- audit #395: priceToBeat from prev-window finalPrice is sometimes
                 -- only available at resolution time; keep existing value if newer.
                 open_price = COALESCE(market_data.open_price, $6)
@@ -638,20 +651,37 @@ async def fetch_resolved_market(session: aiohttp.ClientSession, slug: str) -> Op
             # window, container restart, etc.), the resolution cycle backfills
             # it.
             #
-            # Review fix 395-3: drop the `finalPrice` fallback. priceToBeat is
-            # the window OPEN price; finalPrice is the window CLOSE price.
-            # Mixing them silently writes close-as-open. If priceToBeat is
-            # missing on a resolved event, leave open_price as None — better
-            # NULL than wrong.
+            # Review fix 395-3: drop the `finalPrice` fallback for open_price.
+            # priceToBeat is the window OPEN price; finalPrice is the window
+            # CLOSE price. Mixing them silently writes close-as-open. If
+            # priceToBeat is missing on a resolved event, leave open_price
+            # as None — better NULL than wrong.
+            #
+            # 2026-05-24 (RDS note #617): also capture eventMetadata.finalPrice
+            # as the window CLOSE price. Previously resolve_window was called
+            # with close_price=0.0 hardcoded (writer bug), so every resolved
+            # market_data row had close_price=0 — making market_data.outcome
+            # un-cross-verifiable against the underlying asset price. The
+            # outcome label itself (UP/DOWN) was already correct via
+            # outcomePrices; this captures the price the oracle settled at.
             event_meta = event.get("eventMetadata") or {}
             price_to_beat: Optional[float] = None
+            final_price: Optional[float] = None
             if isinstance(event_meta, dict):
-                raw = event_meta.get("priceToBeat")
-                if raw is not None:
+                raw_ptb = event_meta.get("priceToBeat")
+                if raw_ptb is not None:
                     try:
-                        val = float(raw)
+                        val = float(raw_ptb)
                         if val > 0:
                             price_to_beat = val
+                    except (TypeError, ValueError):
+                        pass
+                raw_fp = event_meta.get("finalPrice")
+                if raw_fp is not None:
+                    try:
+                        val = float(raw_fp)
+                        if val > 0:
+                            final_price = val
                     except (TypeError, ValueError):
                         pass
 
@@ -674,6 +704,7 @@ async def fetch_resolved_market(session: aiohttp.ClientSession, slug: str) -> Op
                 "up_final": up_final,
                 "down_final": float(prices[1]) if len(prices) > 1 else 1.0 - up_final,
                 "open_price": price_to_beat,
+                "close_price": final_price,
             }
     
     except Exception as exc:
@@ -731,7 +762,11 @@ async def collect_cycle(session: aiohttp.ClientSession, pool: asyncpg.Pool,
                         window["window_ts"],
                         window["asset"],
                         window["timeframe"],
-                        close_price=0.0,
+                        # audit #617: real close price from
+                        # eventMetadata.finalPrice (was 0.0 hardcoded —
+                        # broke market_data.close_price for every resolved
+                        # row). None is safe: resolve_window COALESCEs.
+                        close_price=result.get("close_price"),
                         outcome=result["outcome"],
                         # audit #395: backfill open_price from prev-window
                         # finalPrice / priceToBeat at resolution time.

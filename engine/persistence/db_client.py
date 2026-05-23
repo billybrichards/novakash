@@ -3422,10 +3422,24 @@ class DBClient:
         2026-04-30 forward-writer fix (hub note 297): also populates the
         canonical ``outcome`` column (was 100% NULL post-Apr-8 on shadow rows
         because the original writer only set ``oracle_outcome``).
+
+        2026-05-24 forward-writer fix (RDS note #617): also populates the
+        ``poly_winner`` column (was 100% NULL on XRP — and on every shadow
+        window for any asset without a LIVE trade). Previously only
+        order_manager._poll_resolutions and the v8.1.2 fallback at
+        runtime.py:5890 wrote poly_winner; the fallback's
+        ``oracle_winner IS NULL`` filter excluded already-shadow-resolved
+        windows. XRP had zero LIVE fires so poly_winner stayed NULL across
+        the board for that asset. This writer closes that gap: any window
+        the shadow resolver touches now also gets poly_winner stamped.
         """
         if not self._pool:
             return
         directional = self._coerce_directional_outcome(oracle_outcome, None)
+        # poly_winner column convention is capitalized "Up" / "Down" — same
+        # value order_manager._poll_resolutions writes. Matches the
+        # _coerce_directional_outcome priority (poly_winner first).
+        poly_winner = directional.capitalize() if directional else None
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -3433,14 +3447,16 @@ class DBClient:
                     UPDATE window_snapshots
                        SET oracle_outcome   = COALESCE(oracle_outcome, $1),
                            outcome          = COALESCE(outcome, $4),
+                           poly_winner      = COALESCE(poly_winner, $5),
                            shadow_pnl       = COALESCE(shadow_pnl, $2),
                            shadow_would_win = COALESCE(shadow_would_win, $3)
-                    WHERE window_ts = $5 AND asset = $6 AND timeframe = $7
+                    WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
                     """,
                     oracle_outcome,
                     shadow_pnl,
                     shadow_would_win,
                     directional,
+                    poly_winner,
                     window_ts,
                     asset,
                     timeframe,
@@ -3451,6 +3467,7 @@ class DBClient:
                 asset=asset,
                 oracle_outcome=oracle_outcome,
                 outcome=directional,
+                poly_winner=poly_winner,
                 shadow_pnl=f"{shadow_pnl:+.2f}",
                 shadow_would_win=shadow_would_win,
             )

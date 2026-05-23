@@ -177,6 +177,23 @@ ORDER BY net_pnl_usd DESC NULLS LAST
 # DISTINCT ON dedupes re-eval rows for the same (strategy, asset, window,
 # timeframe) so each window contributes at most one would-fire. LEFT JOIN
 # to window_snapshots picks up oracle_outcome to compute would-WR.
+#
+# RDS note #617 (2026-05-24): resolution column choice — Polymarket
+# resolution may land via THREE writer paths:
+#   1. update_shadow_resolution  -> writes outcome + oracle_outcome + poly_winner
+#   2. update_window_outcome     -> writes outcome + poly_winner ONLY
+#      (called from order_manager._poll_resolutions on every LIVE fire)
+#   3. v8.1.2 fallback at runtime.py:5890 -> writes outcome + poly_winner ONLY
+#
+# Only path 1 populates oracle_outcome. Filtering "resolved" on
+# `oracle_outcome IS NOT NULL` therefore misses every LIVE-resolved
+# and v8.1.2-fallback-resolved window — i.e. every BTC/ETH/SOL window
+# that had a LIVE trade or got picked up by the catch-all loop.
+#
+# Use the canonical resolution column `outcome` (UP/DOWN/FLAT, populated
+# by ALL three writers) and compare against the directional fire
+# direction in upper case. Same semantics as pg_decisions_query_repo's
+# `COALESCE(se.outcome, ws.outcome)`.
 _Q_GHOST_24H = """
 WITH fires AS (
     SELECT DISTINCT ON (strategy_id, asset, window_ts, timeframe)
@@ -192,13 +209,13 @@ SELECT
     f.strategy_id,
     MIN(f.asset)                                                AS asset,
     COUNT(*)                                                    AS would_fires,
-    COUNT(*) FILTER (WHERE ws.oracle_outcome IS NOT NULL)       AS resolved,
-    COUNT(*) FILTER (WHERE ws.oracle_outcome = f.direction)     AS wins,
-    COUNT(*) FILTER (WHERE ws.oracle_outcome IS NOT NULL
-                       AND ws.oracle_outcome <> f.direction)    AS losses,
+    COUNT(*) FILTER (WHERE ws.outcome IS NOT NULL)              AS resolved,
+    COUNT(*) FILTER (WHERE ws.outcome = UPPER(f.direction))     AS wins,
+    COUNT(*) FILTER (WHERE ws.outcome IS NOT NULL
+                       AND ws.outcome <> UPPER(f.direction))    AS losses,
     ROUND(
-        100.0 * COUNT(*) FILTER (WHERE ws.oracle_outcome = f.direction)::numeric
-        / NULLIF(COUNT(*) FILTER (WHERE ws.oracle_outcome IS NOT NULL), 0),
+        100.0 * COUNT(*) FILTER (WHERE ws.outcome = UPPER(f.direction))::numeric
+        / NULLIF(COUNT(*) FILTER (WHERE ws.outcome IS NOT NULL), 0),
         1
     )                                                           AS would_wr_pct,
     ROUND(AVG(f.fill_price)::numeric, 4)                        AS avg_fill_price,

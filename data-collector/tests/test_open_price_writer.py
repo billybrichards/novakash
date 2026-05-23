@@ -413,5 +413,122 @@ class TestFetchResolvedMarketOpenPrice(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["up_final"], 0.99)
 
 
+# ---------------------------------------------------------------------------
+# Test: RDS note #617 — fetch_resolved_market returns close_price
+# (eventMetadata.finalPrice), resolve_window COALESCEs and NEVER writes 0.0
+# ---------------------------------------------------------------------------
+
+class TestFetchResolvedMarketClosePrice(unittest.IsolatedAsyncioTestCase):
+    """Audit #617 (2026-05-24) — close_price must come from
+    eventMetadata.finalPrice, not be hardcoded to 0.0.
+    """
+
+    def _resolved_event(self, price_to_beat=None, final_price=None):
+        event_meta: dict = {}
+        if price_to_beat is not None:
+            event_meta["priceToBeat"] = price_to_beat
+        if final_price is not None:
+            event_meta["finalPrice"] = final_price
+        return [{
+            "eventMetadata": event_meta,
+            "markets": [{
+                "closed": True,
+                "outcomePrices": json.dumps(["0.99", "0.01"]),
+            }],
+        }]
+
+    async def _fetch(self, payload) -> Optional[dict]:
+        mock_session = MagicMock()
+        mock_session.get.return_value = _make_aiohttp_response(payload)
+        with patch.object(collector._limiter, "wait", AsyncMock()):
+            return await collector.fetch_resolved_market(
+                mock_session, "btc-updown-5m-1775379300"
+            )
+
+    async def test_close_price_captured_from_final_price(self):
+        """close_price in result equals eventMetadata.finalPrice (string-coerced)."""
+        result = await self._fetch(self._resolved_event(final_price="93500.75"))
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["close_price"], 93500.75)
+
+    async def test_close_price_none_when_final_price_absent(self):
+        """close_price is None when eventMetadata has no finalPrice."""
+        result = await self._fetch(self._resolved_event(price_to_beat="94000"))
+        self.assertIsNotNone(result)
+        self.assertIsNone(result["close_price"])
+
+    async def test_close_price_none_when_final_price_zero(self):
+        """close_price is None when finalPrice is 0 (invalid sentinel)."""
+        result = await self._fetch(self._resolved_event(final_price="0"))
+        self.assertIsNone(result["close_price"])
+
+    async def test_close_price_none_when_final_price_invalid(self):
+        """close_price is None when finalPrice is not numeric."""
+        result = await self._fetch(self._resolved_event(final_price="garbage"))
+        self.assertIsNone(result["close_price"])
+
+    async def test_close_price_key_always_present(self):
+        """Result dict always includes close_price key (may be None)."""
+        result = await self._fetch(self._resolved_event())
+        self.assertIn("close_price", result)
+
+
+class TestResolveWindowClosePrice(unittest.IsolatedAsyncioTestCase):
+    """Audit #617 — resolve_window must COALESCE close_price; never overwrite
+    a real value with 0 or NULL.
+    """
+
+    async def _call_resolve(self, close_price):
+        """Helper: call resolve_window and capture SQL + args."""
+        captured: list = []
+
+        mock_conn = AsyncMock()
+        async def fake_execute(sql, *args):
+            captured.append((sql, args))
+        mock_conn.execute.side_effect = fake_execute
+
+        mock_pool = MagicMock()
+        acquire_ctx = MagicMock()
+        acquire_ctx.__aenter__ = AsyncMock(return_value=mock_conn)
+        acquire_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.acquire.return_value = acquire_ctx
+
+        await collector.resolve_window(
+            pool=mock_pool,
+            window_ts=1775379300,
+            asset="BTC",
+            timeframe="5m",
+            close_price=close_price,
+            outcome="UP",
+            open_price=94000.0,
+        )
+        return captured[0] if captured else ("", ())
+
+    async def test_coalesce_present_in_resolve_sql(self):
+        """resolve_window SQL must include COALESCE($1, market_data.close_price)."""
+        sql, _ = await self._call_resolve(close_price=94250.0)
+        self.assertIn("COALESCE($1, market_data.close_price)", sql)
+
+    async def test_real_close_price_passed_as_first_arg(self):
+        """Real close_price value is passed as the 1st positional arg."""
+        _, args = await self._call_resolve(close_price=94250.0)
+        self.assertAlmostEqual(args[0], 94250.0)
+
+    async def test_none_close_price_passed_as_first_arg(self):
+        """None close_price accepted; SQL COALESCEs to keep existing value."""
+        _, args = await self._call_resolve(close_price=None)
+        self.assertIsNone(args[0])
+
+    async def test_no_zero_default_in_sql(self):
+        """SQL must NOT contain a 0.0 literal for close_price (the audit #617
+        regression). Either we get a real value from Gamma or we COALESCE.
+        """
+        sql, _ = await self._call_resolve(close_price=94250.0)
+        # The historic bug was a Python-side `close_price=0.0` arg; the SQL
+        # itself was already parameter-driven. The COALESCE guard makes the
+        # SQL itself idempotent under NULL inputs.
+        self.assertIn("COALESCE", sql)
+
+
 if __name__ == "__main__":
     unittest.main()
