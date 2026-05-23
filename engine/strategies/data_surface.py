@@ -286,6 +286,26 @@ class FullDataSurface:
     # Timesfm-repo notes #585, #587, #589, #590 (walk-forward CV).
     probability_lgb_v9_3_btc: Optional[float] = None
 
+    # v9.5-style XRP 5m LGB head — raw probability for the v9.5 XRP-trained model.
+    # Counterpart to probability_lgb_v9_5_eth on the XRP corpus: Optuna-tuned,
+    # 8.62-day full corpus (1505 windows / 928 OOF), 67-feature schema (9
+    # features NaN-filled on XRP serve path pending a loader-side follow-up
+    # analogous to PR #158 for ETH). Emitted by timesfm-service on
+    # /v4/snapshot.timescales.5m when V9_5_XRP_ENABLED=true (timesfm PR #160
+    # merged 2026-05-23).
+    # Read by BOTH new XRP GHOST strategies:
+    #   - v9_5_xrp_raw_lgb (drop-in moderate, UP p>=0.82 / DOWN p<=0.20)
+    #   - v9_5_xrp_tight  (high-precision, UP p>=0.95 / DOWN p<=0.05,
+    #     late-window subsegment eval_offset in [120, 240])
+    # Walk-forward CV: raw_lgb 74.8% UP / 71.9% DOWN; tight 80.9% UP / 83.1% DOWN.
+    # XRP corpus is thinner than ETH (22d) and v9.3 BTC (24d) so 90%+ pockets
+    # are NOT reachable on UP side (ceiling ~83% at thr=0.97, n=263).
+    # Default None — forward-compatible; prod snapshots without this field
+    # remain valid until the timesfm-side flag is flipped.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # Timesfm-repo PR #160 + RDS note #593.
+    probability_lgb_v9_5_xrp: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1412,6 +1432,11 @@ class DataSurfaceManager:
             probability_lgb_v9_3_btc=(
                 float(ts_data["probability_lgb_v9_3_btc"])
                 if ts_data.get("probability_lgb_v9_3_btc") is not None
+                else None
+            ),
+            probability_lgb_v9_5_xrp=(
+                float(ts_data["probability_lgb_v9_5_xrp"])
+                if ts_data.get("probability_lgb_v9_5_xrp") is not None
                 else None
             ),
             probability_v2_meta_gate=(
