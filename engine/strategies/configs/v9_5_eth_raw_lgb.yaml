@@ -71,9 +71,9 @@ gate_params:
   eval_offset_max: 240
   min_consecutive_pass_ticks: 2
   expected_asset: ETH
-  entry_cap: 0.96
+  entry_cap: 0.85
   collateral_pct: 0.025
-  gtc_cap: 0.96
+  gtc_cap: 0.90
 
 risk:
   max_position_usd: 5
