@@ -3,9 +3,14 @@
 Mirrors v9_3_btc_raw_lgb but fires on the NEW probability_lgb_v9_5_xrp signal
 (timesfm PR #160, merged 2026-05-23). No v9_ensemble base-gate delegation.
 No cohort gates, no sister-pair veto, no cell pauses, no blocked hours.
-Co-exists with v9_2_xrp_raw_lgb (probability_lgb_v9_2_xrp) and the sibling
-v9_5_xrp_tight strategy in this PR — both read the SAME
-probability_lgb_v9_5_xrp column but at DIFFERENT operating points.
+Co-exists with the sibling v9_5_xrp_tight strategy in this PR — both read
+the SAME probability_lgb_v9_5_xrp column but at DIFFERENT operating points.
+
+NOTE (2026-05-23): The earlier v9_2_xrp_raw_lgb strategy was never wired
+into production (no strategy_configs row, no yaml/py file, no writer for
+its column). v9.5 XRP is the canonical XRP path going forward. The
+signal_evaluations.probability_lgb_v9_2_xrp column remains in the DB
+(harmless, all-NULL) but no engine code references it.
 
 Asset: XRP only. Strategy will SKIP on any non-XRP surface (defensive guard
 — the v9.5 XRP model is calibrated for XRP only; firing on BTC/ETH would
@@ -63,7 +68,7 @@ _DEFAULT_ASSET = "XRP"
 # Consecutive-tick state. Maps (window_ts, direction) -> (count, last_seen_ts).
 # Resets when direction changes or the gap between evals exceeds _MAX_GAP_S.
 # Module-local so this strategy's consecutive-tick state cannot collide with
-# the sibling v9_5_xrp_tight strategy or with v9_2_xrp_raw_lgb.
+# the sibling v9_5_xrp_tight strategy.
 _consec_state: dict[tuple[int, str], tuple[int, float]] = {}
 _MAX_GAP_S = 5.0
 
