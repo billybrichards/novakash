@@ -56,6 +56,14 @@ async def main() -> None:
 
     log.info("engine.starting", paper_mode=settings.paper_mode)
 
+    # ── Cheap startup sanity checks (warn-only) ────────────────────────────
+    # These run BEFORE CompositionRoot so the warning shows up at the very
+    # top of the boot log rather than buried under feed-init noise. Added
+    # 2026-05-23 after PR #577 (FIVE_MIN_ASSETS / FIFTEEN_MIN_ASSETS drift).
+    from config.startup_validators import validate_asset_enum_alignment
+
+    validate_asset_enum_alignment()
+
     root = CompositionRoot(settings=settings)
     await EngineRuntime(root).run()
 
