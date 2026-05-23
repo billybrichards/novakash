@@ -341,3 +341,167 @@ async def compute_clob_pre_aggregates(
         # side query produces 0 in that case too, so we mirror it.
         "clob_up_pre_n": _safe_float(row["n"]) if row["n"] is not None else 0.0,
     }
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Binance depth (top-of-book + ±1% / ±5% imbalance + spread)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _empty_binance_depth() -> dict[str, Optional[float]]:
+    return {
+        "binance_depth_imbalance_inner": None,
+        "binance_depth_imbalance_1pct": None,
+        "binance_depth_imbalance_5pct": None,
+        "binance_spread_pct": None,
+    }
+
+
+def _depth_imbalance(
+    bid: Optional[float], ask: Optional[float]
+) -> Optional[float]:
+    if bid is None or ask is None:
+        return None
+    try:
+        bf, af = float(bid), float(ask)
+    except (TypeError, ValueError):
+        return None
+    s = bf + af
+    if s <= 0:
+        return None
+    return (bf - af) / s
+
+
+def compute_binance_depth_from_snapshot(
+    snap: Optional[dict[str, Any]],
+) -> dict[str, Optional[float]]:
+    """Pure-function: 4-feature dict from a parsed depth snapshot.
+
+    Extracted from `compute_binance_depth_imbalance` so the fast in-
+    memory path (skips DB) can reuse it. Returns all-None dict if
+    `snap` is None / malformed.
+    """
+    if snap is None:
+        return _empty_binance_depth()
+    spread = snap.get("spread_pct")
+    inner = _depth_imbalance(snap.get("best_bid_qty"), snap.get("best_ask_qty"))
+    one_pct = _depth_imbalance(
+        snap.get("bid_depth_1pct"), snap.get("ask_depth_1pct")
+    )
+    five_pct = _depth_imbalance(
+        snap.get("bid_depth_5pct"), snap.get("ask_depth_5pct")
+    )
+    try:
+        spread_f = float(spread) if spread is not None else None
+    except (TypeError, ValueError):
+        spread_f = None
+    return {
+        "binance_depth_imbalance_inner": inner,
+        "binance_depth_imbalance_1pct": one_pct,
+        "binance_depth_imbalance_5pct": five_pct,
+        "binance_spread_pct": spread_f,
+    }
+
+
+async def compute_binance_depth_imbalance(
+    pool: Any,
+    asset: str,
+    *,
+    max_age_seconds: int = 30,
+    depth_feed: Any = None,
+) -> dict[str, Optional[float]]:
+    """4-feature dict for ``binance_depth_imbalance_{inner,1pct,5pct}`` + ``binance_spread_pct``.
+
+    Two fast paths in priority order:
+
+    1.  **In-memory snapshot via depth_feed**. If a
+        ``BinanceDepthMultiFeed`` is wired and has a recent snapshot
+        for the asset, derive features from it — zero DB latency on
+        the scoring critical path. This is the steady-state path.
+
+    2.  **ASOF query on ``ticks_binance_book``**. Fallback if the live
+        feed hasn't observed the asset yet (cold start) or the
+        in-memory snapshot is older than `max_age_seconds`. Slower but
+        survives engine restarts.
+
+    Returns all-None dict on any error path so the LightGBM missing-
+    value branch is used (DO NOT return 0.0 — that's a real signal).
+
+    Args:
+        pool:            asyncpg pool (or None for in-memory-only).
+        asset:           'BTC' | 'ETH' | 'XRP' | …
+        max_age_seconds: Snapshot/row older than this is treated as
+                         stale → None. Default 30s (depth feed flushes
+                         every 1s, so 30s catches a stale connection).
+        depth_feed:      Optional `BinanceDepthMultiFeed`-shaped object
+                         exposing `latest_snapshot(asset) -> dict|None`.
+
+    Returns:
+        Dict with 4 keys, every value float or None.
+    """
+    if not asset:
+        return _empty_binance_depth()
+
+    asset_u = asset.upper()
+    now_ts = _dt.datetime.now(_dt.timezone.utc).timestamp()
+
+    # Fast path: in-memory snapshot.
+    if depth_feed is not None:
+        try:
+            snap = depth_feed.latest_snapshot(asset_u)
+        except Exception:
+            snap = None
+        if snap is not None:
+            ts = snap.get("ts")
+            try:
+                age = now_ts - float(ts) if ts is not None else None
+            except (TypeError, ValueError):
+                age = None
+            if age is None or age <= max_age_seconds:
+                return compute_binance_depth_from_snapshot(snap)
+        # Snapshot stale or unavailable — fall through to DB.
+
+    if pool is None:
+        return _empty_binance_depth()
+
+    # ASOF query against ticks_binance_book.
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                    best_bid_qty, best_ask_qty,
+                    bid_depth_1pct, ask_depth_1pct,
+                    bid_depth_5pct, ask_depth_5pct,
+                    spread_pct, ts
+                FROM ticks_binance_book
+                WHERE asset = $1
+                  AND ts >= NOW() - ($2::int * INTERVAL '1 second')
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                asset_u,
+                int(max_age_seconds),
+            )
+    except Exception as exc:
+        log.debug(
+            "feature_emitters.binance_depth.error",
+            asset=asset_u,
+            error=str(exc)[:120],
+        )
+        return _empty_binance_depth()
+
+    if row is None:
+        return _empty_binance_depth()
+
+    # Re-use the pure helper on a normalized dict.
+    snap_from_db = {
+        "best_bid_qty": row["best_bid_qty"],
+        "best_ask_qty": row["best_ask_qty"],
+        "bid_depth_1pct": row["bid_depth_1pct"],
+        "ask_depth_1pct": row["ask_depth_1pct"],
+        "bid_depth_5pct": row["bid_depth_5pct"],
+        "ask_depth_5pct": row["ask_depth_5pct"],
+        "spread_pct": row["spread_pct"],
+    }
+    return compute_binance_depth_from_snapshot(snap_from_db)

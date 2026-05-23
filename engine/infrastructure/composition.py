@@ -821,6 +821,14 @@ class CompositionRoot:
         self._clob_feed: Optional[CLOBFeed] = None
         # Instantiated in start() once DB pool is live
 
+        # ── Binance Depth Feed (BTC/ETH/XRP/…, depth20@100ms, flush 1s) ─────
+        # PR follow-up to #582: feeds the 4 binance_depth_imbalance_* +
+        # binance_spread_pct features in V5FeatureBody. Disabled by
+        # default (BINANCE_DEPTH_ENABLED=1 to enable) to keep the
+        # initial rollout opt-in until on-box performance is verified.
+        # Multi-asset via FIVE_MIN_ASSETS.
+        self._binance_depth_feed = None  # instantiated in start()
+
         # Polymarket token IDs from settings
         token_ids = [
             tid.strip() for tid in settings.poly_btc_token_ids.split(",") if tid.strip()

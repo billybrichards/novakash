@@ -354,6 +354,10 @@ class FiveMinVPINStrategy(BaseStrategy):
             None  # v8.1 — DEPRECATED: use .timesfm_v2_client / .set_timesfm_v2_client()
         )
         self._tick_recorder = None  # DEPRECATED: use .set_tick_recorder()
+        # PR follow-up to #582 (binance_depth_*): optional in-memory
+        # snapshot source. Use .set_depth_feed() post-construction.
+        # When None, the depth emitter falls back to ticks_binance_book.
+        self._depth_feed = None
         self._evaluator = WindowEvaluator()
 
         # CRITICAL: DB-backed dedup — survives engine restarts.
@@ -474,6 +478,17 @@ class FiveMinVPINStrategy(BaseStrategy):
     def set_tick_recorder(self, recorder) -> None:
         """Inject the TickRecorder (post-construction)."""
         self._tick_recorder = recorder
+
+    def set_depth_feed(self, depth_feed) -> None:
+        """Inject the BinanceDepthMultiFeed (post-construction).
+
+        Once set, the `binance_depth_imbalance_*` + `binance_spread_pct`
+        emitters prefer the in-memory snapshot (zero DB latency) and
+        fall back to `ticks_binance_book` only on cold-start / stale.
+
+        Optional: leaving this unset keeps the DB fallback path live.
+        """
+        self._depth_feed = depth_feed
 
     async def evaluate_window(self, window, state) -> None:
         """Public entry point for window evaluation."""
@@ -1077,6 +1092,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             from signals.feature_emitters import (
                 compute_oi_delta_cumulative as _f_oi_cum,
                 compute_clob_pre_aggregates as _f_clob_pre,
+                compute_binance_depth_imbalance as _f_bin_depth,
             )
             _gate_pool = self._db._pool if (self._db is not None and getattr(self._db, "_pool", None)) else None
             _gate_oi_cum = await _f_oi_cum(
@@ -1090,6 +1106,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                 window_ts=getattr(window, "window_ts", None),
                 up_token_id=getattr(window, "up_token_id", None),
                 down_token_id=getattr(window, "down_token_id", None),
+            )
+            # PR follow-up to #582: Binance top-of-book depth + spread.
+            # Prefers in-memory snapshot via depth_feed (zero DB hit);
+            # falls back to ASOF query on ticks_binance_book.
+            _gate_bin_depth = await _f_bin_depth(
+                pool=_gate_pool,
+                asset=window.asset,
+                depth_feed=self._depth_feed,
             )
             _v5_body = build_v5_feature_body(
                 eval_offset=getattr(window, "eval_offset", None),
@@ -1128,6 +1152,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                 clob_up_pre_stdev=_gate_clob_pre["clob_up_pre_stdev"],
                 clob_dn_pre_stdev=_gate_clob_pre["clob_dn_pre_stdev"],
                 clob_up_pre_n=_gate_clob_pre["clob_up_pre_n"],
+                # Binance depth (follow-up to PR #582, this PR).
+                binance_depth_imbalance_inner=_gate_bin_depth["binance_depth_imbalance_inner"],
+                binance_depth_imbalance_1pct=_gate_bin_depth["binance_depth_imbalance_1pct"],
+                binance_depth_imbalance_5pct=_gate_bin_depth["binance_depth_imbalance_5pct"],
+                binance_spread_pct=_gate_bin_depth["binance_spread_pct"],
             )
 
             ctx = GateContext(
@@ -1783,6 +1812,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 from signals.feature_emitters import (
                     compute_oi_delta_cumulative,
                     compute_clob_pre_aggregates,
+                    compute_binance_depth_imbalance,
                 )
 
                 # ── v9.3 BTC / v9.5 ETH+XRP feature emitters (PR #582) ──
@@ -1802,6 +1832,12 @@ class FiveMinVPINStrategy(BaseStrategy):
                     window_ts=getattr(window, "window_ts", None),
                     up_token_id=getattr(window, "up_token_id", None),
                     down_token_id=getattr(window, "down_token_id", None),
+                )
+                # PR follow-up to #582: Binance depth (pre-eval mirror).
+                _bin_depth_pre = await compute_binance_depth_imbalance(
+                    pool=_pre_pool,
+                    asset=window.asset,
+                    depth_feed=self._depth_feed,
                 )
 
                 # Pre-eval diagnostic fetch: ~60% feature coverage by
@@ -1845,6 +1881,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     clob_up_pre_stdev=_clob_pre_pre["clob_up_pre_stdev"],
                     clob_dn_pre_stdev=_clob_pre_pre["clob_dn_pre_stdev"],
                     clob_up_pre_n=_clob_pre_pre["clob_up_pre_n"],
+                    # Binance depth (follow-up to PR #582, this PR).
+                    binance_depth_imbalance_inner=_bin_depth_pre["binance_depth_imbalance_inner"],
+                    binance_depth_imbalance_1pct=_bin_depth_pre["binance_depth_imbalance_1pct"],
+                    binance_depth_imbalance_5pct=_bin_depth_pre["binance_depth_imbalance_5pct"],
+                    binance_spread_pct=_bin_depth_pre["binance_spread_pct"],
                 )
                 _v2_pre = await self._timesfm_v2.score_with_features(
                     asset=window.asset,
@@ -2288,6 +2329,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 from signals.feature_emitters import (
                     compute_oi_delta_cumulative,
                     compute_clob_pre_aggregates,
+                    compute_binance_depth_imbalance,
                 )
 
                 # ── v9.3 BTC / v9.5 ETH+XRP feature emitters (PR #582) ──
@@ -2307,6 +2349,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                     window_ts=getattr(window, "window_ts", None),
                     up_token_id=getattr(window, "up_token_id", None),
                     down_token_id=getattr(window, "down_token_id", None),
+                )
+                # PR follow-up to #582: Binance depth (decision path).
+                # Prefers in-memory snapshot via depth_feed (zero DB hit);
+                # falls back to ASOF query on ticks_binance_book.
+                _bin_depth = await compute_binance_depth_imbalance(
+                    pool=_pool,
+                    asset=window.asset,
+                    depth_feed=self._depth_feed,
                 )
 
                 # Build the full feature push-mode body via the
@@ -2360,9 +2410,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     clob_up_pre_stdev=_clob_pre["clob_up_pre_stdev"],
                     clob_dn_pre_stdev=_clob_pre["clob_dn_pre_stdev"],
                     clob_up_pre_n=_clob_pre["clob_up_pre_n"],
-                    # binance_depth_imbalance_* and binance_spread_pct: no
-                    # engine data source yet; stays None (→ NaN at
-                    # scoring). See PR #582 body for the depth-feed gap.
+                    # Binance depth (follow-up to PR #582, this PR).
+                    binance_depth_imbalance_inner=_bin_depth["binance_depth_imbalance_inner"],
+                    binance_depth_imbalance_1pct=_bin_depth["binance_depth_imbalance_1pct"],
+                    binance_depth_imbalance_5pct=_bin_depth["binance_depth_imbalance_5pct"],
+                    binance_spread_pct=_bin_depth["binance_spread_pct"],
                 )
                 _v2_result = await self._timesfm_v2.score_with_features(
                     asset=window.asset,
