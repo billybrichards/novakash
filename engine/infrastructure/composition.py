@@ -638,7 +638,13 @@ class CompositionRoot:
                 # `strategy_registry_init_error`). Always read env twice
                 # so this block stays independent of execution order.
                 _surface_assets: list[str] = []
-                _five_min_assets = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
+                # 2026-05-23: default mirrors settings.five_min_assets so the
+                # data-surface cache covers every active asset when env is
+                # missing. See settings.py:five_min_assets for the gap that
+                # blocked v9.5 XRP probabilities all day.
+                _five_min_assets = os.environ.get(
+                    "FIVE_MIN_ASSETS", "BTC,ETH,SOL,XRP"
+                ).split(",")
                 _fifteen_min_assets_env = os.environ.get(
                     "FIFTEEN_MIN_ASSETS", "BTC"
                 ).split(",")

@@ -129,7 +129,15 @@ class Settings(BaseSettings):
         default=False, description="Enable 5-minute Polymarket trading"
     )
     five_min_assets: str = Field(
-        default="BTC", description="Comma-separated assets for 5-min trading"
+        # 2026-05-23: bumped default BTC → BTC,ETH,SOL,XRP so the 5-min feed
+        # mirrors the 15-min feed when env is missing. Prevents asset-list
+        # regressions like the one that hid v9.5 XRP probabilities for
+        # the entire trading day (5m feed only had BTC,ETH on Montreal
+        # while FIFTEEN_MIN_ASSETS had BTC,ETH,SOL,XRP). The 5m feed and
+        # data_surface are already asset-aware; non-trading 5m strategies
+        # SKIP per the multi-asset guard in registry.py:555.
+        default="BTC,ETH,SOL,XRP",
+        description="Comma-separated assets for 5-min trading",
     )
     five_min_mode: str = Field(
         default="safe", description="Trading mode: flat/safe/degen"
