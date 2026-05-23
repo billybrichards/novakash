@@ -331,6 +331,47 @@ class V5FeatureBody:
     vpin_range_60s: Optional[float] = None
     source_delta_divergence: Optional[float] = None
 
+    # ── v9.3 BTC / v9.5 ETH+XRP feature coverage (added 2026-05-23) ──
+    # Adds 11 schema slots the boosters were trained on but the engine
+    # push contract previously omitted. Mirrors the canonical NaN-default
+    # block in `app/v2_scorer.py:890-910` (timesfm-service) and the
+    # loader stubs at `app/v5_feature_loader.py:480-527`.
+    #
+    # **Computed engine-side** (this PR populates these from existing
+    # ticks_* tables — see `engine/signals/feature_emitters.py`):
+    #   gamma_spread                              — abs(gamma_up - gamma_down)
+    #   clob_pre_imbalance                        — pre-event CLOB book imbalance
+    #   clob_pre_vig                              — pre-event CLOB market vig
+    #   clob_up_pre_stdev                         — stddev of UP token price pre-event
+    #   clob_dn_pre_stdev                         — stddev of DOWN token price pre-event
+    #   clob_up_pre_n                             — count of CLOB ticks pre-event
+    #   nested_5m_oi_delta_cumulative             — Σ oi_delta_pct within current 5m window
+    #
+    # **Stubs (no engine data source yet — stays None → NaN at scoring)**:
+    #   binance_depth_imbalance_inner / _1pct / _5pct  — depth-imbalance ratios
+    #       at three book bands. `data.binance.vision` provides this at
+    #       training time only; the engine's BinanceWebSocketFeed
+    #       currently has on_book=None (no depth subscription) and no
+    #       ticks_binance_book table exists. Documented as known gap.
+    #   binance_spread_pct                        — (best_ask − best_bid) / mid * 100
+    #       Same training-time-only source as depth_imbalance. Stub.
+    #
+    # NB on naming parity: training-side feature lists use exactly these
+    # snake_case names. `clob_dn_pre_stdev` (not `clob_down_pre_stdev`)
+    # is the canonical spelling per `app/v2_scorer.py:906` and the v9.5
+    # ETH+XRP loader stubs at `app/v5_feature_loader.py:524`.
+    gamma_spread: Optional[float] = None
+    binance_depth_imbalance_inner: Optional[float] = None
+    binance_depth_imbalance_1pct: Optional[float] = None
+    binance_depth_imbalance_5pct: Optional[float] = None
+    binance_spread_pct: Optional[float] = None
+    clob_pre_imbalance: Optional[float] = None
+    clob_pre_vig: Optional[float] = None
+    clob_up_pre_stdev: Optional[float] = None
+    clob_dn_pre_stdev: Optional[float] = None
+    clob_up_pre_n: Optional[float] = None
+    nested_5m_oi_delta_cumulative: Optional[float] = None
+
     def to_json_dict(self) -> dict[str, Optional[float]]:
         """
         Serialise to a dict suitable for JSON encoding.
@@ -384,6 +425,18 @@ class V5FeatureBody:
             "vpin_max_60s": self.vpin_max_60s,
             "vpin_range_60s": self.vpin_range_60s,
             "source_delta_divergence": self.source_delta_divergence,
+            # v9.3 BTC / v9.5 ETH+XRP coverage (added 2026-05-23).
+            "gamma_spread": self.gamma_spread,
+            "binance_depth_imbalance_inner": self.binance_depth_imbalance_inner,
+            "binance_depth_imbalance_1pct": self.binance_depth_imbalance_1pct,
+            "binance_depth_imbalance_5pct": self.binance_depth_imbalance_5pct,
+            "binance_spread_pct": self.binance_spread_pct,
+            "clob_pre_imbalance": self.clob_pre_imbalance,
+            "clob_pre_vig": self.clob_pre_vig,
+            "clob_up_pre_stdev": self.clob_up_pre_stdev,
+            "clob_dn_pre_stdev": self.clob_dn_pre_stdev,
+            "clob_up_pre_n": self.clob_up_pre_n,
+            "nested_5m_oi_delta_cumulative": self.nested_5m_oi_delta_cumulative,
         }
 
     def coverage(self) -> float:
@@ -454,6 +507,32 @@ def build_v5_feature_body(
     vpin_std_60s: Optional[float] = None,
     vpin_min_60s: Optional[float] = None,
     vpin_max_60s: Optional[float] = None,
+    # ── v9.3 BTC / v9.5 ETH+XRP inputs (added 2026-05-23) ───────────
+    # CLOB pre-event aggregates (5 features) — derived in the engine
+    # via `feature_emitters.compute_clob_pre_aggregates` over the
+    # ticks_clob / clob_book_snapshots window pre-window-open. Pass the
+    # dict-spread output of that helper, OR None if it failed / DB
+    # unavailable / pre-window not yet observed.
+    clob_pre_imbalance: Optional[float] = None,
+    clob_pre_vig: Optional[float] = None,
+    clob_up_pre_stdev: Optional[float] = None,
+    clob_dn_pre_stdev: Optional[float] = None,
+    clob_up_pre_n: Optional[float] = None,
+    # nested_5m_oi_delta_cumulative — Σ oi_delta_pct from ticks_coinglass
+    # within the current 5m window (computed by
+    # `feature_emitters.compute_oi_delta_cumulative`). None when
+    # CoinGlass is offline for the asset or no ticks yet in the window.
+    nested_5m_oi_delta_cumulative: Optional[float] = None,
+    # Binance depth / spread features — stubs only on develop. The
+    # BinanceWebSocketFeed currently has on_book=None (no depth20
+    # subscription) and no ticks_binance_book table exists, so these
+    # stay None → NaN at scoring. Wiring kwargs ahead of time so a
+    # future depth pipeline doesn't need to bump the V5FeatureBody
+    # schema again. Documented in PR body.
+    binance_depth_imbalance_inner: Optional[float] = None,
+    binance_depth_imbalance_1pct: Optional[float] = None,
+    binance_depth_imbalance_5pct: Optional[float] = None,
+    binance_spread_pct: Optional[float] = None,
 ) -> V5FeatureBody:
     """
     Single source of truth for building a V5FeatureBody from engine state.
@@ -568,6 +647,16 @@ def build_v5_feature_body(
     if _vmax_f is not None and _vmin_f is not None:
         _vpin_range_60s = _vmax_f - _vmin_f
 
+    # gamma_spread — `build_dataset.py:325` (v9.5).
+    # gamma_spread = abs(gamma_up_price - gamma_down_price)
+    # Captures whether the Polymarket book is symmetric (~|0.5-0.5|=0)
+    # or skewed (e.g. |0.7-0.3|=0.4). Different signal from gamma_market_vig
+    # which captures sum-deviation from 1.0. Both inputs already coerced
+    # above as `_gamma_up_f` / `_gamma_down_f`.
+    _gamma_spread: Optional[float] = None
+    if _gamma_up_f is not None and _gamma_down_f is not None:
+        _gamma_spread = abs(_gamma_up_f - _gamma_down_f)
+
     return V5FeatureBody(
         eval_offset=coerce_float(eval_offset),
         vpin=coerce_float(vpin),
@@ -608,6 +697,18 @@ def build_v5_feature_body(
         vpin_max_60s=coerce_float(vpin_max_60s),
         vpin_range_60s=coerce_float(_vpin_range_60s),
         source_delta_divergence=coerce_float(_source_delta_divergence),
+        # v9.3 BTC / v9.5 ETH+XRP feature coverage (added 2026-05-23).
+        gamma_spread=coerce_float(_gamma_spread),
+        binance_depth_imbalance_inner=coerce_float(binance_depth_imbalance_inner),
+        binance_depth_imbalance_1pct=coerce_float(binance_depth_imbalance_1pct),
+        binance_depth_imbalance_5pct=coerce_float(binance_depth_imbalance_5pct),
+        binance_spread_pct=coerce_float(binance_spread_pct),
+        clob_pre_imbalance=coerce_float(clob_pre_imbalance),
+        clob_pre_vig=coerce_float(clob_pre_vig),
+        clob_up_pre_stdev=coerce_float(clob_up_pre_stdev),
+        clob_dn_pre_stdev=coerce_float(clob_dn_pre_stdev),
+        clob_up_pre_n=coerce_float(clob_up_pre_n),
+        nested_5m_oi_delta_cumulative=coerce_float(nested_5m_oi_delta_cumulative),
     )
 
 

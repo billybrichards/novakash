@@ -1069,6 +1069,28 @@ class FiveMinVPINStrategy(BaseStrategy):
             # than the v8.0 signal_evaluations columns the model was
             # trained on — leaving them None lets LightGBM use its
             # missing-default branch, matching training behaviour.
+            #
+            # PR #582 (v9.3 BTC / v9.5 ETH+XRP): compute the OI delta
+            # cumulative and CLOB pre-event aggregates here too so the
+            # DuneConfidenceGate sees the same feature body as the v8.1
+            # early-entry path. Failures soft-degrade to None.
+            from signals.feature_emitters import (
+                compute_oi_delta_cumulative as _f_oi_cum,
+                compute_clob_pre_aggregates as _f_clob_pre,
+            )
+            _gate_pool = self._db._pool if (self._db is not None and getattr(self._db, "_pool", None)) else None
+            _gate_oi_cum = await _f_oi_cum(
+                pool=_gate_pool,
+                asset=window.asset,
+                window_ts=getattr(window, "window_ts", None),
+            )
+            _gate_clob_pre = await _f_clob_pre(
+                pool=_gate_pool,
+                asset=window.asset,
+                window_ts=getattr(window, "window_ts", None),
+                up_token_id=getattr(window, "up_token_id", None),
+                down_token_id=getattr(window, "down_token_id", None),
+            )
             _v5_body = build_v5_feature_body(
                 eval_offset=getattr(window, "eval_offset", None),
                 vpin=current_vpin,
@@ -1099,6 +1121,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 vpin_std_60s=_vpin_60s_stats["vpin_std_60s"],
                 vpin_min_60s=_vpin_60s_stats["vpin_min_60s"],
                 vpin_max_60s=_vpin_60s_stats["vpin_max_60s"],
+                # v9.3 BTC / v9.5 ETH+XRP coverage (PR #582, 2026-05-23).
+                nested_5m_oi_delta_cumulative=_gate_oi_cum,
+                clob_pre_imbalance=_gate_clob_pre["clob_pre_imbalance"],
+                clob_pre_vig=_gate_clob_pre["clob_pre_vig"],
+                clob_up_pre_stdev=_gate_clob_pre["clob_up_pre_stdev"],
+                clob_dn_pre_stdev=_gate_clob_pre["clob_dn_pre_stdev"],
+                clob_up_pre_n=_gate_clob_pre["clob_up_pre_n"],
             )
 
             ctx = GateContext(
@@ -1751,6 +1780,29 @@ class FiveMinVPINStrategy(BaseStrategy):
         if self._timesfm_v2 is not None and _eval_offset:
             try:
                 from signals.v2_feature_body import build_v5_feature_body
+                from signals.feature_emitters import (
+                    compute_oi_delta_cumulative,
+                    compute_clob_pre_aggregates,
+                )
+
+                # ── v9.3 BTC / v9.5 ETH+XRP feature emitters (PR #582) ──
+                # Same call as the decision-path branch below — keep both
+                # in sync. The pre-eval body is purely diagnostic, but
+                # parity matters because some downstream callers diff the
+                # two snapshots to detect feature drift within a window.
+                _pre_pool = self._db._pool if (self._db is not None and getattr(self._db, "_pool", None)) else None
+                _oi_cum_pre = await compute_oi_delta_cumulative(
+                    pool=_pre_pool,
+                    asset=window.asset,
+                    window_ts=getattr(window, "window_ts", None),
+                )
+                _clob_pre_pre = await compute_clob_pre_aggregates(
+                    pool=_pre_pool,
+                    asset=window.asset,
+                    window_ts=getattr(window, "window_ts", None),
+                    up_token_id=getattr(window, "up_token_id", None),
+                    down_token_id=getattr(window, "down_token_id", None),
+                )
 
                 # Pre-eval diagnostic fetch: ~60% feature coverage by
                 # design. The gate booleans haven't been computed yet at
@@ -1786,6 +1838,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                     gamma_up_price=window.up_price,
                     gamma_down_price=window.down_price,
                     window_ts=getattr(window, "window_ts", None),
+                    # v9.3 BTC / v9.5 ETH+XRP coverage (PR #582, 2026-05-23).
+                    nested_5m_oi_delta_cumulative=_oi_cum_pre,
+                    clob_pre_imbalance=_clob_pre_pre["clob_pre_imbalance"],
+                    clob_pre_vig=_clob_pre_pre["clob_pre_vig"],
+                    clob_up_pre_stdev=_clob_pre_pre["clob_up_pre_stdev"],
+                    clob_dn_pre_stdev=_clob_pre_pre["clob_dn_pre_stdev"],
+                    clob_up_pre_n=_clob_pre_pre["clob_up_pre_n"],
                 )
                 _v2_pre = await self._timesfm_v2.score_with_features(
                     asset=window.asset,
@@ -2226,8 +2285,31 @@ class FiveMinVPINStrategy(BaseStrategy):
                     build_v5_feature_body,
                     confidence_from_result,
                 )
+                from signals.feature_emitters import (
+                    compute_oi_delta_cumulative,
+                    compute_clob_pre_aggregates,
+                )
 
-                # Build the full 25-feature push-mode body via the
+                # ── v9.3 BTC / v9.5 ETH+XRP feature emitters (PR #582) ──
+                # Populate the 6 features the v9.3 + v9.5 boosters
+                # trained on but the engine didn't previously emit. All
+                # emitters fail soft (None → JSON null → LightGBM missing-
+                # value path); never raises, never blocks the score path.
+                _pool = self._db._pool if (self._db is not None and getattr(self._db, "_pool", None)) else None
+                _oi_cum = await compute_oi_delta_cumulative(
+                    pool=_pool,
+                    asset=window.asset,
+                    window_ts=getattr(window, "window_ts", None),
+                )
+                _clob_pre = await compute_clob_pre_aggregates(
+                    pool=_pool,
+                    asset=window.asset,
+                    window_ts=getattr(window, "window_ts", None),
+                    up_token_id=getattr(window, "up_token_id", None),
+                    down_token_id=getattr(window, "down_token_id", None),
+                )
+
+                # Build the full feature push-mode body via the
                 # single-source-of-truth helper. By this point gates
                 # have been evaluated (above this block) so gate_*
                 # booleans carry real state rather than None.
@@ -2271,6 +2353,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                     gamma_up_price=window.up_price,
                     gamma_down_price=window.down_price,
                     window_ts=getattr(window, "window_ts", None),
+                    # v9.3 BTC / v9.5 ETH+XRP coverage (PR #582, 2026-05-23).
+                    nested_5m_oi_delta_cumulative=_oi_cum,
+                    clob_pre_imbalance=_clob_pre["clob_pre_imbalance"],
+                    clob_pre_vig=_clob_pre["clob_pre_vig"],
+                    clob_up_pre_stdev=_clob_pre["clob_up_pre_stdev"],
+                    clob_dn_pre_stdev=_clob_pre["clob_dn_pre_stdev"],
+                    clob_up_pre_n=_clob_pre["clob_up_pre_n"],
+                    # binance_depth_imbalance_* and binance_spread_pct: no
+                    # engine data source yet; stays None (→ NaN at
+                    # scoring). See PR #582 body for the depth-feed gap.
                 )
                 _v2_result = await self._timesfm_v2.score_with_features(
                     asset=window.asset,
