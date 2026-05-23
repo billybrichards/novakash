@@ -1645,6 +1645,36 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.3-style BTC 5m head persistence — write probability_lgb_v9_3_btc
+        # on every tick where the field is populated. Sibling of the v9_2_eth
+        # writer; read by BOTH v9_3_btc_raw_lgb (drop-in replacement, p>=0.72
+        # / p<=0.20) AND v9_3_btc_tight (high-precision, p>=0.935 / p<=0.065)
+        # GHOST strategies (2026-05-22). Timesfm-repo notes #585/#587/#589/#590.
+        # Fire-and-forget, same pattern as v9_2_eth.
+        v9_3_btc = getattr(surface, "probability_lgb_v9_3_btc", None)
+        if v9_3_btc is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_3_btc"
+        ):
+            try:
+                _v9_3_btc_p = float(v9_3_btc)
+            except (TypeError, ValueError):
+                _v9_3_btc_p = None
+            if _v9_3_btc_p is not None:
+                v9_3_btc_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_3_btc(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_3_btc=_v9_3_btc_p,
+                    )
+                )
+                v9_3_btc_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_3_btc_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
