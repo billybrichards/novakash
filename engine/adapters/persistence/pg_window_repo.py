@@ -611,10 +611,15 @@ class PgWindowRepository(WindowStateRepository):
 
         Mirrors ``DBClient.update_shadow_resolution`` (2026-04-30 forward-writer
         fix): also populates the canonical ``outcome`` column.
+
+        2026-05-24 (RDS note #617): also populates ``poly_winner``. See
+        the DBClient.update_shadow_resolution docstring for the XRP-NULL
+        root cause this closes.
         """
         if not self._pool:
             return
         directional = _coerce_directional_outcome(oracle_outcome, None)
+        poly_winner = directional.capitalize() if directional else None
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -622,14 +627,16 @@ class PgWindowRepository(WindowStateRepository):
                     UPDATE window_snapshots
                        SET oracle_outcome   = COALESCE(oracle_outcome, $1),
                            outcome          = COALESCE(outcome, $4),
+                           poly_winner      = COALESCE(poly_winner, $5),
                            shadow_pnl       = COALESCE(shadow_pnl, $2),
                            shadow_would_win = COALESCE(shadow_would_win, $3)
-                    WHERE window_ts = $5 AND asset = $6 AND timeframe = $7
+                    WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
                     """,
                     oracle_outcome,
                     shadow_pnl,
                     shadow_would_win,
                     directional,
+                    poly_winner,
                     window_ts,
                     asset,
                     timeframe,
@@ -640,6 +647,7 @@ class PgWindowRepository(WindowStateRepository):
                 asset=asset,
                 oracle_outcome=oracle_outcome,
                 outcome=directional,
+                poly_winner=poly_winner,
                 shadow_pnl=f"{shadow_pnl:+.2f}",
                 shadow_would_win=shadow_would_win,
             )

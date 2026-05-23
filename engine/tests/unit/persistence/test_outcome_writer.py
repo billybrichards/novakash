@@ -223,6 +223,9 @@ async def test_signal_evaluations_outcome_handles_lowercase():
 async def test_shadow_resolution_writes_outcome():
     """The shadow resolution loop must populate the canonical
     outcome column, not just oracle_outcome.
+
+    Updated 2026-05-24 (RDS note #617): writer also stamps poly_winner,
+    so the param order shifted to insert a new $5 = poly_winner slot.
     """
     db = _stub_db_client()
     await db.update_shadow_resolution(
@@ -238,15 +241,59 @@ async def test_shadow_resolution_writes_outcome():
     args = db._pool.conn.calls[0]["args"]
     assert "outcome" in sql, "must write the canonical outcome column"
     assert "COALESCE(outcome" in sql
+    assert "poly_winner" in sql, "audit #617: must write poly_winner too"
+    assert "COALESCE(poly_winner" in sql
     # Param order in SQL: $1 oracle_outcome, $2 shadow_pnl, $3 shadow_would_win,
-    #                    $4 directional outcome, $5 ts, $6 asset, $7 tf
+    #                    $4 directional outcome, $5 poly_winner, $6 ts,
+    #                    $7 asset, $8 tf
     assert args[0] == "UP"            # oracle_outcome
     assert args[1] == 1.50            # shadow_pnl
     assert args[2] is True            # shadow_would_win
     assert args[3] == "UP"            # coerced directional outcome
-    assert args[4] == 1777617300
-    assert args[5] == "BTC"
-    assert args[6] == "5m"
+    assert args[4] == "Up"            # poly_winner (capitalized)
+    assert args[5] == 1777617300
+    assert args[6] == "BTC"
+    assert args[7] == "5m"
+
+
+@pytest.mark.asyncio
+async def test_shadow_resolution_writes_poly_winner_xrp():
+    """RDS note #617: XRP-specific gap — shadow resolver must stamp
+    poly_winner for any asset (XRP had 100% NULL because there were
+    zero LIVE fires + the v8.1.2 fallback's ``oracle_winner IS NULL``
+    filter excluded shadow-resolved rows).
+    """
+    db = _stub_db_client()
+    await db.update_shadow_resolution(
+        window_ts=1777617300,
+        asset="XRP",
+        timeframe="5m",
+        oracle_outcome="DOWN",
+        shadow_pnl=-2.10,
+        shadow_would_win=False,
+    )
+    args = db._pool.conn.calls[0]["args"]
+    assert args[4] == "Down"          # poly_winner capitalized
+    assert args[6] == "XRP"           # asset
+
+
+@pytest.mark.asyncio
+async def test_shadow_resolution_poly_winner_none_when_outcome_unknown():
+    """Unparseable outcome → directional and poly_winner both None;
+    COALESCE protects the existing row.
+    """
+    db = _stub_db_client()
+    await db.update_shadow_resolution(
+        window_ts=1777617300,
+        asset="BTC",
+        timeframe="5m",
+        oracle_outcome="WAT",   # garbage
+        shadow_pnl=0.0,
+        shadow_would_win=False,
+    )
+    args = db._pool.conn.calls[0]["args"]
+    assert args[3] is None            # directional outcome
+    assert args[4] is None            # poly_winner
 
 
 # ─── populate_oracle_outcomes — bulk-path forward writer ──────────────────
