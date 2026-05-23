@@ -23,13 +23,15 @@ Cache: a 10-second module-level TTL dict. The underlying tables update
 on a 5-minute cadence so 10s is generous; the cache exists to absorb
 dashboard auto-refresh bursts (Billy clicking around / multiple tabs).
 
-Failure mode: all three queries are wrapped in
-``asyncio.gather(..., return_exceptions=True)``. Any individual query
-failure is logged and that data source falls through to defaults
-(empty config map, empty stats, no last-fire timestamps). The endpoint
-always returns a well-formed envelope — never 500 — so a transient DB
-hiccup doesn't blank the dashboard. The FE displays empty rows as
-"— no data yet" rather than throwing.
+Failure mode: queries run in two phases (configs+stats parallel, then
+last_fires scoped to the resulting strategy_id list) and each phase is
+wrapped in ``asyncio.wait_for`` (5 s timeout) plus
+``return_exceptions=True``. Any individual failure or timeout is logged
+and that data source falls through to defaults (empty config map, empty
+stats, no last-fire timestamps). The endpoint always returns a
+well-formed envelope — never 500 — so a transient DB hiccup or planner
+misfire on strategy_decisions doesn't blank the dashboard. The FE
+displays empty rows as "— no data yet" rather than throwing.
 
 Hard constraints (note #596, dashboard PR 1):
   * READ-ONLY. Never write to ``strategy_configs`` or
@@ -217,13 +219,28 @@ WHERE sc.t_band           = 'all'
 """
 
 # Query 3 — last_fire_at per strategy (most-recent decision overall).
-# Cheap MAX(...) GROUP BY is fine — strategy_decisions is indexed on
-# (strategy_id, evaluated_at).
+# Scoped to a known strategy_id list so the composite index
+# idx_sd_strategy_action_evaluated (strategy_id, action, evaluated_at DESC)
+# drives the scan. The unbounded variant (no WHERE clause) takes 5+ minutes
+# under concurrent INSERT load on strategy_decisions and gets killed by the
+# proxy → 504 (see PR #578 / monitor_analysis for the same pattern).
+#
+# Bind parameter `:strategy_ids` is expanded by sqlalchemy bindparam(expanding=True)
+# in ``_fetch_last_fires`` so the IN clause becomes ``IN (:p1, :p2, ...)`` —
+# no string interpolation.
 _Q_LAST_FIRE = """
 SELECT strategy_id, MAX(evaluated_at) AS last_fire_at
 FROM strategy_decisions
+WHERE strategy_id IN :strategy_ids
 GROUP BY strategy_id
 """
+
+# Timeout guard around all DB work. If the planner ever picks a slow path
+# (e.g. immediately after a bulk reseed before stats land), the endpoint
+# returns partial data — empty last_fire_at map — instead of timing out
+# at the proxy with a 504. 5 s is generous: the scoped queries return in
+# tens of ms in steady state.
+_DB_TIMEOUT_S = 5.0
 
 
 async def _fetch_configs(db: AsyncSession) -> list[dict[str, Any]]:
@@ -236,8 +253,17 @@ async def _fetch_stats(db: AsyncSession) -> list[dict[str, Any]]:
     return [dict(r) for r in res.mappings().all()]
 
 
-async def _fetch_last_fires(db: AsyncSession) -> list[dict[str, Any]]:
-    res = await db.execute(text(_Q_LAST_FIRE))
+async def _fetch_last_fires(db: AsyncSession, strategy_ids: list[str]) -> list[dict[str, Any]]:
+    """Pull last_fire_at per strategy, scoped to the supplied ID list.
+
+    Empty list → no DB call (returns []); avoids issuing ``WHERE strategy_id IN ()``
+    which Postgres rejects as a syntax error.
+    """
+    if not strategy_ids:
+        return []
+    from sqlalchemy import bindparam
+    stmt = text(_Q_LAST_FIRE).bindparams(bindparam("strategy_ids", expanding=True))
+    res = await db.execute(stmt, {"strategy_ids": list(strategy_ids)})
     return [dict(r) for r in res.mappings().all()]
 
 
@@ -262,13 +288,23 @@ async def get_strategies_scorecard(
         # mutating the cached payload itself (preserves fetched_at).
         return {**cached, "cache_hit": True}
 
+    # Step 1: fetch configs + stats in parallel. We need configs first to
+    # know which strategy_ids to scope the last_fires query to (see comment
+    # on _Q_LAST_FIRE). Stats has no such dep and runs alongside to save a
+    # round-trip. Whole step is wrapped in asyncio.wait_for so a planner
+    # misfire on either query degrades to partial data instead of 504.
     try:
-        configs, stats, last_fires = await asyncio.gather(
-            _fetch_configs(db),
-            _fetch_stats(db),
-            _fetch_last_fires(db),
-            return_exceptions=True,
+        configs, stats = await asyncio.wait_for(
+            asyncio.gather(
+                _fetch_configs(db),
+                _fetch_stats(db),
+                return_exceptions=True,
+            ),
+            timeout=_DB_TIMEOUT_S,
         )
+    except asyncio.TimeoutError:
+        log.warning("monitor_scorecard.configs_stats_timeout", timeout_s=_DB_TIMEOUT_S)
+        configs, stats = [], []
     except Exception as exc:  # pragma: no cover - asyncio.gather rarely raises
         log.warning("monitor_scorecard.gather_failed", error=str(exc)[:200])
         return {
@@ -278,15 +314,32 @@ async def get_strategies_scorecard(
             "error": str(exc)[:200],
         }
 
-    # Each individual query may have failed — log + fall through to defaults.
     if isinstance(configs, Exception):
         log.warning("monitor_scorecard.configs_failed", error=str(configs)[:200])
         configs = []
     if isinstance(stats, Exception):
         log.warning("monitor_scorecard.stats_failed", error=str(stats)[:200])
         stats = []
-    if isinstance(last_fires, Exception):
-        log.warning("monitor_scorecard.last_fires_failed", error=str(last_fires)[:200])
+
+    # Step 2: scope last_fires to the strategy_ids we actually need. Falls
+    # back to ids derived from stats if configs is empty (fresh cluster).
+    scope_ids: list[str] = [c["strategy_id"] for c in configs] if configs else \
+        list({r["strategy_id"] for r in stats})
+
+    try:
+        last_fires = await asyncio.wait_for(
+            _fetch_last_fires(db, scope_ids),
+            timeout=_DB_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        log.warning(
+            "monitor_scorecard.last_fires_timeout",
+            timeout_s=_DB_TIMEOUT_S,
+            scope_size=len(scope_ids),
+        )
+        last_fires = []
+    except Exception as exc:
+        log.warning("monitor_scorecard.last_fires_failed", error=str(exc)[:200])
         last_fires = []
 
     # Index stats by (strategy_id, window_period).
