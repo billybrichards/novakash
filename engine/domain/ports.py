@@ -521,6 +521,20 @@ class WindowStateRepository(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    async def get_oracle_outcome_by_slug(self, market_slug: str) -> Optional[str]:
+        """Return ``window_snapshots.oracle_outcome`` for the market slug.
+
+        Returns ``"UP"``, ``"DOWN"``, or ``None`` when the window has not
+        been resolved yet (Gamma hasn't published the outcome).
+
+        Used by ``ReconcileRedemptionsUseCase`` to map an on-chain REDEEM
+        event to the winning trade side (``"YES"`` for UP, ``"NO"`` for
+        DOWN). Falls back to parsing the slug suffix for ``(asset,
+        window_ts)`` since window_snapshots is keyed on those.
+        """
+        ...
+
 
 class WindowExecutionGuard(abc.ABC):
     """Strategy-level dedup: has (strategy_id, window_ts) been executed?
@@ -727,6 +741,59 @@ class TradeRepository(abc.ABC):
         - Match is_live so paper and live are separate domains
         - Be FAIL-CLOSED on any DB exception — better to skip ONE legitimate
           fire than repeat a multi-fire loss.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_unresolved_live_trades_for_slug(
+        self,
+        market_slug: str,
+        *,
+        winning_direction: Optional[str] = None,
+    ) -> list[dict]:
+        """Find LIVE unresolved trades on a given market_slug.
+
+        Used by ``ReconcileRedemptionsUseCase`` to map an on-chain
+        ``REDEEM`` event back to the trade rows that should be stamped
+        WIN. Filters:
+
+          - ``is_live = TRUE`` — paper trades resolve via the oracle path.
+          - ``outcome IS NULL`` — idempotency guard; rows already
+            stamped WIN/LOSS are not touched.
+          - ``order_id NOT LIKE 'paper-%'`` — belt-and-braces with
+            ``is_live`` since some legacy paper trades have ``is_live``
+            flipped via the SOT reconciler.
+          - When ``winning_direction`` is provided
+            (``"YES"`` for an UP-resolved market, ``"NO"`` for DOWN),
+            only trades with that ``direction`` are returned. This is
+            the safe path that prevents stamping LOSS-side trades as WIN
+            when both YES and NO trades were placed on the same window.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def stamp_redemption_win(
+        self,
+        *,
+        trade_id: int,
+        payout_usd: float,
+        pnl_usd: float,
+        redemption_tx: str,
+        redeemed_at_epoch: int,
+    ) -> bool:
+        """Atomically stamp a trade as a redeemed WIN.
+
+        Sets, in ONE UPDATE:
+
+          - ``outcome = 'WIN'``
+          - ``status = 'RESOLVED_WIN'``
+          - ``payout_usd``, ``pnl_usd``, ``resolved_at = now()``
+          - ``redeemed = TRUE``, ``redemption_tx``, ``redeemed_at``
+
+        Returns ``True`` if a row was updated, ``False`` if the WHERE
+        guard (``outcome IS NULL AND redeemed = FALSE``) rejected the
+        write — that prevents double-stamping when two reconciler passes
+        race on the same trade.
         """
         ...
 

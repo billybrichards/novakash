@@ -48,6 +48,7 @@ from use_cases.exposure_caps import (
 from use_cases.onchain_position_cap import (
     check_onchain_window_cap,
     get_window_cap_pm_usd,
+    release_pending_stake,
 )
 from domain.value_objects import (
     ExecutionResult,
@@ -853,6 +854,29 @@ class ExecuteTradeUseCase:
         slot_claimed = False  # set to True iff Step 5.5 wins the slot
         slot_released = False
         claim_released = False
+        # Hub #582: pending-stake reservation in the on-chain cap so
+        # parallel-tick strategies see in-flight stake from this fire.
+        # Set True iff Step 4.6 passed the cap and called
+        # ``_reserve_pending_stake``. Released on every exit path that
+        # follows.
+        _pm_stake_reserved_amount: float = 0.0
+        _pm_stake_funder: str = ""
+        _pm_stake_slug: str = ""
+        _pm_stake_direction: str = ""
+
+        def _release_pm_stake() -> None:
+            nonlocal _pm_stake_reserved_amount
+            if _pm_stake_reserved_amount > 0.0:
+                try:
+                    release_pending_stake(
+                        funder_address=_pm_stake_funder,
+                        market_slug=_pm_stake_slug,
+                        direction=_pm_stake_direction,
+                        stake_usd=_pm_stake_reserved_amount,
+                    )
+                except Exception:
+                    pass  # GC TTL is the backstop
+                _pm_stake_reserved_amount = 0.0
 
         # Helper: release the lease on any early-return path between
         # acquire (Step 1) and order placement (Step 6). Audit 2026-04-26
@@ -867,6 +891,10 @@ class ExecuteTradeUseCase:
         # the same (window, strategy) starts with a clean slate.
         async def _release_claim(phase: str) -> None:
             nonlocal claim_released
+            # Always release the PM cap reservation on any claim release.
+            # Belt-and-braces — the success path also explicitly releases
+            # after the executor returns. TTL GC backstops both.
+            _release_pm_stake()
             if claim_released:
                 return
             if claim_id and hasattr(self._window_state, "clear_trade_claim"):
@@ -1069,6 +1097,12 @@ class ExecuteTradeUseCase:
                         direction=direction,
                         stake_usd=stake.adjusted_stake,
                     )
+                # Cap passed — record the reservation key so every exit
+                # path below releases it.
+                _pm_stake_reserved_amount = float(stake.adjusted_stake)
+                _pm_stake_funder = _funder
+                _pm_stake_slug = _slug
+                _pm_stake_direction = direction
             except asyncio.TimeoutError:
                 # FAIL-CLOSED on timeout (different from Step 4.5 which is
                 # fail-OPEN). The whole point of this cap is to catch
@@ -1468,6 +1502,12 @@ class ExecuteTradeUseCase:
             # ``has_filled()`` reads the same table so future attempts
             # short-circuit on the leaked row (preferable to double-fill).
             committed = True
+
+            # Hub #582: release the PM cap pending-stake reservation.
+            # The fill is real on-chain, so data-api will catch up in
+            # ~30 s and the cap can read the new cost from there. Until
+            # then, the trades-table cap (Step 4.5) sees the row.
+            _release_pm_stake()
 
             # ── Step 7: Record trade ───────────────────────────────────────
             try:

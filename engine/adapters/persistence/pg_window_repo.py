@@ -1892,6 +1892,55 @@ class PgWindowRepository(WindowStateRepository):
             )
             return None
 
+    async def get_oracle_outcome_by_slug(
+        self, market_slug: str
+    ) -> Optional[str]:
+        """Return oracle_outcome ('UP'/'DOWN') for a Polymarket slug.
+
+        Implements WindowStateRepository.get_oracle_outcome_by_slug.
+
+        Slugs follow the format ``<asset>-updown-<tf>-<window_ts>``
+        (e.g. ``btc-updown-5m-1779543300``). We parse ``asset`` and
+        ``window_ts`` from the slug, then look up
+        ``window_snapshots.oracle_outcome``. Returns ``None`` when the
+        slug is unparseable or the window hasn't been oracle-stamped
+        yet — caller defers stamping until next pass.
+        """
+        if not self._pool or not market_slug:
+            return None
+        # Parse "<asset>-updown-<tf>-<window_ts>"
+        parts = market_slug.lower().split("-")
+        if len(parts) < 4 or parts[1] != "updown":
+            return None
+        asset = parts[0].upper()
+        timeframe = parts[2]
+        try:
+            window_ts = int(parts[-1])
+        except (TypeError, ValueError):
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT oracle_outcome
+                         FROM window_snapshots
+                        WHERE asset = $1
+                          AND timeframe = $2
+                          AND window_ts = $3
+                          AND oracle_outcome IS NOT NULL
+                        LIMIT 1""",
+                    asset,
+                    timeframe,
+                    window_ts,
+                )
+                return row["oracle_outcome"] if row else None
+        except Exception as exc:
+            log.warning(
+                "pg_window_repo.get_oracle_outcome_by_slug_failed",
+                slug=market_slug[:60],
+                error=str(exc)[:100],
+            )
+            return None
+
     async def get_window_resolution(
         self, key: WindowKey
     ) -> tuple[Optional[str], Optional[str]]:
