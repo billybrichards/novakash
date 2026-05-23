@@ -20,8 +20,9 @@ export const NAV_SECTIONS = [
     title: 'MONITORING',
     color: '#14b8a6',
     items: [
-      { path: '/monitor',       label: 'Live Monitor',   icon: '🛰️' },
-      { path: '/factory',       label: 'Factory Floor',  icon: '🏭' },
+      { path: '/monitor',            label: 'Live Monitor',   icon: '🛰️' },
+      { path: '/monitor/strategies', label: 'Scorecard',      icon: '📊' },
+      { path: '/factory',            label: 'Factory Floor',  icon: '🏭' },
     ],
   },
   {
