@@ -24,12 +24,13 @@ Sections returned in the payload envelope:
      would-WR side-by-side with the training projection. Each row
      flags ``train_serve_skew_pp > 5`` so the FE can highlight the
      gap between training-claimed accuracy and live shadow accuracy.
-  4. ``wallet`` — latest ``wallet_snapshots`` USDC value + a static
-     pUSD note. pUSD requires a Polymarket data-api call which must
-     run from the Montreal box (memory: feedback_polymarket_montreal_only).
-     PR 3 will plumb a pUSD column populated by a Montreal-side
-     sidecar; for now the UI shows USDC alone with a "pUSD ≈ $10
-     (Montreal sidecar pending)" hint.
+  4. ``wallet`` — latest ``wallet_snapshots`` row with USDC + pUSD
+     balances, the sum as ``effective_balance``, and a ``stale`` flag
+     for when ``recorded_at`` is more than 5 min old (reconciler poll
+     cadence is ~60s; >5 min means the Montreal sidecar is down).
+     Both balances are written server-side by the engine reconciler;
+     the hub never calls Polymarket / Polygon RPC directly (memory:
+     feedback_polymarket_montreal_only).
   5. ``bankroll_24h`` — hourly min/max/avg of ``wallet_snapshots``
      for the last 24 hours. Frontend renders this as a sparkline
      so Billy can eyeball "are we trending toward zero".
@@ -50,8 +51,8 @@ never 500s — a transient DB blip won't blank the dashboard.
 
 Hard constraints:
   * READ-ONLY. No INSERT / UPDATE / DELETE anywhere.
-  * NO Polymarket / Polygon RPC from the hub. pUSD plumbing waits
-    for PR 3 (Montreal sidecar).
+  * NO Polymarket / Polygon RPC from the hub. pUSD comes from the
+    Montreal reconciler via ``wallet_snapshots.balance_pusd``.
   * Every query is time-bounded. The blueprint specifically calls
     out avoiding the slow-scan pattern that broke
     /api/monitor/strategies/scorecard at 504.
@@ -211,12 +212,13 @@ GROUP BY f.strategy_id
 ORDER BY would_fires DESC
 """
 
-# Q3: Wallet — latest USDC balance only. The pUSD piece needs a Polymarket
-# data-api call which the hub box cannot make (per the Montreal-only memo).
-# PR 3 will plumb a Montreal-side sidecar that writes pUSD into the same
-# table; for now the FE displays USDC alone + a hint.
+# Q3: Wallet — latest USDC + pUSD balances. The Montreal reconciler writes
+# both into wallet_snapshots every ~60s (PR 3 sidecar wiring landed
+# 2026-05-23). On historical rows that pre-date the migration, balance_pusd
+# is NULL — the shaping layer treats that as "stale / sidecar lag" so the
+# UI can render a pill instead of pretending the balance is zero.
 _Q_WALLET_LATEST = """
-SELECT balance_usdc, source, recorded_at
+SELECT balance_usdc, balance_pusd, source, recorded_at
 FROM wallet_snapshots
 ORDER BY recorded_at DESC
 LIMIT 1
@@ -381,27 +383,61 @@ def _shape_featured(
 
 
 def _shape_wallet(latest: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """USDC from DB + display-only pUSD note.
+    """USDC + pUSD from the Montreal reconciler's wallet_snapshots row.
 
     The hub box cannot reach Polymarket data-api (memory:
-    feedback_polymarket_montreal_only). PR 3 will introduce a Montreal-
-    side sidecar that writes pUSD into wallet_snapshots; until then this
-    section returns USDC only and flags the gap.
+    feedback_polymarket_montreal_only), so both balances are written
+    server-side by `engine/reconciliation/reconciler.py` and the hub
+    just reads the freshest row. ``balance_pusd`` is NULL on rows
+    written before the migration; in that case the shape returns it
+    as ``None`` and the FE shows a "sidecar lag" pill.
+
+    A row is considered ``stale`` when ``recorded_at`` is more than
+    5 minutes old — the reconciler poll cadence is ~60s, so anything
+    beyond 5 min is a real outage rather than jitter.
     """
     if latest is None:
         return {
             "balance_usdc": None,
-            "pusd_approx": None,
-            "pusd_note": "no wallet_snapshots rows — engine writer may be down",
+            "balance_pusd": None,
+            "effective_balance": None,
             "snapshot_at": None,
             "source": None,
+            "stale": True,
+            "pusd_note": "no wallet_snapshots rows — engine writer may be down",
         }
+    usdc = _f(latest.get("balance_usdc"))
+    pusd = _f(latest.get("balance_pusd"))
+    effective = None
+    if usdc is not None or pusd is not None:
+        effective = float((usdc or 0.0) + (pusd or 0.0))
+    recorded_at = latest.get("recorded_at")
+    stale = True
+    age_seconds: Optional[float] = None
+    if recorded_at is not None:
+        try:
+            age_seconds = (datetime.now(timezone.utc) - recorded_at).total_seconds()
+            stale = age_seconds > 300.0  # 5 min
+        except Exception:
+            stale = True
+    pusd_note: Optional[str]
+    if pusd is None:
+        # Pre-migration row, or Montreal sidecar dropped the pUSD value
+        # (RPC failure → reconciler treats as 0.0 in-memory, but writes
+        # NULL — see _read_pusd_balance). Either way the FE should show
+        # a pill, not silently render "pUSD $0.00".
+        pusd_note = "pUSD not yet recorded — Montreal sidecar lag or pre-migration row"
+    else:
+        pusd_note = None
     return {
-        "balance_usdc": _f(latest.get("balance_usdc")),
-        "pusd_approx": None,
-        "pusd_note": "pUSD ~ $10 default; Montreal sidecar populates real value in PR 3",
-        "snapshot_at": _iso(latest.get("recorded_at")),
+        "balance_usdc": usdc,
+        "balance_pusd": pusd,
+        "effective_balance": effective,
+        "snapshot_at": _iso(recorded_at),
         "source": latest.get("source"),
+        "stale": stale,
+        "age_seconds": age_seconds,
+        "pusd_note": pusd_note,
     }
 
 

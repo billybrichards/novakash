@@ -672,18 +672,26 @@ class CLOBReconciler:
                 fetched_at=now,
             )
 
-            # Persist wallet snapshot (sample: every 30th poll ~ 1/min)
+            # Persist wallet snapshot (sample: every 30th poll ~ 1/min).
+            # v9.6 (PR 3 monitor): include balance_pusd so the hub /monitor/analysis
+            # endpoint can render the dual-balance card without making a
+            # Polymarket call (per the Montreal-only rule). The pUSD value is
+            # already fetched above by _read_pusd_balance() — this just stops
+            # dropping it on the floor.
             if self._pool and int(time.time()) % 60 < self._poll_interval:
                 try:
                     async with self._pool.acquire() as conn:
                         await conn.execute(
-                            """INSERT INTO wallet_snapshots (balance_usdc, source, recorded_at)
-                               VALUES ($1, 'clob_reconciler', $2)""",
+                            """INSERT INTO wallet_snapshots
+                                   (balance_usdc, balance_pusd, source, recorded_at)
+                               VALUES ($1, $2, 'clob_reconciler', $3)""",
                             balance,
+                            pusd_balance,
                             now,
                         )
                 except Exception:
-                    pass  # Non-fatal; table might not exist yet
+                    pass  # Non-fatal; table or column might not exist yet
+                           # (idempotent migration ships in the same PR).
         except Exception as exc:
             self._log.debug("reconciler.balance_error", error=str(exc)[:100])
 

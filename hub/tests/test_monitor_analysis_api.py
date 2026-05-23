@@ -154,7 +154,16 @@ def _ghost_row(**ov) -> dict:
 
 
 def _wallet_row(**ov) -> dict:
-    base = {"balance_usdc": 3.0009, "source": "clob_reconciler", "recorded_at": _NOW}
+    # Default fixture matches the post-PR-3 reconciler write shape: BOTH
+    # balances populated, recorded_at fresh (the global _NOW which most
+    # other fixtures key off). Use ov to override individual fields per
+    # test (e.g. recorded_at=_NOW - 10min for the stale-pill test).
+    base = {
+        "balance_usdc": 3.0009,
+        "balance_pusd": 26.78,
+        "source": "clob_reconciler",
+        "recorded_at": _NOW,
+    }
     base.update(ov)
     return base
 
@@ -332,25 +341,92 @@ class TestFeatured:
 
 class TestWallet:
     def test_usdc_returned(self):
-        client = _client(live=[], ghost=[], wallet=_wallet_row(),
-                         bank=[], recon=None)
+        # Use a fresh-recorded fixture so the stale flag is false; the snapshot_at
+        # field is the wall-clock recorded_at echoed back as ISO.
+        client = _client(
+            live=[], ghost=[],
+            wallet=_wallet_row(recorded_at=datetime.now(timezone.utc)),
+            bank=[], recon=None,
+        )
         w = client.get("/api/monitor/analysis").json()["wallet"]
         assert w["balance_usdc"] == 3.0009
         assert w["source"] == "clob_reconciler"
         assert w["snapshot_at"] is not None
 
-    def test_pusd_note_present(self):
-        client = _client(live=[], ghost=[], wallet=_wallet_row(),
-                         bank=[], recon=None)
+    def test_pusd_returned_when_present(self):
+        # PR 3: the Montreal reconciler now writes balance_pusd alongside USDC.
+        # The hub just reads it back — no Polymarket call from the hub box.
+        client = _client(
+            live=[], ghost=[],
+            wallet=_wallet_row(recorded_at=datetime.now(timezone.utc)),
+            bank=[], recon=None,
+        )
         w = client.get("/api/monitor/analysis").json()["wallet"]
-        # The hub box cannot reach Polymarket; PR 3 plumbs the Montreal sidecar.
-        assert w["pusd_approx"] is None
-        assert "Montreal" in (w["pusd_note"] or "")
+        assert w["balance_pusd"] == 26.78
+        # No "sidecar lag" note when pUSD is present.
+        assert w["pusd_note"] is None
+
+    def test_effective_balance_is_usdc_plus_pusd(self):
+        client = _client(
+            live=[], ghost=[],
+            wallet=_wallet_row(
+                balance_usdc=3.0,
+                balance_pusd=26.78,
+                recorded_at=datetime.now(timezone.utc),
+            ),
+            bank=[], recon=None,
+        )
+        w = client.get("/api/monitor/analysis").json()["wallet"]
+        assert w["effective_balance"] == pytest.approx(29.78, rel=1e-6)
+
+    def test_pusd_null_yields_sidecar_note(self):
+        # Pre-migration / sidecar-lag row: balance_pusd is NULL. Shape should
+        # surface pUSD as None AND set a pusd_note explaining why so the FE
+        # can render a pill instead of silently rendering "pUSD $0.00".
+        client = _client(
+            live=[], ghost=[],
+            wallet=_wallet_row(
+                balance_pusd=None,
+                recorded_at=datetime.now(timezone.utc),
+            ),
+            bank=[], recon=None,
+        )
+        w = client.get("/api/monitor/analysis").json()["wallet"]
+        assert w["balance_pusd"] is None
+        assert w["pusd_note"] is not None
+        # Effective balance still computed off USDC alone in this case.
+        assert w["effective_balance"] == pytest.approx(3.0009, rel=1e-6)
+
+    def test_stale_flag_when_snapshot_older_than_5min(self):
+        # 10 min old → stale=True
+        old = datetime.now(timezone.utc) - timedelta(minutes=10)
+        client = _client(
+            live=[], ghost=[],
+            wallet=_wallet_row(recorded_at=old),
+            bank=[], recon=None,
+        )
+        w = client.get("/api/monitor/analysis").json()["wallet"]
+        assert w["stale"] is True
+
+    def test_not_stale_when_snapshot_fresh(self):
+        # Just now → stale=False
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=30)
+        client = _client(
+            live=[], ghost=[],
+            wallet=_wallet_row(recorded_at=fresh),
+            bank=[], recon=None,
+        )
+        w = client.get("/api/monitor/analysis").json()["wallet"]
+        assert w["stale"] is False
 
     def test_missing_wallet_row_returns_none_with_hint(self):
         client = _client(live=[], ghost=[], wallet=None, bank=[], recon=None)
         w = client.get("/api/monitor/analysis").json()["wallet"]
         assert w["balance_usdc"] is None
+        assert w["balance_pusd"] is None
+        assert w["effective_balance"] is None
+        # No row at all → flagged as stale so the FE can show "engine down".
+        assert w["stale"] is True
         assert w["pusd_note"] is not None
 
 
