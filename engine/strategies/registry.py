@@ -1618,6 +1618,33 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.5-style ETH 5m head persistence — sibling of the v9_2_eth writer.
+        # Mirrors the v9_2_eth pattern exactly; read by the v9_5_eth_raw_lgb
+        # GHOST strategy (2026-05-22). RDS notes #579/#584.
+        v9_5_eth = getattr(surface, "probability_lgb_v9_5_eth", None)
+        if v9_5_eth is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_5_eth"
+        ):
+            try:
+                _v9_5_eth_p = float(v9_5_eth)
+            except (TypeError, ValueError):
+                _v9_5_eth_p = None
+            if _v9_5_eth_p is not None:
+                v9_5_eth_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_5_eth(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_5_eth=_v9_5_eth_p,
+                    )
+                )
+                v9_5_eth_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_5_eth_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
