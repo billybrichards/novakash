@@ -51,9 +51,9 @@ _DEFAULT_DOWN_THRESHOLD = 0.04
 _DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 240
 
-_DEFAULT_ENTRY_CAP = 0.96
+_DEFAULT_ENTRY_CAP = 0.85
 _DEFAULT_COLLATERAL_PCT = 0.025
-_DEFAULT_GTC_CAP = 0.96
+_DEFAULT_GTC_CAP = 0.90
 # Tighter than v9_2_eth_raw_lgb's 1-tick rule — v9.5 fires more often at
 # matched selectivity, so requiring 2 consecutive qualifying ticks
 # suppresses single-tick noise without materially reducing fire rate.
