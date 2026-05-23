@@ -1,0 +1,83 @@
+name: v9_5_xrp_raw_lgb
+strategy_id: v9_5_xrp_raw_lgb
+version: "1.0.0"
+# v9_5_xrp_raw_lgb — 2026-05-23 (Billy approved)
+#
+# Drop-in XRP 5m strategy reading the NEW probability_lgb_v9_5_xrp signal that
+# the v9.5 XRP LGB head emits (companion timesfm PR #160, merged 2026-05-23).
+# v9.5 XRP architecture: Optuna-tuned, 8.62-day full corpus (1505 windows),
+# v9.5-style enriched feature set (67 features; 9 NaN-filled on XRP serve path
+# pending a loader-side follow-up).
+#
+# Walk-forward CV operating point (timesfm notes #593 + /tmp/v9_5_xrp_strategy_design.md):
+#   - UP threshold 0.82   -> 74.8% WR on 476 UP windows
+#   - DOWN threshold 0.20 -> 71.9% WR on 551 DOWN windows
+#
+# XRP corpus is 8.62d (thinner than ETH's 22d) and base UP rate is 49.2%
+# (well-balanced). The model does NOT reach the 90%+ pockets that v9.3 BTC
+# (24d corpus) achieves — the UP-side ceiling is ~83% WR at thr=0.97 on
+# n>=100 windows. This raw_lgb config picks the moderate operating point;
+# the sibling v9_5_xrp_tight strategy in this PR is the high-precision
+# corner.
+#
+# Asset: XRP only. Strategy will SKIP defensively on any non-XRP surface.
+# No v9_ensemble base-gate delegation, no cohort gates, no sister-pair veto,
+# no cell pauses, no blocked hours. Single qualifying tick is enough.
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md
+# (post-2026-04-17 rule — no auto-promote). $5 max_position_usd for the
+# initial shadow window.
+#
+# DEPENDENCIES (all required before this strategy can contribute non-NULL
+# probability_lgb_v9_5_xrp on the surface):
+#   1. timesfm-service: emit probability_lgb_v9_5_xrp on
+#      /v4/snapshot.timescales.5m when V9_5_XRP_ENABLED=true (PR #160 merged).
+#   2. engine data_surface.py: probability_lgb_v9_5_xrp field (added this PR).
+#   3. migrations/add_probability_lgb_v9_5_xrp_column.sql applied to prod DB.
+#   4. engine signal-writer hooked up (added this PR).
+#
+# Timesfm-repo PR #160 — v9.5 XRP emission path.
+# Sibling strategy in this PR: v9_5_xrp_tight (high-precision corner at 0.95/0.05).
+# Engine precedent: v9_3_btc_raw_lgb (commit 5e8c147) — mirrored file-for-file.
+#
+status: GHOST
+description: |
+  Drop-in XRP 5m strategy. Fires on probability_lgb_v9_5_xrp alone: UP at
+  p >= 0.82, DOWN at p <= 0.20, within eval_offset [60, 240], any single
+  qualifying tick. XRP-only (defensive asset guard). No v9_ensemble
+  delegation, no cohort gates, no veto layers, no cell pauses, no blocked
+  hours. GHOST mode, $5 max_position_usd for the initial shadow window.
+  Walk-forward CV (8.62d / 1505 windows / 928 OOF): 74.8% UP WR (476 windows)
+  / 71.9% DOWN WR (551 windows).
+mode: GHOST
+asset: XRP
+timescale: 5m
+
+hooks_file: v9_5_xrp_raw_lgb.py
+pre_gate_hook: evaluate_v9_5_xrp_raw_lgb
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.82
+  down_threshold: 0.20
+  # XRP first-fire stc median is 154s (UP) / 170s (DOWN) — fires concentrate
+  # mid-to-late window. eval_offset 60-240 covers the q25-q75 fire band with
+  # margin on both sides.
+  eval_offset_min: 60
+  eval_offset_max: 240
+  min_consecutive_pass_ticks: 1
+  expected_asset: XRP
+  entry_cap: 0.85
+  collateral_pct: 0.025
+  gtc_cap: 0.90
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

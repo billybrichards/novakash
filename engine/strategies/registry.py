@@ -1675,6 +1675,36 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.5-style XRP 5m head persistence — write probability_lgb_v9_5_xrp
+        # on every tick where the field is populated. Sibling of the v9_3_btc
+        # writer; read by BOTH v9_5_xrp_raw_lgb (drop-in moderate, p>=0.82
+        # / p<=0.20) AND v9_5_xrp_tight (high-precision, p>=0.95 / p<=0.05)
+        # GHOST strategies (2026-05-23). Timesfm-repo PR #160 + RDS note #593.
+        # Fire-and-forget, same pattern as v9_3_btc.
+        v9_5_xrp = getattr(surface, "probability_lgb_v9_5_xrp", None)
+        if v9_5_xrp is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_5_xrp"
+        ):
+            try:
+                _v9_5_xrp_p = float(v9_5_xrp)
+            except (TypeError, ValueError):
+                _v9_5_xrp_p = None
+            if _v9_5_xrp_p is not None:
+                v9_5_xrp_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_5_xrp(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_5_xrp=_v9_5_xrp_p,
+                    )
+                )
+                v9_5_xrp_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_5_xrp_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
