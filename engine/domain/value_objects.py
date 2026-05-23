@@ -795,6 +795,25 @@ class ReconcileRedemptionsResult:
     total_payout_usd: float = 0.0  # sum of payout_usd written this pass
 
 
+@dataclass(frozen=True)
+class ReconcileOracleLossesResult:
+    """Aggregate result from one ReconcileOracleLossesUseCase.execute() call.
+
+    Counterpart of ReconcileRedemptionsResult — the WIN path stamps trades
+    via on-chain redemption activity, the LOSS path stamps trades via the
+    Polymarket Gamma oracle (worthless tokens never produce an on-chain
+    redemption, so the redeem feed cannot see them). See RDS note #614.
+    """
+
+    trades_scanned: int  # unresolved live trades inspected this pass
+    trades_stamped_loss: int  # transitioned NULL -> LOSS
+    skipped_no_oracle: int  # window has no oracle_outcome yet
+    skipped_oracle_win: int  # oracle says trade WON (deferred to redeem path)
+    skipped_unparseable: int  # missing window_ts / direction / slug
+    errors: int  # exceptions caught during stamping
+    total_loss_usd: float = 0.0  # sum of stamped stake_usd (always negative pnl)
+
+
 # ---------------------------------------------------------------------------
 # Risk / wallet types (consumed by PublishHeartbeatUseCase)
 # ---------------------------------------------------------------------------

@@ -1273,3 +1273,107 @@ class PgTradeRepository:
                 error=str(exc)[:200],
             )
             return False
+
+    # ------------------------------------------------------------------
+    # Oracle-LOSS reconciliation (audit RDS #614 — companion to the WIN
+    # auto-redeem path in PR #575).
+    #
+    # Worthless tokens never produce on-chain redemption activity, so the
+    # ``ReconcileRedemptionsUseCase`` cannot stamp them. The legacy CLOB
+    # reconciler stamps LOSSes only when the position is still visible in
+    # the data-api ``positions`` endpoint — which it sometimes isn't (no
+    # on-chain tx → no position record, or the position was vacuum-cleared
+    # by NegRisk auto-redeem of the WIN side). That leaves a class of
+    # trades with ``outcome IS NULL`` forever even though Gamma knows the
+    # window resolved against them.
+    #
+    # These two methods (find + stamp) drive the new
+    # ``ReconcileOracleLossesUseCase`` which closes the gap.
+    # ------------------------------------------------------------------
+
+    async def find_unresolved_live_trades_older_than(
+        self, min_age_seconds: int = 1800
+    ) -> list[dict]:
+        """Return unresolved LIVE trades older than ``min_age_seconds`` — see
+        TradeRepository docstring. Returns ``[]`` on DB error so the caller
+        treats it as "nothing to do this pass" and retries next tick.
+        """
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, strategy, strategy_id, direction,
+                           stake_usd, entry_price, fill_price,
+                           fill_size, market_slug, metadata,
+                           polymarket_tx_hash, execution_mode,
+                           status, created_at
+                      FROM trades
+                     WHERE outcome IS NULL
+                       AND is_live = TRUE
+                       AND order_id NOT LIKE 'paper-%'
+                       AND status NOT IN (
+                            'CANCELLED', 'SKIPPED', 'FAILED_EXECUTION'
+                       )
+                       AND market_slug IS NOT NULL
+                       AND market_slug != ''
+                       AND created_at < (NOW() - ($1 || ' seconds')::interval)
+                     ORDER BY created_at ASC
+                     LIMIT 500
+                    """,
+                    str(int(min_age_seconds)),
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.find_unresolved_live_older_failed",
+                min_age_seconds=min_age_seconds,
+                error=str(exc)[:200],
+            )
+            return []
+
+    async def stamp_oracle_loss(
+        self,
+        *,
+        trade_id: int,
+        pnl_usd: float,
+    ) -> bool:
+        """Atomically stamp a trade as an oracle-determined LOSS.
+
+        See TradeRepository.stamp_oracle_loss docstring for guard semantics.
+        """
+        if not self._pool:
+            return False
+        try:
+            from datetime import datetime, timezone
+
+            resolved_at_ts = datetime.now(timezone.utc)
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE trades
+                       SET outcome     = 'LOSS',
+                           status      = 'RESOLVED_LOSS',
+                           pnl_usd     = $1,
+                           resolved_at = $2
+                     WHERE id = $3
+                       AND outcome IS NULL
+                       AND is_live = TRUE
+                    """,
+                    float(pnl_usd),
+                    resolved_at_ts,
+                    int(trade_id),
+                )
+            try:
+                updated = int(result.split()[-1])
+            except (ValueError, IndexError):
+                updated = 0
+            return updated > 0
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.stamp_oracle_loss_failed",
+                trade_id=trade_id,
+                error=str(exc)[:200],
+            )
+            return False

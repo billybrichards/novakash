@@ -507,7 +507,7 @@ class WindowStateRepository(abc.ABC):
 
     @abc.abstractmethod
     async def populate_oracle_outcomes(
-        self, lookback_seconds: int = 900, min_age_seconds: int = 360
+        self, lookback_seconds: int = 21600, min_age_seconds: int = 360
     ) -> int:
         """Poll Polymarket Gamma for authoritative UP/DOWN on recently-closed
         windows and stamp ``oracle_outcome`` / ``poly_resolved_outcome`` /
@@ -515,7 +515,8 @@ class WindowStateRepository(abc.ABC):
 
         Windows must be at least ``min_age_seconds`` old (Polymarket needs
         a few minutes to resolve via UMA + Chainlink). Only windows missing
-        ``oracle_outcome`` are polled.
+        ``oracle_outcome`` are polled. ``lookback_seconds`` defaults to 6h
+        so transient Gamma failures self-heal (audit RDS #614).
 
         Returns count of rows whose ``oracle_outcome`` was just populated.
         """
@@ -794,6 +795,63 @@ class TradeRepository(abc.ABC):
         guard (``outcome IS NULL AND redeemed = FALSE``) rejected the
         write — that prevents double-stamping when two reconciler passes
         race on the same trade.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_unresolved_live_trades_older_than(
+        self, min_age_seconds: int = 1800
+    ) -> list[dict]:
+        """Return unresolved LIVE trades older than ``min_age_seconds``.
+
+        Used by ``ReconcileOracleLossesUseCase`` to find worthless-token
+        losses that the legacy CLOB reconciler missed (the data-api
+        ``positions`` endpoint drops curPrice=0 tokens that the wallet
+        never redeemed, so the legacy path cannot see them).
+
+        Filters mirror ``find_unresolved_live_trades_for_slug`` so a trade
+        cannot appear in both the WIN path (redemption feed) and the LOSS
+        path (this method) in the same pass:
+
+          - ``outcome IS NULL`` — idempotency.
+          - ``is_live = TRUE`` — paper trades resolve via the oracle path
+            inside ``ReconcilePositionsUseCase._resolve_paper_batch``.
+          - ``order_id NOT LIKE 'paper-%'`` — belt-and-braces.
+          - ``status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')`` —
+            never-placed trades aren't loss candidates.
+          - ``created_at < now() - interval '<min_age_seconds>s'`` — Gamma
+            resolution lag is ~4 min; using a 30-min cutoff by default
+            guarantees the oracle has had time to settle.
+
+        The returned dicts include at minimum: ``id``, ``strategy``,
+        ``direction``, ``stake_usd``, ``entry_price``, ``fill_price``,
+        ``fill_size``, ``market_slug``, ``status``, ``execution_mode``,
+        ``polymarket_tx_hash``, and ``created_at``.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def stamp_oracle_loss(
+        self,
+        *,
+        trade_id: int,
+        pnl_usd: float,
+    ) -> bool:
+        """Atomically stamp a trade as an oracle-determined LOSS.
+
+        Sets, in ONE UPDATE:
+
+          - ``outcome = 'LOSS'``
+          - ``status = 'RESOLVED_LOSS'``
+          - ``pnl_usd`` (always negative — the full stake is lost)
+          - ``resolved_at = now()``
+
+        WHERE guard (``outcome IS NULL AND is_live = TRUE``) prevents
+        the LOSS path from racing the WIN-stamping redemption reconciler
+        (which sets ``outcome='WIN'``) — only one side ever wins the
+        race, and the other no-ops.
+
+        Returns ``True`` if a row was updated.
         """
         ...
 

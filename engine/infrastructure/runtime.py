@@ -564,6 +564,49 @@ class EngineRuntime:
             self._redeem_reconcile_uc = None
             self._redeem_feed = None
 
+        # ── Oracle-LOSS reconciler (RDS #614) ─────────────────────────
+        # Symmetric counterpart of ReconcileRedemptionsUseCase. Stamps
+        # outcome='LOSS' on unresolved live trades whose window has
+        # resolved against them. Closes the worthless-token gap that
+        # neither the legacy data-api LOSS path nor the auto-redeem WIN
+        # path covers.
+        #
+        # Live-only — paper trades resolve via the oracle path inside
+        # ReconcilePositionsUseCase._resolve_paper_batch.
+        #
+        # Opt-in via env RECONCILE_ORACLE_LOSSES_ENABLED (default true).
+        self._oracle_loss_reconcile_uc = None
+        try:
+            if os.environ.get(
+                "RECONCILE_ORACLE_LOSSES_ENABLED", "true"
+            ).lower() == "true":
+                from use_cases.reconcile_oracle_losses import (
+                    ReconcileOracleLossesUseCase,
+                )
+
+                _min_age = int(
+                    os.environ.get("RECONCILE_ORACLE_LOSSES_MIN_AGE_S", "1800")
+                )
+                self._oracle_loss_reconcile_uc = ReconcileOracleLossesUseCase(
+                    trade_repo=self._trade_repo_adapter,
+                    window_state=self._window_state_repo,
+                    min_age_seconds=_min_age,
+                )
+                log.info(
+                    "orchestrator.oracle_loss_reconcile_uc_wired",
+                    min_age_seconds=_min_age,
+                )
+            else:
+                log.info(
+                    "orchestrator.oracle_loss_reconcile_uc_disabled_via_env"
+                )
+        except Exception as exc:
+            log.warning(
+                "orchestrator.oracle_loss_reconcile_uc_failed",
+                error=str(exc)[:200],
+            )
+            self._oracle_loss_reconcile_uc = None
+
         if self._reconcile_uc and self._strategy_registry:
             if os.environ.get("ENGINE_REGISTRY_EXECUTE", "true").lower() == "true":
                 try:
@@ -5140,6 +5183,41 @@ class EngineRuntime:
                 except Exception as exc:
                     log.error(
                         "reconcile_redemptions.loop_error",
+                        error=str(exc)[:200],
+                    )
+
+            # ── Oracle-LOSS reconciler (RDS #614) ─────────────────────
+            # Live-only fifth pass. Stamps outcome=LOSS on unresolved
+            # live trades whose window resolved against them. Closes the
+            # worthless-token gap (the LOSS path that PR #575 did not
+            # cover). Runs AFTER the redemption reconciler so any WIN
+            # the redeem feed picked up this pass already short-circuits
+            # the WHERE guard here.
+            if (
+                getattr(self, "_oracle_loss_reconcile_uc", None) is not None
+                and not self._settings.paper_mode
+            ):
+                try:
+                    loss_result = await self._oracle_loss_reconcile_uc.execute()
+                    if (
+                        loss_result.trades_stamped_loss > 0
+                        or loss_result.errors > 0
+                    ):
+                        log.info(
+                            "reconcile_oracle_losses.complete",
+                            trades_scanned=loss_result.trades_scanned,
+                            trades_stamped_loss=loss_result.trades_stamped_loss,
+                            skipped_no_oracle=loss_result.skipped_no_oracle,
+                            skipped_oracle_win=loss_result.skipped_oracle_win,
+                            skipped_unparseable=loss_result.skipped_unparseable,
+                            errors=loss_result.errors,
+                            total_loss_usd=loss_result.total_loss_usd,
+                        )
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    log.error(
+                        "reconcile_oracle_losses.loop_error",
                         error=str(exc)[:200],
                     )
 
