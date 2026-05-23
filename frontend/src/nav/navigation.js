@@ -22,6 +22,7 @@ export const NAV_SECTIONS = [
     items: [
       { path: '/monitor',            label: 'Live Monitor',   icon: '🛰️' },
       { path: '/monitor/strategies', label: 'Scorecard',      icon: '📊' },
+      { path: '/monitor/analysis',   label: 'Analysis · 8h',  icon: '🔍' },
       { path: '/factory',            label: 'Factory Floor',  icon: '🏭' },
     ],
   },

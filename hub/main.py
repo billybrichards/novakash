@@ -57,6 +57,7 @@ from api.window_traces import router as window_traces_router
 from api.gate_traces import router as gate_traces_router
 from api.strategy_comparison import router as strategy_comparison_router
 from api.monitor_scorecard import router as monitor_scorecard_router
+from api.monitor_analysis import router as monitor_analysis_router
 
 log = structlog.get_logger(__name__)
 
@@ -950,6 +951,8 @@ app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])
 app.include_router(strategy_comparison_router, prefix="/api", tags=["strategy-comparison"])
 # Monitor scorecard: per-strategy operator scorecard (dashboard PR 1, note #596)
 app.include_router(monitor_scorecard_router, prefix="/api", tags=["monitor"])
+# Monitor analysis: single-call /api/monitor/analysis (dashboard PR 2, note #597)
+app.include_router(monitor_analysis_router, prefix="/api", tags=["monitor"])
 # DESK: /desk Phase 1 — window clock + operator manual-pick journal (note #218)
 app.include_router(desk_router, prefix="/api", tags=["desk"])
 # DESK: Phase 3 — operator manual-trade button (Track A: DB + hub)
