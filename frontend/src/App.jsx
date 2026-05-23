@@ -21,6 +21,7 @@ import Monitor from './pages/Monitor.jsx';
 import Compare from './pages/compare/Compare.jsx';
 import ModelGenealogy from './pages/ModelGenealogy.jsx';
 import Desk from './pages/desk/Desk.jsx';
+import StrategiesScorecard from './pages/monitor/StrategiesScorecard.jsx';
 
 // Archive wrapper
 import ArchiveCenter from './pages/archive/ArchiveCenter.jsx';
@@ -142,6 +143,7 @@ export default function App() {
             <Route path="pnl" element={<PnL />} />
             <Route path="system" element={<System />} />
             <Route path="monitor" element={<Monitor />} />
+            <Route path="monitor/strategies" element={<StrategiesScorecard />} />
             <Route path="compare" element={<Compare />} />
             <Route path="model-genealogy" element={<ModelGenealogy />} />
             <Route path="desk" element={<Desk />} />
