@@ -1980,7 +1980,7 @@ class PgWindowRepository(WindowStateRepository):
             return (None, None)
 
     async def populate_oracle_outcomes(
-        self, lookback_seconds: int = 900, min_age_seconds: int = 360
+        self, lookback_seconds: int = 21600, min_age_seconds: int = 360
     ) -> int:
         """Poll Polymarket Gamma for resolved UP/DOWN markets and stamp
         oracle_outcome on window_snapshots for every supported (asset, tf)
@@ -1990,6 +1990,17 @@ class PgWindowRepository(WindowStateRepository):
         Windows resolve every 5 min; this runs on the 2-min reconcile loop so
         every newly-closed window gets oracle_outcome within ~2 min of Gamma
         publishing resolution.
+
+        2026-05-23 audit (RDS notes #614): the prior 15-min ``lookback_seconds``
+        default meant any window that missed a single sweep — engine restart,
+        transient Gamma 5xx, Cloudflare hiccup — was permanently skipped. The
+        windows still appear in ``window_snapshots`` because the engine wrote
+        the eval ticks normally; only the post-resolution oracle column never
+        gets filled, which then poisons the dashboard WR + the LOSS-stamping
+        path (which also keys off ``oracle_outcome``). Default is now 6h so a
+        few hours of Gamma flakiness is self-healing — re-polling a single
+        Gamma slug is ~50ms and the WHERE clause skips windows already
+        stamped, so the wider window is effectively free.
 
         Returns total rows updated across all asset/tf pairs.
         """
@@ -2067,47 +2078,77 @@ class PgWindowRepository(WindowStateRepository):
         ) as client:
             sem = asyncio.Semaphore(4)
 
-            async def _fetch(ts: int) -> Optional[str]:
+            async def _fetch(ts: int, *, retries: int = 2) -> Optional[str]:
+                """Fetch one window's resolution from Gamma.
+
+                2026-05-23 (audit #614): added explicit retry-with-backoff so a
+                single 502/timeout no longer silently drops the window for
+                ``lookback_seconds``. Each attempt waits 0.4s × attempt# before
+                the retry. Total worst-case per window: ~1.2s.
+                """
                 async with sem:
                     slug = f"{slug_prefix}{ts}"
-                    try:
-                        r = await client.get(
-                            f"{_GAMMA_BASE}/events", params={"slug": slug}
-                        )
-                        if r.status_code != 200:
-                            return None
-                        data = r.json()
-                        if not isinstance(data, list) or not data:
-                            return None
-                        for event in data:
-                            for m in event.get("markets", []) or []:
-                                if m.get("slug") != slug:
+                    last_status: Optional[int] = None
+                    last_exc: Optional[str] = None
+                    for attempt in range(retries + 1):
+                        try:
+                            r = await client.get(
+                                f"{_GAMMA_BASE}/events", params={"slug": slug}
+                            )
+                            last_status = r.status_code
+                            if r.status_code != 200:
+                                # 4xx is permanent (no such market yet); retry only on 5xx/429
+                                if r.status_code in (429, 500, 502, 503, 504) and attempt < retries:
+                                    await asyncio.sleep(0.4 * (attempt + 1))
                                     continue
-                                if not m.get("closed"):
-                                    return None
-                                if m.get("umaResolutionStatus") not in (
-                                    None,
-                                    "resolved",
-                                ):
-                                    return None
-                                outcomes_raw = m.get("outcomes") or "[]"
-                                prices_raw = m.get("outcomePrices") or "[]"
-                                try:
-                                    outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
-                                    prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
-                                except Exception:
-                                    return None
-                                if not (isinstance(outcomes, list) and isinstance(prices, list) and len(outcomes) == len(prices)):
-                                    return None
-                                for name, price in zip(outcomes, prices):
-                                    try:
-                                        if float(price) >= 0.999:
-                                            return "UP" if str(name).strip().lower().startswith("u") else "DOWN"
-                                    except (TypeError, ValueError):
+                                return None
+                            data = r.json()
+                            if not isinstance(data, list) or not data:
+                                return None
+                            for event in data:
+                                for m in event.get("markets", []) or []:
+                                    if m.get("slug") != slug:
                                         continue
-                        return None
-                    except Exception:
-                        return None
+                                    if not m.get("closed"):
+                                        return None
+                                    if m.get("umaResolutionStatus") not in (
+                                        None,
+                                        "resolved",
+                                    ):
+                                        return None
+                                    outcomes_raw = m.get("outcomes") or "[]"
+                                    prices_raw = m.get("outcomePrices") or "[]"
+                                    try:
+                                        outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
+                                        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+                                    except Exception:
+                                        return None
+                                    if not (isinstance(outcomes, list) and isinstance(prices, list) and len(outcomes) == len(prices)):
+                                        return None
+                                    for name, price in zip(outcomes, prices):
+                                        try:
+                                            if float(price) >= 0.999:
+                                                return "UP" if str(name).strip().lower().startswith("u") else "DOWN"
+                                        except (TypeError, ValueError):
+                                            continue
+                            return None
+                        except Exception as exc:
+                            last_exc = str(exc)[:100]
+                            if attempt < retries:
+                                await asyncio.sleep(0.4 * (attempt + 1))
+                                continue
+                            return None
+                    # All retries exhausted without a definite answer; log so
+                    # we can correlate persistent failures with infra issues.
+                    log.debug(
+                        "pg_window_repo.poll_oracle_fetch_exhausted",
+                        asset=asset,
+                        timeframe=timeframe,
+                        window_ts=ts,
+                        last_status=last_status,
+                        last_exc=last_exc,
+                    )
+                    return None
 
             results = await asyncio.gather(
                 *[_fetch(ts) for ts in windows], return_exceptions=True
@@ -2205,6 +2246,41 @@ class PgWindowRepository(WindowStateRepository):
             rows_updated=total_updated,
             signal_eval_rows_updated=signal_eval_total,
         )
+
+        # Audit #614 (2026-05-23): warn when missing windows persist beyond
+        # the "should-have-resolved" cutoff (~30 min). Anything older is
+        # almost certainly a backfiller miss, not normal Gamma lag.
+        unresolved = len(windows) - len(outcomes)
+        if unresolved > 0:
+            try:
+                async with self._pool.acquire() as conn:
+                    stale_count = await conn.fetchval(
+                        """SELECT COUNT(DISTINCT window_ts)
+                             FROM window_snapshots
+                            WHERE asset = $1 AND timeframe = $2
+                              AND oracle_outcome IS NULL
+                              AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - 1800""",
+                        asset,
+                        timeframe,
+                    )
+                    if stale_count and int(stale_count) > 0:
+                        log.warning(
+                            "pg_window_repo.poll_oracle_stale_backlog",
+                            asset=asset,
+                            timeframe=timeframe,
+                            stale_windows_over_30min=int(stale_count),
+                            note=(
+                                "windows still NULL after Polymarket should "
+                                "have resolved — investigate Gamma reachability "
+                                "or extend lookback_seconds"
+                            ),
+                        )
+            except Exception as stale_exc:
+                log.debug(
+                    "pg_window_repo.poll_oracle_stale_check_failed",
+                    error=str(stale_exc)[:120],
+                )
+
         return total_updated
 
     async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:
