@@ -85,6 +85,23 @@ EXPECTED_V5_FIELDS: list[str] = [
     "vpin_max_60s",
     "vpin_range_60s",
     "source_delta_divergence",
+    # v9.3 BTC / v9.5 ETH+XRP coverage (added 2026-05-23, PR #582).
+    # Adds 11 features the boosters were trained on but the engine
+    # push contract previously omitted. All Optional[float] = None
+    # by default; emitter wiring lives in
+    # `engine/signals/feature_emitters.py` and the call sites in
+    # `engine/strategies/five_min_vpin.py`.
+    "gamma_spread",
+    "binance_depth_imbalance_inner",
+    "binance_depth_imbalance_1pct",
+    "binance_depth_imbalance_5pct",
+    "binance_spread_pct",
+    "clob_pre_imbalance",
+    "clob_pre_vig",
+    "clob_up_pre_stdev",
+    "clob_dn_pre_stdev",
+    "clob_up_pre_n",
+    "nested_5m_oi_delta_cumulative",
 ]
 
 
@@ -93,7 +110,7 @@ EXPECTED_V5_FIELDS: list[str] = [
 # ────────────────────────────────────────────────────────────────────
 
 
-def test_v5_feature_body_schema_is_exactly_38_fields():
+def test_v5_feature_body_schema_is_exactly_49_fields():
     """The schema is load-bearing: drift here = v5 silently breaks.
 
     Field count history:
@@ -104,11 +121,16 @@ def test_v5_feature_body_schema_is_exactly_38_fields():
                   defaults these to NaN at serve time
                   (`app/v2_scorer.py:879-889`), so adding them to the
                   push contract is backward-compatible.
+        38 → 49  (PR #582, 2026-05-23: 11 v9.3 BTC / v9.5 ETH+XRP
+                  coverage features — gamma_spread, 4 binance_*, 5
+                  clob_pre_*, nested_5m_oi_delta_cumulative). Same
+                  backward-compat guarantee: the scorer already
+                  NaN-defaults these (`app/v2_scorer.py:890-910`).
     """
     body = V5FeatureBody()
     d = body.to_json_dict()
     assert list(d.keys()) == EXPECTED_V5_FIELDS
-    assert len(d) == 38
+    assert len(d) == 49
 
 
 def test_empty_body_is_all_none_and_zero_coverage():
@@ -159,6 +181,18 @@ def test_full_body_is_full_coverage():
         vpin_max_60s=0.70,
         vpin_range_60s=0.30,
         source_delta_divergence=0.001,
+        # v9.3 BTC / v9.5 ETH+XRP coverage (PR #582, 2026-05-23).
+        gamma_spread=0.0,
+        binance_depth_imbalance_inner=0.05,
+        binance_depth_imbalance_1pct=0.08,
+        binance_depth_imbalance_5pct=0.12,
+        binance_spread_pct=0.003,
+        clob_pre_imbalance=0.10,
+        clob_pre_vig=0.02,
+        clob_up_pre_stdev=0.004,
+        clob_dn_pre_stdev=0.005,
+        clob_up_pre_n=24.0,
+        nested_5m_oi_delta_cumulative=-0.012,
     )
     assert body.coverage() == 1.0
 
@@ -657,3 +691,126 @@ def _dt_for_test(hour_utc: int):
     """Helper to build a fixed-date UTC datetime at a given hour."""
     import datetime as _dt
     return _dt.datetime(2026, 5, 7, hour_utc, 30, 0, tzinfo=_dt.timezone.utc)
+
+
+# ────────────────────────────────────────────────────────────────────
+#  PR #582 (v9.3 BTC / v9.5 ETH+XRP) field tests
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPR582V93V95Fields:
+    """Tests for the 11 v9.3 BTC / v9.5 ETH+XRP coverage fields added
+    by PR #582 (2026-05-23). Reference docs:
+      - app/v5_feature_loader.py:480-527 (timesfm loader stubs)
+      - app/v2_scorer.py:890-910 (scorer NaN-default block)
+    """
+
+    def test_gamma_spread_derived_from_up_down(self):
+        body = build_v5_feature_body(
+            gamma_up_price=0.62, gamma_down_price=0.40
+        )
+        d = body.to_json_dict()
+        # |0.62 - 0.40| = 0.22
+        assert d["gamma_spread"] == pytest.approx(0.22)
+
+    def test_gamma_spread_symmetric_book(self):
+        # Tight 50/50 book → spread = 0 (training signal: "indifferent").
+        body = build_v5_feature_body(
+            gamma_up_price=0.50, gamma_down_price=0.50
+        )
+        d = body.to_json_dict()
+        assert d["gamma_spread"] == pytest.approx(0.0)
+
+    def test_gamma_spread_one_side_missing_is_none(self):
+        body = build_v5_feature_body(
+            gamma_up_price=0.5, gamma_down_price=None
+        )
+        d = body.to_json_dict()
+        assert d["gamma_spread"] is None
+
+    def test_clob_pre_aggregates_passthrough(self):
+        body = build_v5_feature_body(
+            clob_pre_imbalance=0.12,
+            clob_pre_vig=0.03,
+            clob_up_pre_stdev=0.004,
+            clob_dn_pre_stdev=0.005,
+            clob_up_pre_n=23.0,
+        )
+        d = body.to_json_dict()
+        assert d["clob_pre_imbalance"] == pytest.approx(0.12)
+        assert d["clob_pre_vig"] == pytest.approx(0.03)
+        assert d["clob_up_pre_stdev"] == pytest.approx(0.004)
+        assert d["clob_dn_pre_stdev"] == pytest.approx(0.005)
+        assert d["clob_up_pre_n"] == pytest.approx(23.0)
+
+    def test_clob_pre_defaults_none(self):
+        body = build_v5_feature_body()
+        d = body.to_json_dict()
+        for k in (
+            "clob_pre_imbalance", "clob_pre_vig",
+            "clob_up_pre_stdev", "clob_dn_pre_stdev", "clob_up_pre_n",
+        ):
+            assert d[k] is None, f"{k} default must be None"
+
+    def test_nested_5m_oi_delta_cumulative_passthrough(self):
+        body = build_v5_feature_body(nested_5m_oi_delta_cumulative=-0.034)
+        d = body.to_json_dict()
+        assert d["nested_5m_oi_delta_cumulative"] == pytest.approx(-0.034)
+
+    def test_nested_5m_oi_delta_cumulative_default_none(self):
+        body = build_v5_feature_body()
+        assert body.to_json_dict()["nested_5m_oi_delta_cumulative"] is None
+
+    def test_binance_stubs_default_none(self):
+        # No engine emitter for binance depth/spread yet — must stay None
+        # (→ NaN at scoring). This test will FAIL when a depth pipeline
+        # ships and binance_* gets populated, which is the deliberate
+        # signal to update both this test and the v5_feature_loader
+        # stub block on the timesfm side.
+        body = build_v5_feature_body()
+        d = body.to_json_dict()
+        for k in (
+            "binance_depth_imbalance_inner",
+            "binance_depth_imbalance_1pct",
+            "binance_depth_imbalance_5pct",
+            "binance_spread_pct",
+        ):
+            assert d[k] is None, f"{k} default must be None"
+
+    def test_binance_stub_kwargs_are_accepted(self):
+        # When a future depth pipeline lands, the engine can pass values
+        # without bumping the builder signature. Smoke-test the kwarg
+        # plumbing now to catch any typos at PR-merge time rather than
+        # next quarter.
+        body = build_v5_feature_body(
+            binance_depth_imbalance_inner=0.05,
+            binance_depth_imbalance_1pct=0.08,
+            binance_depth_imbalance_5pct=0.12,
+            binance_spread_pct=0.003,
+        )
+        d = body.to_json_dict()
+        assert d["binance_depth_imbalance_inner"] == pytest.approx(0.05)
+        assert d["binance_depth_imbalance_1pct"] == pytest.approx(0.08)
+        assert d["binance_depth_imbalance_5pct"] == pytest.approx(0.12)
+        assert d["binance_spread_pct"] == pytest.approx(0.003)
+
+    def test_all_new_keys_present_in_dict(self):
+        # Defense-in-depth: every PR #582 key must appear in the
+        # JSONB payload, even if all values are None. This is what
+        # the timesfm scorer's parity check would assert when wired.
+        body = build_v5_feature_body()
+        d = body.to_json_dict()
+        for k in (
+            "gamma_spread",
+            "binance_depth_imbalance_inner",
+            "binance_depth_imbalance_1pct",
+            "binance_depth_imbalance_5pct",
+            "binance_spread_pct",
+            "clob_pre_imbalance",
+            "clob_pre_vig",
+            "clob_up_pre_stdev",
+            "clob_dn_pre_stdev",
+            "clob_up_pre_n",
+            "nested_5m_oi_delta_cumulative",
+        ):
+            assert k in d, f"{k} missing from to_json_dict()"
