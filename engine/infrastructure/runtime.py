@@ -513,6 +513,57 @@ class EngineRuntime:
             log.warning("orchestrator.reconcile_uc_failed", error=str(exc)[:200])
             self._reconcile_uc = None
 
+        # ── Redemption reconciler (Hub #586 — auto-redeem path) ───────
+        # Polymarket auto-redeems winning positions on-chain; the
+        # legacy ``ReconcilePositionsUseCase`` cannot see those because
+        # auto-redeemed wins disappear from data-api positions. This
+        # second pass polls ``data-api activity?type=REDEEM`` instead
+        # and stamps the matching trades. Disjoint from the legacy
+        # pass (which still owns the LOSS path).
+        #
+        # Live-only — paper trades resolve via the oracle path inside
+        # ``ReconcilePositionsUseCase._resolve_paper_batch``.
+        #
+        # Opt-in via env ``RECONCILE_REDEMPTIONS_ENABLED`` (default
+        # ``true``). Set to ``false`` to disable (e.g. during testing
+        # or if the data-api endpoint is misbehaving).
+        self._redeem_reconcile_uc = None
+        self._redeem_feed = None
+        try:
+            if os.environ.get(
+                "RECONCILE_REDEMPTIONS_ENABLED", "true"
+            ).lower() == "true":
+                from use_cases.reconcile_redemptions import (
+                    ReconcileRedemptionsUseCase,
+                )
+                from adapters.polymarket.redeem_activity_feed import (
+                    PolymarketRedemptionFeed,
+                )
+
+                funder = (
+                    os.environ.get("POLY_FUNDER_ADDRESS", "")
+                    or "0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10"
+                )
+                self._redeem_feed = PolymarketRedemptionFeed(funder)
+                self._redeem_reconcile_uc = ReconcileRedemptionsUseCase(
+                    trade_repo=self._trade_repo_adapter,
+                    window_state=self._window_state_repo,
+                    alerter=self._alerter,
+                )
+                log.info(
+                    "orchestrator.redeem_reconcile_uc_wired",
+                    funder=funder[:10],
+                )
+            else:
+                log.info("orchestrator.redeem_reconcile_uc_disabled_via_env")
+        except Exception as exc:
+            log.warning(
+                "orchestrator.redeem_reconcile_uc_failed",
+                error=str(exc)[:200],
+            )
+            self._redeem_reconcile_uc = None
+            self._redeem_feed = None
+
         if self._reconcile_uc and self._strategy_registry:
             if os.environ.get("ENGINE_REGISTRY_EXECUTE", "true").lower() == "true":
                 try:
@@ -5058,6 +5109,39 @@ class EngineRuntime:
                     break
                 except Exception as exc:
                     log.error("reconcile_uc.loop_error", error=str(exc)[:200])
+
+            # ── Redemption reconciler (Hub #586) ───────────────────────
+            # Live-only fourth pass. Polls data-api activity?type=REDEEM
+            # and stamps auto-redeemed wins that the legacy pass missed.
+            # Idempotent: a no-op when no new redemptions, safe to run
+            # alongside the legacy pass.
+            if (
+                getattr(self, "_redeem_reconcile_uc", None) is not None
+                and getattr(self, "_redeem_feed", None) is not None
+                and not self._settings.paper_mode
+            ):
+                try:
+                    events = await self._redeem_feed.fetch_recent(limit=200)
+                    redeem_result = await self._redeem_reconcile_uc.execute(
+                        events
+                    )
+                    if redeem_result.trades_stamped > 0 or redeem_result.errors > 0:
+                        log.info(
+                            "reconcile_redemptions.complete",
+                            events_seen=redeem_result.events_seen,
+                            trades_stamped=redeem_result.trades_stamped,
+                            skipped_no_match=redeem_result.events_skipped_no_match,
+                            skipped_no_oracle=redeem_result.events_skipped_no_oracle,
+                            errors=redeem_result.errors,
+                            total_payout_usd=redeem_result.total_payout_usd,
+                        )
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    log.error(
+                        "reconcile_redemptions.loop_error",
+                        error=str(exc)[:200],
+                    )
 
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval_s)

@@ -1146,3 +1146,130 @@ class PgTradeRepository:
                 error=str(exc)[:200],
             )
             return True
+
+    async def find_unresolved_live_trades_for_slug(
+        self,
+        market_slug: str,
+        *,
+        winning_direction: Optional[str] = None,
+    ) -> list[dict]:
+        """Unresolved LIVE trades for a slug — see TradeRepository docstring.
+
+        Returns ``[]`` on any DB error (caller treats empty as "skip this
+        event"; the next reconciler pass retries).
+        """
+        if not self._pool or not market_slug:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                # When winning_direction is None we return BOTH sides so
+                # a caller can introspect. When set, we filter to just
+                # that side (the safe path for reconciliation).
+                if winning_direction in ("YES", "NO"):
+                    sql = """
+                        SELECT id, strategy, strategy_id, direction,
+                               stake_usd, entry_price, fill_price,
+                               fill_size, market_slug, metadata,
+                               polymarket_tx_hash, execution_mode,
+                               created_at
+                          FROM trades
+                         WHERE market_slug = $1
+                           AND direction = $2
+                           AND outcome IS NULL
+                           AND is_live = TRUE
+                           AND order_id NOT LIKE 'paper-%'
+                           AND status NOT IN (
+                                'CANCELLED', 'SKIPPED', 'FAILED_EXECUTION'
+                           )
+                         ORDER BY id
+                    """
+                    rows = await conn.fetch(sql, market_slug, winning_direction)
+                else:
+                    sql = """
+                        SELECT id, strategy, strategy_id, direction,
+                               stake_usd, entry_price, fill_price,
+                               fill_size, market_slug, metadata,
+                               polymarket_tx_hash, execution_mode,
+                               created_at
+                          FROM trades
+                         WHERE market_slug = $1
+                           AND outcome IS NULL
+                           AND is_live = TRUE
+                           AND order_id NOT LIKE 'paper-%'
+                           AND status NOT IN (
+                                'CANCELLED', 'SKIPPED', 'FAILED_EXECUTION'
+                           )
+                         ORDER BY id
+                    """
+                    rows = await conn.fetch(sql, market_slug)
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.find_unresolved_live_for_slug_failed",
+                slug=market_slug[:60],
+                error=str(exc)[:200],
+            )
+            return []
+
+    async def stamp_redemption_win(
+        self,
+        *,
+        trade_id: int,
+        payout_usd: float,
+        pnl_usd: float,
+        redemption_tx: str,
+        redeemed_at_epoch: int,
+    ) -> bool:
+        """Atomically stamp a winning auto-redeemed trade.
+
+        ONE update for both the resolution stamp AND the redeem flag,
+        guarded by ``WHERE outcome IS NULL AND redeemed = FALSE`` so
+        racing reconciler passes cannot double-stamp.
+
+        Returns True iff a row was written.
+        """
+        if not self._pool:
+            return False
+        try:
+            from datetime import datetime, timezone
+
+            redeemed_at_ts = datetime.fromtimestamp(
+                int(redeemed_at_epoch), tz=timezone.utc
+            )
+            resolved_at_ts = datetime.now(timezone.utc)
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE trades
+                       SET outcome       = 'WIN',
+                           status        = 'RESOLVED_WIN',
+                           payout_usd    = $1,
+                           pnl_usd       = $2,
+                           resolved_at   = $3,
+                           redeemed      = TRUE,
+                           redeemed_at   = $4,
+                           redemption_tx = $5
+                     WHERE id = $6
+                       AND outcome IS NULL
+                       AND redeemed = FALSE
+                       AND is_live = TRUE
+                    """,
+                    float(payout_usd),
+                    float(pnl_usd),
+                    resolved_at_ts,
+                    redeemed_at_ts,
+                    redemption_tx,
+                    int(trade_id),
+                )
+            try:
+                updated = int(result.split()[-1])
+            except (ValueError, IndexError):
+                updated = 0
+            return updated > 0
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.stamp_redemption_win_failed",
+                trade_id=trade_id,
+                error=str(exc)[:200],
+            )
+            return False

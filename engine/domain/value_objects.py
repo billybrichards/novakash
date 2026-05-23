@@ -743,6 +743,59 @@ class ReconcileResult:
 
 
 # ---------------------------------------------------------------------------
+# Redemption events (consumed by ReconcileRedemptionsUseCase — Hub #586)
+# ---------------------------------------------------------------------------
+#
+# Polymarket enabled on-chain auto-redeem in May 2026. Winning positions are
+# settled to USDC automatically and REMOVED from the data-api positions
+# endpoint, so the legacy reconciler (which polls `positions` and classifies
+# by `curPrice`) never sees them. Wins stayed `outcome=NULL, status=OPEN`
+# forever; losses (which flow through a separate code path) were stamped
+# normally, so the DB appeared 100 % loss-y while the strategies were
+# actually net positive. Post-mortem: RDS notes #586 and #591.
+#
+# A `RedemptionEvent` is the unit consumed by the new reconciler, sourced
+# from `data-api.polymarket.com/activity?type=REDEEM&user=<funder>`. Each
+# row corresponds to one on-chain redemption tx — independent of how many
+# trade rows (across strategies) need to be stamped WIN for that market.
+
+
+@dataclass(frozen=True)
+class RedemptionEvent:
+    """One on-chain auto-redeem event for a Polymarket binary market.
+
+    Produced by ``PolymarketRedemptionFeed.fetch_recent()`` and consumed by
+    ``ReconcileRedemptionsUseCase.execute()``.
+
+    Fields mirror the data-api `activity?type=REDEEM` response. `usdc_size`
+    is the **total** payout that hit the funder wallet for this redemption
+    — it does NOT translate 1-to-1 to a single trade because multiple
+    strategies / sub-fills may share one redemption tx. Per-trade payout
+    is recomputed downstream from `stake_usd / fill_price`.
+    """
+
+    transaction_hash: str  # 0x... — primary idempotency key
+    condition_id: str  # market condition id
+    market_slug: str  # e.g. "btc-updown-5m-1779543300"
+    usdc_size: float  # total USDC paid out by this redemption
+    size: float  # number of winning shares (1.0 USDC per share at resolution)
+    timestamp: int  # unix seconds when the redemption tx mined
+    funder_address: str  # proxy wallet that received the redemption
+
+
+@dataclass(frozen=True)
+class ReconcileRedemptionsResult:
+    """Aggregate result from one ReconcileRedemptionsUseCase.execute() call."""
+
+    events_seen: int  # redemption events fetched from data-api
+    trades_stamped: int  # trade rows transitioned NULL -> WIN
+    events_skipped_no_match: int  # redemption with zero unresolved trades
+    events_skipped_no_oracle: int  # redemption pending oracle direction
+    errors: int  # exceptions caught during stamping
+    total_payout_usd: float = 0.0  # sum of payout_usd written this pass
+
+
+# ---------------------------------------------------------------------------
 # Risk / wallet types (consumed by PublishHeartbeatUseCase)
 # ---------------------------------------------------------------------------
 
