@@ -1451,10 +1451,11 @@ class DBClient:
                         probability_lgb_v9_2_post_iso,
                         probability_lgb_v9_2_eth,
                         probability_lgb_v9_5_eth,
+                        probability_lgb_v9_3_btc,
                         probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
+                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -1468,6 +1469,7 @@ class DBClient:
                         probability_lgb_v9_2_post_iso = COALESCE(EXCLUDED.probability_lgb_v9_2_post_iso, window_snapshots.probability_lgb_v9_2_post_iso),
                         probability_lgb_v9_2_eth = COALESCE(EXCLUDED.probability_lgb_v9_2_eth, window_snapshots.probability_lgb_v9_2_eth),
                         probability_lgb_v9_5_eth = COALESCE(EXCLUDED.probability_lgb_v9_5_eth, window_snapshots.probability_lgb_v9_5_eth),
+                        probability_lgb_v9_3_btc = COALESCE(EXCLUDED.probability_lgb_v9_3_btc, window_snapshots.probability_lgb_v9_3_btc),
                         probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
                         probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
                         probability_v12_meta_gate   = COALESCE(EXCLUDED.probability_v12_meta_gate, window_snapshots.probability_v12_meta_gate)
@@ -1487,6 +1489,7 @@ class DBClient:
                     ensemble_fields.get("probability_lgb_v9_2_post_iso"),
                     ensemble_fields.get("probability_lgb_v9_2_eth"),
                     ensemble_fields.get("probability_lgb_v9_5_eth"),
+                    ensemble_fields.get("probability_lgb_v9_3_btc"),
                     ensemble_fields.get("probability_v2_meta_gate"),
                     ensemble_fields.get("probability_v9_2_meta_gate"),
                     ensemble_fields.get("probability_v12_meta_gate"),
@@ -2122,6 +2125,82 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_5_eth_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v9_3_btc(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_3_btc: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_3_btc`` onto signal_evaluations row.
+
+        Sibling of update_signal_evaluations_lgb_v9_2_eth for the v9.3
+        BTC-trained LGB head. Column added by
+        migrations/add_probability_lgb_v9_3_btc_column.sql (2026-05-22).
+
+        The probability is emitted by timesfm-service when V9_3_BTC_ENABLED=true
+        (companion PR not yet opened — Billy approves before that's created).
+        Read by BOTH v9_3_btc_raw_lgb (drop-in replacement) AND v9_3_btc_tight
+        (high-precision corner) GHOST strategies.
+
+        Idempotent: COALESCE preserves any existing value on conflict
+        (first-write-wins, mirrors the v12 / v9_1 / post_iso / v9_2_eth
+        writer parity). Returns row count affected (1 = upsert ok, 0 = no-op).
+
+        Timesfm-repo notes #585/#587/#589/#590 (walk-forward CV).
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_3_btc is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_3_btc, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        -- First-write-wins (mirrors sibling writers). The v9.3
+                        -- BTC probability is computed once per tick by the
+                        -- timesfm scorer and is stable for that (window,
+                        -- eval_offset).
+                        probability_lgb_v9_3_btc = COALESCE(
+                            signal_evaluations.probability_lgb_v9_3_btc,
+                            EXCLUDED.probability_lgb_v9_3_btc
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_3_btc),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_3_btc_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_3_btc_failed",
                 error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,

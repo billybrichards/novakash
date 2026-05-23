@@ -1,0 +1,84 @@
+name: v9_3_btc_tight
+strategy_id: v9_3_btc_tight
+version: "1.0.0"
+# v9_3_btc_tight — 2026-05-22 (Billy approved)
+#
+# High-precision sibling of v9_3_btc_raw_lgb. Reads the SAME
+# probability_lgb_v9_3_btc signal but at the tight-corner operating point:
+# UP p>=0.935 / DOWN p<=0.065. Walk-forward CV (24-day backtest) results:
+#   - UP   threshold 0.935 -> 90.3% WR on 1725 UP windows
+#   - DOWN threshold 0.065 -> 90.4% WR on 1590 DOWN windows
+#
+# Tradeable subsegment is the EARLY portion of the 5m window:
+# stc (seconds-to-close) in [130, 280] — which maps to
+# eval_offset in [20, 170] (window is 300s, eval_offset = 300 - stc).
+# The tight thresholds + early-window band together produce the 90%+
+# per-window WR; outside this band the WR collapses back toward the raw
+# distribution.
+#
+# Co-exists with v9_3_btc_raw_lgb in this PR. The two strategies read the
+# SAME probability column but at DIFFERENT operating points. Both default
+# GHOST. v9_3_btc_tight is the "high-precision LIVE-candidate" once
+# shadow data validates the tight thresholds.
+#
+# Asset: BTC only. Strategy will SKIP defensively on any non-BTC surface.
+# No v9_ensemble base-gate delegation, no cohort gates, no sister-pair veto,
+# no cell pauses, no blocked hours. Single qualifying tick is enough.
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md
+# (post-2026-04-17 rule — no auto-promote). $5 max_position_usd for the
+# initial shadow window.
+#
+# DEPENDENCIES (all required before this strategy can contribute non-NULL
+# probability_lgb_v9_3_btc on the surface):
+#   1. timesfm-service: load v9.3 BTC booster + emit
+#      probability_lgb_v9_3_btc on /v4/snapshot.timescales.5m when
+#      V9_3_BTC_ENABLED=true (companion PR not yet opened).
+#   2. engine data_surface.py: probability_lgb_v9_3_btc field (added this PR).
+#   3. migrations/add_probability_lgb_v9_3_btc_column.sql applied to prod DB.
+#   4. engine signal-writer hooked up (added this PR).
+#
+# Timesfm-repo notes #585 / #587 / #589 / #590 — walk-forward CV results.
+# BTC ebook chapter: /home/billyrichards/scans2025/v9_3_btc_ebook_chapter.html
+# Sibling strategy in this PR: v9_3_btc_raw_lgb (drop-in replacement).
+#
+status: GHOST
+description: |
+  High-precision BTC 5m strategy. Reads probability_lgb_v9_3_btc at tight
+  corners: UP at p >= 0.935, DOWN at p <= 0.065. Constrained to the early-
+  window band (eval_offset in [20, 170], i.e. stc in [130, 280]). Single
+  qualifying tick. BTC-only (defensive asset guard). No v9_ensemble
+  delegation, no cohort gates, no veto layers, no cell pauses, no blocked
+  hours. GHOST mode, $5 max_position_usd for the initial shadow window.
+  Walk-forward CV: 90.3% UP WR (1725 windows) / 90.4% DOWN WR (1590 windows).
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_3_btc_tight.py
+pre_gate_hook: evaluate_v9_3_btc_tight
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.935
+  down_threshold: 0.065
+  # Early-window band: stc in [130, 280] -> eval_offset in [20, 170]
+  # (window length 300s, eval_offset = 300 - seconds_to_close).
+  eval_offset_min: 20
+  eval_offset_max: 170
+  min_consecutive_pass_ticks: 1
+  expected_asset: BTC
+  entry_cap: 0.935
+  collateral_pct: 0.025
+  gtc_cap: 0.935
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
