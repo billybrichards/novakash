@@ -269,36 +269,82 @@ function Ghost24hTable({ rows }) {
 function WalletCard({ wallet }) {
   if (!wallet) return <EmptyState message="No wallet data." />;
   const usdc = wallet.balance_usdc;
-  const usdcColor = usdc == null
+  const pusd = wallet.balance_pusd;
+  const effective = wallet.effective_balance;
+  // Effective balance drives the headline color — it's what the operator
+  // actually has access to (pUSD + USDC are fungible across V1/V2 markets
+  // after PR 3 plumbing). Thresholds match the existing risk constants:
+  // <2 USDC was the legacy alert level; with pUSD included, <5 effective
+  // is "low", <10 is "warn".
+  const eff = effective == null ? null : Number(effective);
+  const effColor = eff == null
     ? T.label
-    : (Number(usdc) < 2.0 ? T.loss : (Number(usdc) < 5.0 ? T.warn : T.profit));
+    : (eff < 5.0 ? T.loss : (eff < 10.0 ? T.warn : T.profit));
   const snapAge = fmtAge(wallet.snapshot_at);
+  const stale = !!wallet.stale;
   return (
-    <div style={{
-      display: 'flex',
-      flexWrap: 'wrap',
-      gap: 18,
-      alignItems: 'flex-start',
-    }}>
-      <div>
-        <div style={{ color: T.label, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-          USDC (engine)
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* Effective balance headline + staleness pill */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ color: T.label, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+            Effective balance
+          </div>
+          <div style={{
+            color: effColor, fontSize: 26, fontWeight: 500,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {eff != null ? fmtUsd(eff) : '—'}
+          </div>
         </div>
-        <div style={{ color: usdcColor, fontSize: 24, fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>
-          {usdc != null ? fmtUsd(usdc, 4) : '—'}
+        {stale ? (
+          <span title={`recorded ${snapAge.text}`} style={{
+            background: 'rgba(255,180,0,0.12)',
+            color: T.warn,
+            border: `1px solid ${T.warn}`,
+            padding: '2px 8px',
+            borderRadius: 4,
+            fontSize: 10,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+          }}>
+            stale · {snapAge.text}
+          </span>
+        ) : null}
+      </div>
+
+      {/* USDC + pUSD breakdown */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ color: T.label, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+            USDC (V1)
+          </div>
+          <div style={{ color: T.label2, fontSize: 18, fontVariantNumeric: 'tabular-nums' }}>
+            {usdc != null ? fmtUsd(usdc, 4) : '—'}
+          </div>
         </div>
-        <div style={{ color: T.label, fontSize: 10 }}>
-          source {wallet.source || '—'} · snapshot {snapAge.text}
+        <div>
+          <div style={{ color: T.label, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+            pUSD (V2)
+          </div>
+          <div style={{
+            color: pusd == null ? T.label : T.label2,
+            fontSize: 18,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {pusd != null ? fmtUsd(pusd, 4) : '—'}
+          </div>
+          {wallet.pusd_note ? (
+            <div style={{ color: T.warn, fontSize: 10, maxWidth: 220 }}>
+              {wallet.pusd_note}
+            </div>
+          ) : null}
         </div>
       </div>
-      <div>
-        <div style={{ color: T.label, fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-          pUSD (Polymarket)
-        </div>
-        <div style={{ color: T.label2, fontSize: 18, fontVariantNumeric: 'tabular-nums' }}>~$10</div>
-        <div style={{ color: T.warn, fontSize: 10 }}>
-          {wallet.pusd_note || 'pUSD pending'}
-        </div>
+
+      {/* Provenance line */}
+      <div style={{ color: T.label, fontSize: 10 }}>
+        source {wallet.source || '—'} · snapshot {snapAge.text}
       </div>
     </div>
   );
@@ -514,7 +560,8 @@ export default function AnalysisPage() {
       ) : null}
 
       <div style={{ marginTop: 12, color: T.label, fontSize: 10, letterSpacing: '0.06em' }}>
-        Read-only view. pUSD wallet plumbing ships in PR 3 (Montreal sidecar → RDS column).
+        Read-only view. Wallet balances are written every ~60s by the Montreal reconciler;
+        a "stale" pill appears if the last snapshot is more than 5 min old.
       </div>
     </div>
   );
