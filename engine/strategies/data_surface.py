@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 import structlog
 
+from infrastructure.log_util import exc_log_fields
+
 log = structlog.get_logger(__name__)
 
 
@@ -644,7 +646,7 @@ class DataSurfaceManager:
                     log.warning(
                         "data_surface.warmup_query_error",
                         asset=asset,
-                        error=str(exc)[:200],
+                        **exc_log_fields(exc),
                     )
                     continue
                 if row is None:

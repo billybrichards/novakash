@@ -20,6 +20,7 @@ import asyncpg
 import structlog
 
 from domain.ports import SignalRepository
+from infrastructure.log_util import exc_log_fields
 
 log = structlog.get_logger(__name__)
 
@@ -183,7 +184,7 @@ class PgSignalRepository(SignalRepository):
                     else None,
                 )
         except Exception as exc:
-            log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
+            log.warning("db.write_signal_evaluation_failed", **exc_log_fields(exc))
 
     async def write_clob_snapshot(self, data: dict) -> None:  # type: ignore[override]
         """Persist one CLOB book snapshot to ``clob_book_snapshots`` table.
@@ -613,9 +614,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_window_surface_fields_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
 
     async def update_window_ensemble_fields(
@@ -716,9 +717,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_window_ensemble_fields_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
 
     async def update_signal_evaluations_lgb_v12(
@@ -784,9 +785,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v12_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -878,9 +879,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_2_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -941,9 +942,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_2_post_iso_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1004,9 +1005,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_2_eth_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1068,9 +1069,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_5_eth_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1131,9 +1132,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_5_eth_pure_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1197,9 +1198,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_3_btc_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1262,9 +1263,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_3_btc_pure_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1325,9 +1326,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_2_pure_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1388,9 +1389,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v12_pure_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1454,9 +1455,9 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_5_xrp_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 

@@ -21,6 +21,7 @@ import structlog
 
 from config.settings import Settings
 from domain.entities import Order
+from infrastructure.log_util import exc_log_fields
 
 log = structlog.get_logger(__name__)
 
@@ -1083,7 +1084,7 @@ class DBClient:
                         pass  # Column already exists or not supported
             log.info("db.window_tables_ensured")
         except Exception as exc:
-            log.error("db.ensure_window_tables_failed", error=str(exc))
+            log.error("db.ensure_window_tables_failed", **exc_log_fields(exc))
 
     async def write_window_snapshot(self, snapshot: dict) -> None:
         """
@@ -1410,9 +1411,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_window_surface_fields_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
 
     async def update_window_ensemble_fields(
@@ -1509,9 +1510,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_window_ensemble_fields_failed",
-                error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
             )
 
     async def update_window_outcome(
@@ -1729,9 +1730,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v12_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1794,9 +1795,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_1_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1905,9 +1906,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_2_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -1985,9 +1986,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_2_post_iso_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2063,9 +2064,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_2_eth_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2137,9 +2138,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_5_eth_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2211,9 +2212,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_5_eth_pure_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2287,9 +2288,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_3_btc_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2360,9 +2361,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_3_btc_pure_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2427,9 +2428,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_2_pure_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2494,9 +2495,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v12_pure_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -2572,9 +2573,9 @@ class DBClient:
         except Exception as exc:
             log.warning(
                 "db.update_signal_evaluations_lgb_v9_5_xrp_failed",
-                error=str(exc)[:160],
                 window_ts=window_ts,
                 asset=asset,
+                **exc_log_fields(exc, max_len=160),
             )
             return 0
 
@@ -3686,7 +3687,7 @@ class DBClient:
                 )
                 return [dict(r) for r in rows]
         except Exception as exc:
-            log.warning("db.get_unresolved_shadow_windows_failed", error=str(exc))
+            log.warning("db.get_unresolved_shadow_windows_failed", **exc_log_fields(exc))
             return []
 
     async def update_shadow_resolution(
@@ -3991,7 +3992,7 @@ class DBClient:
                     else None,
                 )
         except Exception as exc:
-            log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
+            log.warning("db.write_signal_evaluation_failed", **exc_log_fields(exc))
 
     # ── Post-Resolution AI Analysis ──────────────────────────────────────────
 

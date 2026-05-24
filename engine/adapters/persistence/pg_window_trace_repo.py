@@ -11,6 +11,7 @@ import structlog
 
 from domain.ports import WindowTraceRepository
 from domain.value_objects import GateCheckTrace, WindowEvaluationTrace
+from infrastructure.log_util import exc_log_fields
 
 log = structlog.get_logger(__name__)
 
@@ -255,7 +256,7 @@ class PgWindowTraceRepository(WindowTraceRepository):
         except Exception as exc:
             log.warning(
                 "pg_window_trace_repo.write_gate_checks_failed",
-                error=str(exc)[:200],
+                **exc_log_fields(exc),
             )
 
     async def get_gate_check_traces(
