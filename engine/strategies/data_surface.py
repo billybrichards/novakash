@@ -270,6 +270,31 @@ class FullDataSurface:
     # RDS notes #579 (dedup analysis), #584 (final operating point).
     probability_lgb_v9_5_eth: Optional[float] = None
 
+    # v9.5 ETH 5m LGB head — PURE probability (LGB raw → isotonic, no blend).
+    # Sibling field to `probability_lgb_v9_5_eth` (which is the LIVE blend of
+    # LGB + TimesFM HF classifier). The blend caps probabilities at ~0.92
+    # because the classifier saturates at ~0.84 (RDS notes #631, #632 — the
+    # "blend bug" discovery). This PURE field persists the model's own
+    # calibration unmodified, so a strategy can trade the LGB+iso operating
+    # point directly without losing the high-conviction tail.
+    #
+    # Emitted by timesfm-service on /v4/snapshot.timescales.5m when the
+    # per-asset PURE emission flag is on (sibling agent timesfm PR
+    # feat/v9_5_eth_pure_emission, 2026-05-24). Read ONLY by the new
+    # v9_5_eth_pure_lgb GHOST strategy (asset=ETH, 5m).
+    #
+    # Walk-forward CV (5×4d, 16d OOF) operating points:
+    #   UP   p ≥ 0.915 → 90.3% WR (Wilson LB 88.6%), ~83.1 fires/day
+    #   DOWN p ≤ 0.095 → 90.4% WR (Wilson LB 88.7%), ~88.5 fires/day
+    # That is ~10× more fires than the blend at the same 90% WR target.
+    #
+    # Default None — forward-compatible; prod snapshots without this field
+    # remain valid until the timesfm-side flag is flipped.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # RDS notes #631, #632 (blend cap discovery).
+    # Walk-forward CV: /tmp/v9_5_eth_walkforward_results.md.
+    probability_lgb_v9_5_eth_pure: Optional[float] = None
+
     # v9.3-style BTC 5m LGB head — raw probability for the v9.3 BTC-trained model.
     # Next-generation peer of probability_lgb_v9_2 on the BTC corpus: walk-forward
     # CV (24-day backtest) with v9.3-style enriched feature set. Emitted by
@@ -1427,6 +1452,11 @@ class DataSurfaceManager:
             probability_lgb_v9_5_eth=(
                 float(ts_data["probability_lgb_v9_5_eth"])
                 if ts_data.get("probability_lgb_v9_5_eth") is not None
+                else None
+            ),
+            probability_lgb_v9_5_eth_pure=(
+                float(ts_data["probability_lgb_v9_5_eth_pure"])
+                if ts_data.get("probability_lgb_v9_5_eth_pure") is not None
                 else None
             ),
             probability_lgb_v9_3_btc=(

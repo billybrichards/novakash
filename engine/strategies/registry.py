@@ -1645,6 +1645,34 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.5 ETH 5m PURE head persistence — sibling of the v9_5_eth (blend)
+        # writer. Mirrors the same pattern; read by the new v9_5_eth_pure_lgb
+        # GHOST strategy (2026-05-24). RDS notes #631/#632 (blend bug).
+        # Walk-forward CV: /tmp/v9_5_eth_walkforward_results.md.
+        v9_5_eth_pure = getattr(surface, "probability_lgb_v9_5_eth_pure", None)
+        if v9_5_eth_pure is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_5_eth_pure"
+        ):
+            try:
+                _v9_5_eth_pure_p = float(v9_5_eth_pure)
+            except (TypeError, ValueError):
+                _v9_5_eth_pure_p = None
+            if _v9_5_eth_pure_p is not None:
+                v9_5_eth_pure_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_5_eth_pure(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_5_eth_pure=_v9_5_eth_pure_p,
+                    )
+                )
+                v9_5_eth_pure_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_5_eth_pure_write_error"
+                    )
+                )
+
         # v9.3-style BTC 5m head persistence — write probability_lgb_v9_3_btc
         # on every tick where the field is populated. Sibling of the v9_2_eth
         # writer; read by BOTH v9_3_btc_raw_lgb (drop-in replacement, p>=0.72
