@@ -657,11 +657,14 @@ class PgSignalRepository(SignalRepository):
                         probability_lgb_v9_5_eth,
                         probability_lgb_v9_5_eth_pure,
                         probability_lgb_v9_3_btc,
+                        probability_lgb_v9_3_btc_pure,
+                        probability_lgb_v9_2_pure,
+                        probability_lgb_v12_pure,
                         probability_lgb_v9_5_xrp,
                         probability_v2_meta_gate, probability_v9_2_meta_gate, probability_v12_meta_gate
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+                        $5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
                     )
                     ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -677,6 +680,9 @@ class PgSignalRepository(SignalRepository):
                         probability_lgb_v9_5_eth = COALESCE(EXCLUDED.probability_lgb_v9_5_eth, window_snapshots.probability_lgb_v9_5_eth),
                         probability_lgb_v9_5_eth_pure = COALESCE(EXCLUDED.probability_lgb_v9_5_eth_pure, window_snapshots.probability_lgb_v9_5_eth_pure),
                         probability_lgb_v9_3_btc = COALESCE(EXCLUDED.probability_lgb_v9_3_btc, window_snapshots.probability_lgb_v9_3_btc),
+                        probability_lgb_v9_3_btc_pure = COALESCE(EXCLUDED.probability_lgb_v9_3_btc_pure, window_snapshots.probability_lgb_v9_3_btc_pure),
+                        probability_lgb_v9_2_pure = COALESCE(EXCLUDED.probability_lgb_v9_2_pure, window_snapshots.probability_lgb_v9_2_pure),
+                        probability_lgb_v12_pure = COALESCE(EXCLUDED.probability_lgb_v12_pure, window_snapshots.probability_lgb_v12_pure),
                         probability_lgb_v9_5_xrp = COALESCE(EXCLUDED.probability_lgb_v9_5_xrp, window_snapshots.probability_lgb_v9_5_xrp),
                         probability_v2_meta_gate   = COALESCE(EXCLUDED.probability_v2_meta_gate, window_snapshots.probability_v2_meta_gate),
                         probability_v9_2_meta_gate  = COALESCE(EXCLUDED.probability_v9_2_meta_gate, window_snapshots.probability_v9_2_meta_gate),
@@ -699,6 +705,9 @@ class PgSignalRepository(SignalRepository):
                     ensemble_fields.get("probability_lgb_v9_5_eth"),
                     ensemble_fields.get("probability_lgb_v9_5_eth_pure"),
                     ensemble_fields.get("probability_lgb_v9_3_btc"),
+                    ensemble_fields.get("probability_lgb_v9_3_btc_pure"),
+                    ensemble_fields.get("probability_lgb_v9_2_pure"),
+                    ensemble_fields.get("probability_lgb_v12_pure"),
                     ensemble_fields.get("probability_lgb_v9_5_xrp"),
                     ensemble_fields.get("probability_v2_meta_gate"),
                     ensemble_fields.get("probability_v9_2_meta_gate"),
@@ -1188,6 +1197,197 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning(
                 "pg_signal_repo.update_signal_evaluations_lgb_v9_3_btc_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v9_3_btc_pure(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_3_btc_pure: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_3_btc_pure`` on signal_evaluations row.
+
+        Sibling of update_signal_evaluations_lgb_v9_3_btc — PURE persists the
+        un-blended LGB+iso output (blend caps at 0.916 due to TimesFM HF
+        classifier saturation, RDS notes #618/#631/#632). Column added by
+        migrations/add_probability_lgb_btc_pure_columns.sql (2026-05-24).
+        Read by the v9_3_btc_pure_lgb GHOST strategy. Idempotent via COALESCE.
+        Walk-forward CV: /tmp/btc_walkforward_results.md (v9.3 PURE 1725 fires
+        @ 90.3% WR — best stand-alone BTC head).
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_3_btc_pure is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_3_btc_pure, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v9_3_btc_pure = COALESCE(
+                            signal_evaluations.probability_lgb_v9_3_btc_pure,
+                            EXCLUDED.probability_lgb_v9_3_btc_pure
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_3_btc_pure),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_lgb_v9_3_btc_pure_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_lgb_v9_3_btc_pure_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v9_2_pure(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_2_pure: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_2_pure`` on signal_evaluations row.
+
+        Sibling of update_signal_evaluations_lgb_v9_3_btc_pure — PURE persists
+        the v9.2 BTC un-blended LGB+iso output (blend caps at 0.826 vs pure
+        max 0.956, RDS notes #618/#631/#632). Column added by
+        migrations/add_probability_lgb_btc_pure_columns.sql (2026-05-24).
+        Read by the v9_2_v12_combo_pure GHOST strategy. Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_2_pure is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_2_pure, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v9_2_pure = COALESCE(
+                            signal_evaluations.probability_lgb_v9_2_pure,
+                            EXCLUDED.probability_lgb_v9_2_pure
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_2_pure),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_lgb_v9_2_pure_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_lgb_v9_2_pure_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+            return 0
+
+    async def update_signal_evaluations_lgb_v12_pure(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v12_pure: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v12_pure`` on signal_evaluations row.
+
+        Sibling of update_signal_evaluations_lgb_v9_2_pure — PURE persists
+        the v12 BTC un-blended LGB+iso output (blend caps at 0.805 vs pure
+        max 0.921, RDS notes #618/#631/#632). Column added by
+        migrations/add_probability_lgb_btc_pure_columns.sql (2026-05-24).
+        Read by the v9_2_v12_combo_pure GHOST strategy. Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v12_pure is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v12_pure, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v12_pure = COALESCE(
+                            signal_evaluations.probability_lgb_v12_pure,
+                            EXCLUDED.probability_lgb_v12_pure
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v12_pure),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_lgb_v12_pure_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_lgb_v12_pure_failed",
                 error=str(exc)[:160],
                 asset=asset,
                 window_ts=window_ts,

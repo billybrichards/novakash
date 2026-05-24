@@ -1,0 +1,100 @@
+name: v9_2_v12_combo_pure
+strategy_id: v9_2_v12_combo_pure
+version: "1.0.0"
+# v9_2_v12_combo_pure — 2026-05-24 (DRAFT, awaiting Billy approval)
+#
+# Sibling of v9_2_v12_combo (LIVE on the BLENDED probability columns).
+# This variant explicitly reads the NEW PURE columns:
+#   probability_lgb_v9_2_pure  AND  probability_lgb_v12_pure
+# (added in this PR + sibling timesfm PR #163). The blended columns
+# (probability_lgb_v9_2 / probability_lgb_v12) stay untouched and the LIVE
+# v9_2_v12_combo strategy continues to read them.
+#
+# WHY two parallel combo strategies (BLEND-reading LIVE + PURE-reading GHOST):
+# Per the BTC walk-forward agent's finding (/tmp/btc_walkforward_results.md
+# §"LIVE v9_2_v12_combo validation"), the LIVE strategy validates much better
+# on PURE values than on BLEND values:
+#   - PURE  @ (0.75, 0.70) UP: 281 fires, 96.4% WR (Wilson LB 93.6%)
+#   - BLEND @ (0.75, 0.70) UP:   4 fires, 100% WR (Wilson LB 51.0%)
+# The 281 actual fires on PURE matches the LIVE strategy's ~13 fires/day x
+# 21 days perfectly — strongly suggesting the LIVE engine is actually firing
+# on PURE values today (because the v9.2 + v12 BTC per-asset scorers run in
+# pure-LGB mode when V5_ENSEMBLE_PATH1_ENABLED is off at the scorer level,
+# bypassing the blend even though the snapshot column is named like a blend).
+#
+# This explicit PURE strategy lets us A/B test the question unambiguously:
+# if the LIVE combo IS already firing on pure, this strategy will mirror its
+# fire log byte-for-byte (≈281 UP fires over 21d). If LIVE is firing on blend,
+# this strategy will fire ~70x more often. Either result is informative.
+#
+# Walk-forward CV operating points (per-window dedup, granularity 0.01):
+#   UP  @ (v9_2 >= 0.75, v12 >= 0.70)  -> 96.4% WR, ~13.4 fires/day (281 / 21d)
+#   DOWN @ (v9_2 <= 0.29, v12 <= 0.27) -> 95.1% WR, ~19.6 fires/day (412 / 21d)
+# Adding the symmetric DOWN side roughly doubles the daily fire rate at
+# similar WR vs the current LIVE blend strategy (UP only).
+#
+# No cohort gates, no sister-pair veto, no blocked hours, no cell pauses.
+# Asset: BTC only. eval_offset [60, 210] (matches existing v9_2_v12_combo
+# LIVE strategy).
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md
+# (post-2026-04-17 rule — no auto-promote). $5 max_position_usd for the
+# initial shadow window; raise after the A/B comparison vs LIVE finishes.
+#
+# DEPENDENCIES (all required before this strategy can fire on non-NULL
+# probability_lgb_{v9_2,v12}_pure):
+#   1. timesfm-service PR #163: emit probability_lgb_v9_2_pure AND
+#      probability_lgb_v12_pure on /v4/snapshot.timescales.5m when
+#      V9_2_PURE_ENABLED=true AND V12_PURE_ENABLED=true.
+#   2. engine data_surface.py: both fields (added this PR).
+#   3. migrations/add_probability_lgb_btc_pure_columns.sql applied to prod DB.
+#   4. engine signal-writers hooked up for both columns (added this PR).
+#
+# Walk-forward CV: /tmp/btc_walkforward_results.md.
+# Sibling timesfm PR: #163 (feat/v9_3_btc_pure_lgb_emission).
+# Sibling engine strategy in this PR: v9_3_btc_pure_lgb.
+# Engine precedent: feat/v9_5_eth_pure_lgb_strategy (ETH variant).
+#
+status: GHOST
+description: |
+  v9.2 + v12 BTC PURE AND-combo (no TimesFM HF classifier blend).
+  Fires only when BOTH probability_lgb_v9_2_pure AND probability_lgb_v12_pure
+  agree: UP at p_v9_2 >= 0.75 AND p_v12 >= 0.70 (matches LIVE v9_2_v12_combo
+  thresholds), DOWN at p_v9_2 <= 0.29 AND p_v12 <= 0.27, within eval_offset
+  [60, 210], any single qualifying tick. No cohort gates, no veto layers,
+  no cell pauses, no blocked hours. GHOST mode, $5 max_position_usd.
+  Walk-forward CV: 96.4% UP WR (281 windows, 13.4 fires/day) / 95.1% DOWN WR
+  (412 windows, 19.6 fires/day). Sibling of LIVE v9_2_v12_combo on the
+  blended columns — explicit A/B to verify whether LIVE is already firing on
+  PURE values (per BTC walk-forward agent's hypothesis).
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_v12_combo_pure.py
+pre_gate_hook: evaluate_v9_2_v12_combo_pure
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_v92_threshold: 0.75
+  up_v12_threshold: 0.70
+  down_v92_threshold: 0.29
+  down_v12_threshold: 0.27
+  eval_offset_min: 60
+  eval_offset_max: 210
+  min_consecutive_pass_ticks: 1
+  expected_asset: BTC
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

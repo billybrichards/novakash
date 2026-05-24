@@ -1,0 +1,87 @@
+name: v9_3_btc_pure_lgb
+strategy_id: v9_3_btc_pure_lgb
+version: "1.0.0"
+# v9_3_btc_pure_lgb — 2026-05-24 (DRAFT, awaiting Billy approval)
+#
+# Reads the NEW probability_lgb_v9_3_btc_pure column (this PR + sibling
+# timesfm PR #163) — the post-isotonic-calibration LGB output BEFORE
+# the blend_ensemble step in app/v2_scorer.py. The existing
+# probability_lgb_v9_3_btc (blended) column stays untouched; the
+# existing blend-reading GHOST strategies (v9_3_btc_raw_lgb,
+# v9_3_btc_tight) continue to fire on the blend.
+#
+# WHY (RDS notes #618, #631, #632 + /tmp/btc_walkforward_results.md):
+# The blend_ensemble path mixes LGB with the TimesFM HF classifier head
+# (which saturates at ~0.84), capping the v9.3 BTC blended probability
+# at ~0.916. PURE max is 1.000. Walk-forward CV (24-day backtest):
+#   UP   p >= 0.935 -> 90.3% WR on 1725 windows (Wilson LB 88.8%), ~82 fires/day
+#   DOWN p <= 0.065 -> 90.4% WR on 1590 windows (Wilson LB 88.9%), ~76 fires/day
+#   ~4x more fires than the v9_3_btc_raw_lgb blend variant at the same 90% WR target.
+#
+# v9.3 BTC fires are <0.07 correlated with v9.1/v9.2/v12 fires at the
+# 0.80 threshold — strong diversification when stacked with the
+# v9_2_v12_combo_pure strategy (sibling in this PR).
+#
+# Asset: BTC only. Strategy will SKIP defensively on any non-BTC surface.
+# No v9_ensemble base-gate delegation, no cohort gates, no sister-pair veto,
+# no cell pauses, no blocked hours. Single qualifying tick is enough.
+#
+# Defaults GHOST. Billy promotes manually per feedback_no_auto_promote.md
+# (post-2026-04-17 rule — no auto-promote). $5 max_position_usd for the
+# initial shadow window; raise once shadow data validates the thresholds.
+#
+# DEPENDENCIES (all required before this strategy can fire on non-NULL
+# probability_lgb_v9_3_btc_pure):
+#   1. timesfm-service PR #163: load v9.3 BTC booster + emit
+#      probability_lgb_v9_3_btc_pure on /v4/snapshot.timescales.5m when
+#      both V9_3_BTC_ENABLED=true AND V9_3_BTC_PURE_ENABLED=true.
+#   2. engine data_surface.py: probability_lgb_v9_3_btc_pure field (added this PR).
+#   3. migrations/add_probability_lgb_btc_pure_columns.sql applied to prod DB.
+#   4. engine signal-writer hooked up (added this PR via
+#      update_signal_evaluations_lgb_v9_3_btc_pure).
+#
+# Walk-forward CV: /tmp/btc_walkforward_results.md.
+# Sibling timesfm PR: #163 (feat/v9_3_btc_pure_lgb_emission).
+# Sibling engine strategy in this PR: v9_2_v12_combo_pure.
+# Engine precedent: feat/v9_5_eth_pure_lgb_strategy (ETH variant).
+#
+status: GHOST
+description: |
+  v9.3 BTC PURE LGB single-head strategy (no TimesFM HF classifier blend).
+  Fires on probability_lgb_v9_3_btc_pure alone: UP at p >= 0.935, DOWN at
+  p <= 0.065, within eval_offset [60, 240], any single qualifying tick.
+  BTC-only (defensive asset guard). No cohort gates, no veto layers, no
+  cell pauses, no blocked hours. GHOST mode, $5 max_position_usd for the
+  initial shadow window. Walk-forward CV: 90.3% UP WR (1725 windows, ~82
+  fires/day) / 90.4% DOWN WR (1590 windows, ~76 fires/day) — best
+  stand-alone BTC head, ~4x more fires than the blend variant at the same
+  WR. <0.07 fire-correlation with v9.1/v9.2/v12 → strong diversification.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_3_btc_pure_lgb.py
+pre_gate_hook: evaluate_v9_3_btc_pure_lgb
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.935
+  down_threshold: 0.065
+  eval_offset_min: 60
+  eval_offset_max: 240
+  min_consecutive_pass_ticks: 1
+  expected_asset: BTC
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

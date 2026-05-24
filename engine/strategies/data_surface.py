@@ -311,6 +311,43 @@ class FullDataSurface:
     # Timesfm-repo notes #585, #587, #589, #590 (walk-forward CV).
     probability_lgb_v9_3_btc: Optional[float] = None
 
+    # BTC PURE LGB+iso probabilities (no TimesFM HF classifier blend) for
+    # the THREE in-scope BTC heads — v9.2, v9.3, v12. Sibling fields to
+    # `probability_lgb_v9_2` / `probability_lgb_v9_3_btc` /
+    # `probability_lgb_v12` (which are the LIVE blends of LGB + classifier).
+    # The blend caps probabilities at per-model ceilings because the
+    # classifier saturates at ~0.84 (RDS notes #618, #631, #632 — the
+    # "blend bug" discovery confirmed across ETH and BTC):
+    #
+    #   Model | Pure max | Blend max | 90% WR fires (PURE vs BLEND)
+    #   v9.2  | 0.956    | 0.826     |  452 vs 285
+    #   v9.3  | 1.000    | 0.916     | 1725 vs 788   ← best stand-alone
+    #   v12   | 0.921    | 0.805     |  383 vs 128
+    #
+    # These PURE fields persist the model's own calibration unmodified so
+    # strategies can trade the LGB+iso operating point directly without
+    # losing the high-conviction tail.
+    #
+    # Emitted by timesfm-service on /v4/snapshot.timescales.5m when the
+    # matching per-model PURE emission flag is on (sibling timesfm PR
+    # feat/v9_3_btc_pure_lgb_emission #163, 2026-05-24):
+    #   V9_3_BTC_PURE_ENABLED → probability_lgb_v9_3_btc_pure
+    #   V9_2_PURE_ENABLED     → probability_lgb_v9_2_pure
+    #   V12_PURE_ENABLED      → probability_lgb_v12_pure
+    #
+    # Read by the two NEW GHOST strategies in this PR:
+    #   - v9_3_btc_pure_lgb     reads probability_lgb_v9_3_btc_pure
+    #   - v9_2_v12_combo_pure   reads BOTH probability_lgb_v9_2_pure
+    #                                AND probability_lgb_v12_pure
+    #
+    # Default None — forward-compatible; prod snapshots without these fields
+    # remain valid until the timesfm-side flags are flipped.
+    # Cross-repo contract keys — do NOT rename without coordinated PR.
+    # Walk-forward CV: /tmp/btc_walkforward_results.md.
+    probability_lgb_v9_3_btc_pure: Optional[float] = None
+    probability_lgb_v9_2_pure: Optional[float] = None
+    probability_lgb_v12_pure: Optional[float] = None
+
     # v9.5-style XRP 5m LGB head — raw probability for the v9.5 XRP-trained model.
     # Counterpart to probability_lgb_v9_5_eth on the XRP corpus: Optuna-tuned,
     # 8.62-day full corpus (1505 windows / 928 OOF), 67-feature schema (9
@@ -1462,6 +1499,21 @@ class DataSurfaceManager:
             probability_lgb_v9_3_btc=(
                 float(ts_data["probability_lgb_v9_3_btc"])
                 if ts_data.get("probability_lgb_v9_3_btc") is not None
+                else None
+            ),
+            probability_lgb_v9_3_btc_pure=(
+                float(ts_data["probability_lgb_v9_3_btc_pure"])
+                if ts_data.get("probability_lgb_v9_3_btc_pure") is not None
+                else None
+            ),
+            probability_lgb_v9_2_pure=(
+                float(ts_data["probability_lgb_v9_2_pure"])
+                if ts_data.get("probability_lgb_v9_2_pure") is not None
+                else None
+            ),
+            probability_lgb_v12_pure=(
+                float(ts_data["probability_lgb_v12_pure"])
+                if ts_data.get("probability_lgb_v12_pure") is not None
                 else None
             ),
             probability_lgb_v9_5_xrp=(
