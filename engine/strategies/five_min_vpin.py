@@ -259,6 +259,21 @@ def _ensemble_surface_fields(surface) -> dict:
         # None when absent. Read by v9_3_btc_blend + v9_3_btc_tight_blend GHOST
         # strategies (asset=BTC, 5m). Timesfm-repo notes #585/#587/#589/#590.
         "probability_lgb_v9_3_btc": getattr(surface, "probability_lgb_v9_3_btc", None),
+        # 2026-05-24: BTC PURE LGB probabilities (no TimesFM HF classifier
+        # blend) for v9.2 / v9.3 BTC / v12. Sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_{v9_3_btc,v9_2,v12}_pure.
+        # Emitted when timesfm per-model PURE flags are on (companion timesfm
+        # PR feat/v9_3_btc_pure_lgb_emission #163; flags
+        # V9_3_BTC_PURE_ENABLED / V9_2_PURE_ENABLED / V12_PURE_ENABLED, all
+        # default OFF). Default None when absent. Read by:
+        #   - v9_3_btc_pure_lgb     reads probability_lgb_v9_3_btc_pure
+        #   - v9_2_v12_combo_pure   reads probability_lgb_v9_2_pure
+        #                              AND probability_lgb_v12_pure
+        # Walk-forward CV: /tmp/btc_walkforward_results.md. RDS notes
+        # #618/#631/#632 (blend cap discovery).
+        "probability_lgb_v9_3_btc_pure": getattr(surface, "probability_lgb_v9_3_btc_pure", None),
+        "probability_lgb_v9_2_pure": getattr(surface, "probability_lgb_v9_2_pure", None),
+        "probability_lgb_v12_pure": getattr(surface, "probability_lgb_v12_pure", None),
         # 2026-05-23: v9.5-style XRP 5m LGB head — sourced from
         # /v4/snapshot.timescales.5m.probability_lgb_v9_5_xrp. Emitted when
         # timesfm V9_5_XRP_ENABLED=true (timesfm PR #160, merged 2026-05-23).
