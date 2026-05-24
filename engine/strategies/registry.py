@@ -1675,6 +1675,84 @@ class StrategyRegistry:
                     )
                 )
 
+        # BTC PURE LGB persistence — write the three new PURE columns on
+        # every tick where the corresponding field is populated. Siblings of
+        # the v9_3_btc (blend) writer above. Read by the new GHOST strategies
+        # in this PR (v9_3_btc_pure_lgb, v9_2_v12_combo_pure). Fire-and-forget,
+        # same pattern as v9_3_btc. RDS notes #618/#631/#632 (blend bug).
+        # Walk-forward CV: /tmp/btc_walkforward_results.md.
+        v9_3_btc_pure = getattr(surface, "probability_lgb_v9_3_btc_pure", None)
+        if v9_3_btc_pure is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_3_btc_pure"
+        ):
+            try:
+                _v9_3_btc_pure_p = float(v9_3_btc_pure)
+            except (TypeError, ValueError):
+                _v9_3_btc_pure_p = None
+            if _v9_3_btc_pure_p is not None:
+                v9_3_btc_pure_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_3_btc_pure(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_3_btc_pure=_v9_3_btc_pure_p,
+                    )
+                )
+                v9_3_btc_pure_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_3_btc_pure_write_error"
+                    )
+                )
+
+        v9_2_pure = getattr(surface, "probability_lgb_v9_2_pure", None)
+        if v9_2_pure is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_2_pure"
+        ):
+            try:
+                _v9_2_pure_p = float(v9_2_pure)
+            except (TypeError, ValueError):
+                _v9_2_pure_p = None
+            if _v9_2_pure_p is not None:
+                v9_2_pure_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_2_pure(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_2_pure=_v9_2_pure_p,
+                    )
+                )
+                v9_2_pure_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_2_pure_write_error"
+                    )
+                )
+
+        v12_pure = getattr(surface, "probability_lgb_v12_pure", None)
+        if v12_pure is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v12_pure"
+        ):
+            try:
+                _v12_pure_p = float(v12_pure)
+            except (TypeError, ValueError):
+                _v12_pure_p = None
+            if _v12_pure_p is not None:
+                v12_pure_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v12_pure(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v12_pure=_v12_pure_p,
+                    )
+                )
+                v12_pure_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v12_pure_write_error"
+                    )
+                )
+
         # v9.5-style XRP 5m head persistence — write probability_lgb_v9_5_xrp
         # on every tick where the field is populated. Sibling of the v9_3_btc
         # writer; read by BOTH v9_5_xrp_raw_lgb (drop-in moderate, p>=0.82

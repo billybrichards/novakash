@@ -254,6 +254,11 @@ async def test_update_window_ensemble_fields_includes_xrp():
             "probability_lgb_v9_2_eth": None,
             "probability_lgb_v9_5_eth": None,
             "probability_lgb_v9_3_btc": None,
+            # Three new BTC PURE columns inserted between v9_3_btc and v9_5_xrp
+            # by PR feat/v9_3_btc_pure_lgb_strategy (2026-05-24).
+            "probability_lgb_v9_3_btc_pure": None,
+            "probability_lgb_v9_2_pure": None,
+            "probability_lgb_v12_pure": None,
             "probability_lgb_v9_5_xrp": 0.85,
             "probability_v2_meta_gate": None,
             "probability_v9_2_meta_gate": None,
@@ -262,12 +267,13 @@ async def test_update_window_ensemble_fields_includes_xrp():
     )
     sql = db._pool.conn.calls[0]["sql"]
     assert "probability_lgb_v9_5_xrp" in sql
-    assert "$20" in sql
+    assert "$23" in sql
     # Param order: $1-$4 (window/asset/tf/offset), $5-$10 (ensemble),
     # $11-$13 (v12, v9_2, post_iso), $14=v9_2_eth, $15=v9_5_eth,
-    # $16=v9_3_btc, $17=v9_5_xrp, $18-$20 meta gate
+    # $16=v9_3_btc, $17=v9_3_btc_pure, $18=v9_2_pure, $19=v12_pure,
+    # $20=v9_5_xrp, $21-$23 meta gate
     args = db._pool.conn.calls[0]["args"]
-    assert args[16] == pytest.approx(0.85)
+    assert args[19] == pytest.approx(0.85)
 
 
 # ── Registry writer fires when XRP field is present ──────────────────────
