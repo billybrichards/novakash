@@ -1,0 +1,79 @@
+name: v9_2_eth_late_band_AB
+strategy_id: v9_2_eth_late_band_AB
+version: "1.0.0"
+# v9_2_eth_late_band_AB — 2026-05-24 (Billy approved)
+#
+# UP-only ETH 5m late-window high-conviction strategy. Reads the existing
+# probability_lgb_v9_2_eth column (no new emissions needed). Fires when
+# probability >= 0.82 within eval_offset band [60, 90] — i.e. the last
+# 60-90 seconds of the window (T-minus / seconds-to-close convention; see
+# engine/cell_param_overrides.py and live RDS data).
+#
+# AUDIT OPERATING POINT (RDS notes #627 + #629):
+#   - 14d audit (note #627):   92.9% WR on n=211 windows at thr=0.82,
+#                              eval_offset in [60, 90]
+#   - 38h post-PR-#582 re-check (note #629): 88.0% WR on n=25 windows
+#                              (Wilson LB 70.0% — small sample, in variance)
+#   - UP-only: DOWN side audited n=5 (too thin to trust).
+#
+# Why late-band: eval_offset 60-90 = bet placed when 1-1.5 minutes remain
+# in the window = highest-conviction late-window call. Past the ETH model's
+# distinguishing T-150+ predictive range; here the signal is reading the
+# late-window cohort distribution and is empirically the tightest UP corner.
+#
+# Sister strategy: v9_2_eth_raw_lgb (GHOST at much tighter 0.96/0.04 in
+# eval_offset 120-210 — DIFFERENT operating regime, no overlap concern).
+#
+# No new probability columns needed — probability_lgb_v9_2_eth already
+# exists in signal_evaluations and is populated by the v9.2 ETH scorer
+# emitted by timesfm-service.
+#
+# Defaults GHOST per feedback_no_auto_promote.md (post-2026-04-17 rule —
+# Billy promotes manually). $5 max_position_usd for the initial shadow
+# window; raise once GHOST soak confirms the audit numbers.
+#
+# Asset: ETH only — model is ETH-calibrated. Strategy will SKIP defensively
+# on any non-ETH surface.
+#
+# References:
+#   - RDS note #627 — 14d audit (source of UP threshold + eval band)
+#   - RDS note #629 — 38h post-PR-#582 stability re-check
+#   - Sibling strategy: v9_2_eth_raw_lgb (different op-point, no overlap)
+#
+status: GHOST
+description: |
+  UP-only ETH 5m late-window strategy. Fires on probability_lgb_v9_2_eth
+  alone: UP at p >= 0.82, within eval_offset [60, 90] (T-minus 60-90s of
+  window close), any single qualifying tick. ETH-only (defensive asset
+  guard). DOWN side intentionally OFF (audit n=5, too thin).
+  14d audit: 92.9% WR on n=211 (RDS note #627). Post-#582 re-check:
+  88.0% WR on n=25, Wilson LB 70.0% (RDS note #629).
+  GHOST mode, $5 max_position_usd for the initial shadow window.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_2_eth_late_band_AB.py
+pre_gate_hook: evaluate_v9_2_eth_late_band_AB
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.82
+  eval_offset_min: 60
+  eval_offset_max: 90
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.93
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
