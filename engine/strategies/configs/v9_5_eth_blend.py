@@ -1,4 +1,4 @@
-"""v9_5_eth_raw_lgb — clean raw v9.5-style ETH 5m signal strategy (GHOST).
+"""v9_5_eth_blend — clean raw v9.5-style ETH 5m signal strategy (GHOST).
 
 Parallel sibling of v9_2_eth_raw_lgb. Fires on raw probability_lgb_v9_5_eth
 without v9_ensemble base-gate delegation. No cohort gates, no sister-pair
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_5_eth_raw_lgb"
+_STRATEGY_ID = "v9_5_eth_blend"
 _VERSION = "1.0.0"
 
 # Tight-corner thresholds per RDS dedup analysis #579/#584.
@@ -108,7 +108,7 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_5_eth_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
+def evaluate_v9_5_eth_blend(surface: "FullDataSurface") -> StrategyDecision:
     p_eth = getattr(surface, "probability_lgb_v9_5_eth", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
@@ -188,7 +188,7 @@ def evaluate_v9_5_eth_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_5_eth_raw_lgb_pass",
+        entry_reason="v9_5_eth_blend_pass",
         skip_reason=None,
         metadata=meta,
     )

@@ -1,37 +1,37 @@
-"""v9_5_xrp_tight — high-precision XRP 5m strategy reading v9.5 XRP LGB (GHOST).
+"""v9_5_xrp_blend — XRP 5m drop-in strategy reading v9.5 XRP LGB (GHOST).
 
-Sibling of v9_5_xrp_raw_lgb. Reads the SAME probability_lgb_v9_5_xrp signal
-but at the tight-corner operating point (UP p>=0.95 / DOWN p<=0.05) and
-constrained to the late-window band (eval_offset in [120, 240]).
+Mirrors v9_3_btc_raw_lgb but fires on the NEW probability_lgb_v9_5_xrp signal
+(timesfm PR #160, merged 2026-05-23). No v9_ensemble base-gate delegation.
+No cohort gates, no sister-pair veto, no cell pauses, no blocked hours.
+Co-exists with the sibling v9_5_xrp_tight strategy in this PR — both read
+the SAME probability_lgb_v9_5_xrp column but at DIFFERENT operating points.
 
-XRP's tight corner does NOT reach the v9.3 BTC 90%+ ceiling — UP-side
-peaks at ~83% WR at thr=0.97 (n=263) and DOWN reaches 93% only at thr<=0.005
-(n=241, too close to a degenerate point). The 0.95/0.05 corner gives
-80.9% UP / 83.1% DOWN with reasonable volume (n=282 / n=319).
+NOTE (2026-05-23): The earlier v9_2_xrp_raw_lgb strategy was never wired
+into production (no strategy_configs row, no yaml/py file, no writer for
+its column). v9.5 XRP is the canonical XRP path going forward. The
+signal_evaluations.probability_lgb_v9_2_xrp column remains in the DB
+(harmless, all-NULL) but no engine code references it.
 
-No v9_ensemble base-gate delegation. No cohort gates, no sister-pair veto,
-no cell pauses, no blocked hours. Co-exists with v9_5_xrp_raw_lgb — both
-read the same probability field but have independent consecutive-tick state
-and DIFFERENT operating points.
-
-Asset: XRP only. Strategy will SKIP on any non-XRP surface (defensive guard).
+Asset: XRP only. Strategy will SKIP on any non-XRP surface (defensive guard
+— the v9.5 XRP model is calibrated for XRP only; firing on BTC/ETH would
+be undefined behaviour).
 
 Criteria (timesfm PR #160 + /tmp/v9_5_xrp_strategy_design.md walk-forward CV):
-  - UP   when probability_lgb_v9_5_xrp >= 0.95 -> 80.9% WR on 282 windows
-  - DOWN when probability_lgb_v9_5_xrp <= 0.05 -> 83.1% WR on 319 windows
-  - eval_offset in [120, 240] (late-window subsegment — tight-corner fires
-    concentrate at stc 104-105s, eval_offset ~195s)
-  - min_consecutive_pass_ticks=1
+  - UP   when probability_lgb_v9_5_xrp >= 0.82 -> 74.8% WR on 476 windows
+  - DOWN when probability_lgb_v9_5_xrp <= 0.20 -> 71.9% WR on 551 windows
+  - eval_offset in [60, 240]  (XRP fires concentrate mid-to-late window —
+    median first-fire stc 154s UP / 170s DOWN)
+  - min_consecutive_pass_ticks=1 (matches v9_3_btc_raw_lgb)
 
 Sized by Kelly (collateral_pct) capped at max_position_usd via YAML.
 GHOST mode by default — Billy promotes manually
 (per feedback_no_auto_promote.md). $5 max_position_usd for the initial
-shadow window.
+shadow window; raise once shadow data validates the thresholds.
 
 Timesfm-repo PR #160 — v9.5 XRP emission + production training script.
 Strategy design doc: /tmp/v9_5_xrp_strategy_design.md
-Engine precedent: v9_3_btc_tight (commit 5e8c147).
-Sibling strategy in this PR: v9_5_xrp_raw_lgb (drop-in moderate).
+Engine precedent: v9_3_btc_raw_lgb (commit 5e8c147).
+Sibling strategy in this PR: v9_5_xrp_tight (high-precision corner at 0.95/0.05).
 """
 
 from __future__ import annotations
@@ -45,26 +45,30 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_5_xrp_tight"
+_STRATEGY_ID = "v9_5_xrp_blend"
 _VERSION = "1.0.0"
 
-# Walk-forward CV tight-corner operating point.
-_DEFAULT_UP_THRESHOLD = 0.95
-_DEFAULT_DOWN_THRESHOLD = 0.05
+# Walk-forward CV operating point per timesfm PR #160 + strategy_design.md.
+_DEFAULT_UP_THRESHOLD = 0.82
+_DEFAULT_DOWN_THRESHOLD = 0.20
 
-# Late-window band — XRP tight-corner fires concentrate at stc 104-105s
-# (eval_offset ~195s). q25 first-fire is at stc 45-75s (eval_offset 225-255s).
-_DEFAULT_EVAL_OFFSET_MIN = 120
+# XRP fires concentrate mid-to-late window (first-fire stc median 154s UP /
+# 170s DOWN — eval_offset 130-146s). Widen to 60-240 to cover the q25-q75
+# fire band with margin.
+_DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 240
 
-_DEFAULT_ENTRY_CAP = 0.95
+_DEFAULT_ENTRY_CAP = 0.85
 _DEFAULT_COLLATERAL_PCT = 0.025
-_DEFAULT_GTC_CAP = 0.95
+_DEFAULT_GTC_CAP = 0.90
+# 1-tick consecutive gate matches v9_3_btc_raw_lgb.
 _DEFAULT_MIN_CONSEC_TICKS = 1
 _DEFAULT_ASSET = "XRP"
 
-# Module-local state — independent from v9_5_xrp_raw_lgb's state even
-# though both strategies read the same probability column.
+# Consecutive-tick state. Maps (window_ts, direction) -> (count, last_seen_ts).
+# Resets when direction changes or the gap between evals exceeds _MAX_GAP_S.
+# Module-local so this strategy's consecutive-tick state cannot collide with
+# the sibling v9_5_xrp_tight strategy.
 _consec_state: dict[tuple[int, str], tuple[int, float]] = {}
 _MAX_GAP_S = 5.0
 
@@ -109,11 +113,14 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_5_xrp_tight(surface: "FullDataSurface") -> StrategyDecision:
+def evaluate_v9_5_xrp_blend(surface: "FullDataSurface") -> StrategyDecision:
     p_xrp = getattr(surface, "probability_lgb_v9_5_xrp", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
 
+    # Defensive asset guard. The strategy is registered with asset=XRP but
+    # belt-and-braces — refuse to fire if the registry ever wires a non-XRP
+    # surface in. The v9.5 XRP model is not calibrated for other assets.
     expected_asset = _gp.get_str("expected_asset", None, _DEFAULT_ASSET)
     if asset != expected_asset:
         return _skip(
@@ -154,6 +161,8 @@ def evaluate_v9_5_xrp_tight(surface: "FullDataSurface") -> StrategyDecision:
     else:
         return _skip("conviction_below_threshold", meta)
 
+    # N-consecutive-tick confirmation gate (runtime-tunable via
+    # gate_params.min_consecutive_pass_ticks). Mirrors v9_3_btc_raw_lgb.
     window_ts = getattr(surface, "window_ts", None)
     min_consec = _gp.get_int(
         "min_consecutive_pass_ticks", None, _DEFAULT_MIN_CONSEC_TICKS
@@ -184,7 +193,7 @@ def evaluate_v9_5_xrp_tight(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_5_xrp_tight_pass",
+        entry_reason="v9_5_xrp_blend_pass",
         skip_reason=None,
         metadata=meta,
     )

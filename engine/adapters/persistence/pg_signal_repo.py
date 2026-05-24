@@ -1143,7 +1143,7 @@ class PgSignalRepository(SignalRepository):
         by migrations/add_probability_lgb_v9_3_btc_column.sql (2026-05-22).
 
         Sibling of update_signal_evaluations_lgb_v9_2_eth. Read by BOTH
-        v9_3_btc_raw_lgb and v9_3_btc_tight GHOST strategies. Timesfm-repo
+        v9_3_btc_blend and v9_3_btc_tight_blend GHOST strategies. Timesfm-repo
         notes #585/#587/#589/#590 (walk-forward CV results). Idempotent via
         COALESCE.
         """
@@ -1209,7 +1209,7 @@ class PgSignalRepository(SignalRepository):
         by migrations/add_probability_lgb_v9_5_xrp_column.sql (2026-05-23).
 
         Sibling of update_signal_evaluations_lgb_v9_3_btc. Read by BOTH
-        v9_5_xrp_raw_lgb and v9_5_xrp_tight GHOST strategies. Timesfm-repo
+        v9_5_xrp_blend and v9_5_xrp_tight_blend GHOST strategies. Timesfm-repo
         PR #160 + RDS note #593 (walk-forward CV results). Idempotent via
         COALESCE.
         """

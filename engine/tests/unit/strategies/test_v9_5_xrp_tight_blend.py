@@ -1,4 +1,4 @@
-"""Unit tests for v9_5_xrp_tight GHOST strategy (high-precision sibling).
+"""Unit tests for v9_5_xrp_tight_blend GHOST strategy (high-precision sibling).
 
 Coverage:
 - model-not-loaded SKIP (v9_5_xrp_model_not_loaded)
@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from strategies.configs.v9_5_xrp_tight import evaluate_v9_5_xrp_tight
+from strategies.configs.v9_5_xrp_tight_blend import evaluate_v9_5_xrp_tight_blend
 from strategies import gate_params as _gp
 from strategies.data_surface import FullDataSurface
 
@@ -110,34 +110,34 @@ def _params(**extra):
 
 @pytest.fixture(autouse=True)
 def _clear_consec_state():
-    from strategies.configs import v9_5_xrp_tight
-    v9_5_xrp_tight._consec_state.clear()
+    from strategies.configs import v9_5_xrp_tight_blend
+    v9_5_xrp_tight_blend._consec_state.clear()
     yield
-    v9_5_xrp_tight._consec_state.clear()
+    v9_5_xrp_tight_blend._consec_state.clear()
 
 
 class TestForwardCompat:
     def test_model_not_loaded_skips_cleanly(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=None)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "v9_5_xrp_model_not_loaded"
-        assert d.strategy_id == "v9_5_xrp_tight"
+        assert d.strategy_id == "v9_5_xrp_tight_blend"
 
 
 class TestAssetGuard:
     def test_btc_surface_skips(self):
         surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
     def test_eth_surface_skips(self):
         surface = _make_surface(asset="ETH", probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
@@ -146,28 +146,28 @@ class TestEvalOffsetBand:
     def test_below_min_skips(self):
         surface = _make_surface(eval_offset=110, probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
     def test_above_max_skips(self):
         surface = _make_surface(eval_offset=250, probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
     def test_at_min_120_fires(self):
         surface = _make_surface(eval_offset=120, probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_at_max_240_fires(self):
         surface = _make_surface(eval_offset=240, probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -179,7 +179,7 @@ class TestEvalOffsetBand:
         """
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -188,29 +188,29 @@ class TestThresholds:
     def test_up_fires_at_0_95(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.95)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
-        assert d.entry_reason == "v9_5_xrp_tight_pass"
+        assert d.entry_reason == "v9_5_xrp_tight_blend_pass"
 
     def test_up_fires_well_above_threshold(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.99)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_down_fires_at_0_05(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.05)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
     def test_down_fires_below_threshold(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.01)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
@@ -218,7 +218,7 @@ class TestThresholds:
         # 0.94 < 0.95 — tight UP doesn't fire
         surface = _make_surface(probability_lgb_v9_5_xrp=0.94)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -226,7 +226,7 @@ class TestThresholds:
         # 0.06 > 0.05 — tight DOWN doesn't fire
         surface = _make_surface(probability_lgb_v9_5_xrp=0.06)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -238,7 +238,7 @@ class TestThresholds:
         """
         surface = _make_surface(probability_lgb_v9_5_xrp=0.82)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -247,19 +247,19 @@ class TestRuntimeOverride:
     def test_runtime_override_widens_band(self):
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         with _params(eval_offset_min=60):
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
 
     def test_runtime_override_lowers_up_threshold(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.90)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
         with _params(up_threshold=0.85):
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -268,7 +268,7 @@ class TestMetadata:
     def test_metadata_contains_probability_on_trade(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["probability_lgb_v9_5_xrp"] == pytest.approx(0.96)
         assert d.metadata["up_threshold"] == pytest.approx(0.95)
@@ -280,7 +280,7 @@ class TestMetadata:
     def test_metadata_contains_sizing_on_trade(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.96)
         with _params():
-            d = evaluate_v9_5_xrp_tight(surface)
+            d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["entry_cap"] == pytest.approx(0.95)
         assert d.metadata["collateral_pct"] == pytest.approx(0.025)

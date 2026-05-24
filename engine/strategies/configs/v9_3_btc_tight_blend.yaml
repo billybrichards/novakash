@@ -1,9 +1,15 @@
-name: v9_3_btc_tight
-strategy_id: v9_3_btc_tight
+name: v9_3_btc_tight_blend
+strategy_id: v9_3_btc_tight_blend
 version: "1.0.0"
-# v9_3_btc_tight — 2026-05-22 (Billy approved)
+# v9_3_btc_tight_blend — 2026-05-22 (Billy approved)
 #
-# High-precision sibling of v9_3_btc_raw_lgb. Reads the SAME
+# RENAMED 2026-05-24 from v9_3_btc_tight. The "tight" name didn't distinguish
+# blend-vs-pure; this strategy reads `probability_lgb_v9_3_btc` which is the
+# app/v2_scorer.py:blend_ensemble output (50/50 LGB+classifier blend, capped
+# at ~0.92 by classifier saturation — RDS notes #631, #632). The new `_blend`
+# suffix makes that explicit. Sibling: v9_3_btc_blend (formerly v9_3_btc_raw_lgb).
+#
+# High-precision sibling of v9_3_btc_blend (née v9_3_btc_raw_lgb). Reads the SAME
 # probability_lgb_v9_3_btc signal but at the tight-corner operating point:
 # UP p>=0.935 / DOWN p<=0.065. Walk-forward CV (24-day backtest) results:
 #   - UP   threshold 0.935 -> 90.3% WR on 1725 UP windows
@@ -18,7 +24,7 @@ version: "1.0.0"
 #
 # Co-exists with v9_3_btc_raw_lgb in this PR. The two strategies read the
 # SAME probability column but at DIFFERENT operating points. Both default
-# GHOST. v9_3_btc_tight is the "high-precision LIVE-candidate" once
+# GHOST. v9_3_btc_tight_blend is the "high-precision LIVE-candidate" once
 # shadow data validates the tight thresholds.
 #
 # Asset: BTC only. Strategy will SKIP defensively on any non-BTC surface.
@@ -55,8 +61,8 @@ mode: GHOST
 asset: BTC
 timescale: 5m
 
-hooks_file: v9_3_btc_tight.py
-pre_gate_hook: evaluate_v9_3_btc_tight
+hooks_file: v9_3_btc_tight_blend.py
+pre_gate_hook: evaluate_v9_3_btc_tight_blend
 
 sizing:
   type: kelly

@@ -260,7 +260,7 @@ class FullDataSurface:
     # Emitted by timesfm-service on /v4/snapshot.timescales.5m when
     # V9_5_ETH_ENABLED=true (companion sibling-agent timesfm PR
     # feat/v9_5_eth_emission, 2026-05-22).
-    # Read ONLY by the v9_5_eth_raw_lgb GHOST strategy (asset=ETH, 5m).
+    # Read ONLY by the v9_5_eth_blend GHOST strategy (asset=ETH, 5m).
     # Recommended operating point per RDS notes #579/#584 dedup analysis:
     # UP >= 0.96, DOWN <= 0.04, eval_offset in [60, 240]. Projected ~91-92%
     # per-window WR with ~36% fire rate on walk-forward OOF.
@@ -301,8 +301,8 @@ class FullDataSurface:
     # timesfm-service on /v4/snapshot.timescales.5m when V9_3_BTC_ENABLED=true
     # (companion timesfm PR not yet opened — Billy approves before that's created).
     # Read by BOTH new BTC GHOST strategies:
-    #   - v9_3_btc_raw_lgb (drop-in replacement, UP p>=0.72 / DOWN p<=0.20)
-    #   - v9_3_btc_tight (high-precision, UP p>=0.935 / DOWN p<=0.065,
+    #   - v9_3_btc_blend (drop-in replacement, UP p>=0.72 / DOWN p<=0.20)
+    #   - v9_3_btc_tight_blend (high-precision, UP p>=0.935 / DOWN p<=0.065,
     #     early-window subsegment eval_offset in [20, 170])
     # Walk-forward CV: raw_lgb 79.9% UP / 82.8% DOWN; tight 90.3% UP / 90.4% DOWN.
     # Default None — forward-compatible; prod snapshots without this field
@@ -319,8 +319,8 @@ class FullDataSurface:
     # /v4/snapshot.timescales.5m when V9_5_XRP_ENABLED=true (timesfm PR #160
     # merged 2026-05-23).
     # Read by BOTH new XRP GHOST strategies:
-    #   - v9_5_xrp_raw_lgb (drop-in moderate, UP p>=0.82 / DOWN p<=0.20)
-    #   - v9_5_xrp_tight  (high-precision, UP p>=0.95 / DOWN p<=0.05,
+    #   - v9_5_xrp_blend (drop-in moderate, UP p>=0.82 / DOWN p<=0.20)
+    #   - v9_5_xrp_tight_blend  (high-precision, UP p>=0.95 / DOWN p<=0.05,
     #     late-window subsegment eval_offset in [120, 240])
     # Walk-forward CV: raw_lgb 74.8% UP / 71.9% DOWN; tight 80.9% UP / 83.1% DOWN.
     # XRP corpus is thinner than ETH (22d) and v9.3 BTC (24d) so 90%+ pockets

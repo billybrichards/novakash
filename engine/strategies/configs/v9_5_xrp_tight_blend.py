@@ -1,21 +1,26 @@
-"""v9_3_btc_tight — high-precision BTC 5m strategy reading v9.3 BTC LGB (GHOST).
+"""v9_5_xrp_tight_blend — high-precision XRP 5m strategy reading v9.5 XRP LGB (GHOST).
 
-Sibling of v9_3_btc_raw_lgb. Reads the SAME probability_lgb_v9_3_btc signal
-but at the tight-corner operating point (UP p>=0.935 / DOWN p<=0.065) and
-constrained to the early-window band (eval_offset in [20, 170], i.e.
-stc in [130, 280]).
+Sibling of v9_5_xrp_raw_lgb. Reads the SAME probability_lgb_v9_5_xrp signal
+but at the tight-corner operating point (UP p>=0.95 / DOWN p<=0.05) and
+constrained to the late-window band (eval_offset in [120, 240]).
+
+XRP's tight corner does NOT reach the v9.3 BTC 90%+ ceiling — UP-side
+peaks at ~83% WR at thr=0.97 (n=263) and DOWN reaches 93% only at thr<=0.005
+(n=241, too close to a degenerate point). The 0.95/0.05 corner gives
+80.9% UP / 83.1% DOWN with reasonable volume (n=282 / n=319).
 
 No v9_ensemble base-gate delegation. No cohort gates, no sister-pair veto,
-no cell pauses, no blocked hours. Co-exists with v9_3_btc_raw_lgb — both
+no cell pauses, no blocked hours. Co-exists with v9_5_xrp_raw_lgb — both
 read the same probability field but have independent consecutive-tick state
 and DIFFERENT operating points.
 
-Asset: BTC only. Strategy will SKIP on any non-BTC surface (defensive guard).
+Asset: XRP only. Strategy will SKIP on any non-XRP surface (defensive guard).
 
-Criteria (timesfm notes #585 / #587 / #589 / #590 walk-forward CV):
-  - UP   when probability_lgb_v9_3_btc >= 0.935 -> 90.3% WR on 1725 windows
-  - DOWN when probability_lgb_v9_3_btc <= 0.065 -> 90.4% WR on 1590 windows
-  - eval_offset in [20, 170] (early-window subsegment)
+Criteria (timesfm PR #160 + /tmp/v9_5_xrp_strategy_design.md walk-forward CV):
+  - UP   when probability_lgb_v9_5_xrp >= 0.95 -> 80.9% WR on 282 windows
+  - DOWN when probability_lgb_v9_5_xrp <= 0.05 -> 83.1% WR on 319 windows
+  - eval_offset in [120, 240] (late-window subsegment — tight-corner fires
+    concentrate at stc 104-105s, eval_offset ~195s)
   - min_consecutive_pass_ticks=1
 
 Sized by Kelly (collateral_pct) capped at max_position_usd via YAML.
@@ -23,9 +28,10 @@ GHOST mode by default — Billy promotes manually
 (per feedback_no_auto_promote.md). $5 max_position_usd for the initial
 shadow window.
 
-Timesfm-repo notes #585 / #587 / #589 / #590 — walk-forward CV results.
-BTC ebook chapter: /home/billyrichards/scans2025/v9_3_btc_ebook_chapter.html
-Sibling strategy in this PR: v9_3_btc_raw_lgb (drop-in replacement).
+Timesfm-repo PR #160 — v9.5 XRP emission + production training script.
+Strategy design doc: /tmp/v9_5_xrp_strategy_design.md
+Engine precedent: v9_3_btc_tight (commit 5e8c147).
+Sibling strategy in this PR: v9_5_xrp_raw_lgb (drop-in moderate).
 """
 
 from __future__ import annotations
@@ -39,25 +45,25 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_3_btc_tight"
+_STRATEGY_ID = "v9_5_xrp_tight_blend"
 _VERSION = "1.0.0"
 
 # Walk-forward CV tight-corner operating point.
-_DEFAULT_UP_THRESHOLD = 0.935
-_DEFAULT_DOWN_THRESHOLD = 0.065
+_DEFAULT_UP_THRESHOLD = 0.95
+_DEFAULT_DOWN_THRESHOLD = 0.05
 
-# Early-window band — stc in [130, 280] -> eval_offset in [20, 170]
-# (window length 300s; eval_offset = 300 - seconds_to_close).
-_DEFAULT_EVAL_OFFSET_MIN = 20
-_DEFAULT_EVAL_OFFSET_MAX = 170
+# Late-window band — XRP tight-corner fires concentrate at stc 104-105s
+# (eval_offset ~195s). q25 first-fire is at stc 45-75s (eval_offset 225-255s).
+_DEFAULT_EVAL_OFFSET_MIN = 120
+_DEFAULT_EVAL_OFFSET_MAX = 240
 
-_DEFAULT_ENTRY_CAP = 0.935
+_DEFAULT_ENTRY_CAP = 0.95
 _DEFAULT_COLLATERAL_PCT = 0.025
-_DEFAULT_GTC_CAP = 0.935
+_DEFAULT_GTC_CAP = 0.95
 _DEFAULT_MIN_CONSEC_TICKS = 1
-_DEFAULT_ASSET = "BTC"
+_DEFAULT_ASSET = "XRP"
 
-# Module-local state — independent from v9_3_btc_raw_lgb's state even
+# Module-local state — independent from v9_5_xrp_raw_lgb's state even
 # though both strategies read the same probability column.
 _consec_state: dict[tuple[int, str], tuple[int, float]] = {}
 _MAX_GAP_S = 5.0
@@ -103,8 +109,8 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
-    p_btc = getattr(surface, "probability_lgb_v9_3_btc", None)
+def evaluate_v9_5_xrp_tight_blend(surface: "FullDataSurface") -> StrategyDecision:
+    p_xrp = getattr(surface, "probability_lgb_v9_5_xrp", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
 
@@ -115,13 +121,13 @@ def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
             {"asset": asset, "expected_asset": expected_asset},
         )
 
-    if p_btc is None:
+    if p_xrp is None:
         return _skip(
-            "v9_3_btc_model_not_loaded",
-            {"probability_lgb_v9_3_btc": None},
+            "v9_5_xrp_model_not_loaded",
+            {"probability_lgb_v9_5_xrp": None},
         )
 
-    p_btc = float(p_btc)
+    p_xrp = float(p_xrp)
 
     up_threshold = _gp.get_float("up_threshold", None, _DEFAULT_UP_THRESHOLD)
     down_threshold = _gp.get_float("down_threshold", None, _DEFAULT_DOWN_THRESHOLD)
@@ -129,7 +135,7 @@ def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
     eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
 
     meta = {
-        "probability_lgb_v9_3_btc": p_btc,
+        "probability_lgb_v9_5_xrp": p_xrp,
         "eval_offset": eval_offset,
         "up_threshold": up_threshold,
         "down_threshold": down_threshold,
@@ -141,9 +147,9 @@ def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
     if eval_offset is None or eval_offset < eval_min or eval_offset > eval_max:
         return _skip("outside_eval_band", meta)
 
-    if p_btc >= up_threshold:
+    if p_xrp >= up_threshold:
         direction = "UP"
-    elif p_btc <= down_threshold:
+    elif p_xrp <= down_threshold:
         direction = "DOWN"
     else:
         return _skip("conviction_below_threshold", meta)
@@ -158,7 +164,7 @@ def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
     if consec_count < min_consec:
         return _skip("awaiting_consec_ticks", meta)
 
-    confidence_score = float(abs(p_btc - 0.5) * 2.0)
+    confidence_score = float(abs(p_xrp - 0.5) * 2.0)
     confidence = "HIGH" if confidence_score >= 0.40 else "MODERATE"
 
     entry_cap = _gp.get_float("entry_cap", None, _DEFAULT_ENTRY_CAP)
@@ -178,7 +184,7 @@ def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_3_btc_tight_pass",
+        entry_reason="v9_5_xrp_tight_blend_pass",
         skip_reason=None,
         metadata=meta,
     )

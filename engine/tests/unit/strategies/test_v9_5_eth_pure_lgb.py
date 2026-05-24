@@ -430,17 +430,17 @@ class TestConsecutiveTicks:
 class TestCrossStrategyIndependence:
     """Module-local _consec_state must NOT leak to sibling strategies."""
 
-    def test_consec_state_isolated_from_v9_5_eth_raw_lgb(self):
+    def test_consec_state_isolated_from_v9_5_eth_blend(self):
         """Mutating v9_5_eth_pure_lgb._consec_state must NOT affect
-        v9_5_eth_raw_lgb (the blend sibling)._consec_state.
+        v9_5_eth_blend (the blend sibling, née v9_5_eth_raw_lgb)._consec_state.
         """
         from strategies.configs import v9_5_eth_pure_lgb as pure
-        from strategies.configs import v9_5_eth_raw_lgb as raw_lgb
+        from strategies.configs import v9_5_eth_blend as blend
 
         # Sanity: clear both.
         pure._consec_state.clear()
-        raw_lgb._consec_state.clear()
-        assert pure._consec_state is not raw_lgb._consec_state
+        blend._consec_state.clear()
+        assert pure._consec_state is not blend._consec_state
 
         # Fire this strategy — populates ITS state only.
         surface = _make_surface(probability_lgb_v9_5_eth_pure=0.95)
@@ -448,8 +448,8 @@ class TestCrossStrategyIndependence:
             d = evaluate_v9_5_eth_pure_lgb(surface)
         assert d.action == "TRADE"
         assert len(pure._consec_state) >= 1
-        # raw_lgb's state remains untouched.
-        assert len(raw_lgb._consec_state) == 0
+        # blend's state remains untouched.
+        assert len(blend._consec_state) == 0
 
     def test_consec_state_isolated_from_v9_2_eth_late_band_AB_blend(self):
         """Independence from v9_2_eth_late_band_AB_blend (a different op-point

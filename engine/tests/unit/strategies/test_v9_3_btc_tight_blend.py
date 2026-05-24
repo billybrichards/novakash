@@ -1,4 +1,4 @@
-"""Unit tests for v9_3_btc_tight GHOST strategy (high-precision corner).
+"""Unit tests for v9_3_btc_tight_blend GHOST strategy (high-precision corner).
 
 Coverage:
 - model-not-loaded SKIP (v9_3_btc_model_not_loaded) — forward-compat path
@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from strategies.configs.v9_3_btc_tight import evaluate_v9_3_btc_tight
+from strategies.configs.v9_3_btc_tight_blend import evaluate_v9_3_btc_tight_blend
 from strategies import gate_params as _gp
 from strategies.data_surface import FullDataSurface
 
@@ -104,34 +104,34 @@ def _params(**extra):
 
 @pytest.fixture(autouse=True)
 def _clear_consec_state():
-    from strategies.configs import v9_3_btc_tight
-    v9_3_btc_tight._consec_state.clear()
+    from strategies.configs import v9_3_btc_tight_blend
+    v9_3_btc_tight_blend._consec_state.clear()
     yield
-    v9_3_btc_tight._consec_state.clear()
+    v9_3_btc_tight_blend._consec_state.clear()
 
 
 class TestForwardCompat:
     def test_model_not_loaded_skips_cleanly(self):
         surface = _make_surface(probability_lgb_v9_3_btc=None)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "v9_3_btc_model_not_loaded"
-        assert d.strategy_id == "v9_3_btc_tight"
+        assert d.strategy_id == "v9_3_btc_tight_blend"
 
 
 class TestAssetGuard:
     def test_eth_surface_skips(self):
         surface = _make_surface(asset="ETH", probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
     def test_xrp_surface_skips(self):
         surface = _make_surface(asset="XRP", probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
@@ -141,7 +141,7 @@ class TestEvalOffsetBand:
         # eval_offset=10 is below band min 20 (early-window band)
         surface = _make_surface(eval_offset=10)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -149,21 +149,21 @@ class TestEvalOffsetBand:
         # eval_offset=180 is above band max 170 (late-window — tight doesn't fire)
         surface = _make_surface(eval_offset=180)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
     def test_at_min_20_fires(self):
         surface = _make_surface(eval_offset=20, probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_at_max_170_fires(self):
         surface = _make_surface(eval_offset=170, probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -171,7 +171,7 @@ class TestEvalOffsetBand:
         """eval_offset=200 (late window) is OUT — tight is early-window only."""
         surface = _make_surface(eval_offset=200, probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -180,29 +180,29 @@ class TestThresholds:
     def test_up_fires_at_0_935(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.935)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
-        assert d.entry_reason == "v9_3_btc_tight_pass"
+        assert d.entry_reason == "v9_3_btc_tight_blend_pass"
 
     def test_up_fires_well_above_threshold(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.99)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_down_fires_at_0_065(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.065)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
     def test_down_fires_below_threshold(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.01)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
@@ -210,7 +210,7 @@ class TestThresholds:
         # 0.93 < 0.935 — tight UP doesn't fire even at high raw conviction
         surface = _make_surface(probability_lgb_v9_3_btc=0.93)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -218,7 +218,7 @@ class TestThresholds:
         # 0.07 > 0.065 — tight DOWN doesn't fire
         surface = _make_surface(probability_lgb_v9_3_btc=0.07)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -230,7 +230,7 @@ class TestThresholds:
         """
         surface = _make_surface(probability_lgb_v9_3_btc=0.72)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -239,19 +239,19 @@ class TestRuntimeOverride:
     def test_runtime_override_widens_band(self):
         surface = _make_surface(eval_offset=180, probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         with _params(eval_offset_max=210):
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
 
     def test_runtime_override_lowers_up_threshold(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.90)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "SKIP"
         with _params(up_threshold=0.85):
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -260,7 +260,7 @@ class TestMetadata:
     def test_metadata_contains_probability_on_trade(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["probability_lgb_v9_3_btc"] == pytest.approx(0.95)
         assert d.metadata["up_threshold"] == pytest.approx(0.935)
@@ -272,7 +272,7 @@ class TestMetadata:
     def test_metadata_contains_sizing_on_trade(self):
         surface = _make_surface(probability_lgb_v9_3_btc=0.95)
         with _params():
-            d = evaluate_v9_3_btc_tight(surface)
+            d = evaluate_v9_3_btc_tight_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["entry_cap"] == pytest.approx(0.935)
         assert d.metadata["collateral_pct"] == pytest.approx(0.025)

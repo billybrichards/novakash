@@ -2076,7 +2076,7 @@ class DBClient:
 
         The probability is emitted by timesfm-service when V9_5_ETH_ENABLED=true
         (companion sibling-agent PR feat/v9_5_eth_emission). Read by the
-        v9_5_eth_raw_lgb GHOST strategy.
+        v9_5_eth_blend GHOST strategy.
 
         Idempotent: COALESCE preserves any existing value on conflict
         (first-write-wins, mirrors the v12 / v9_1 / post_iso / v9_2_eth
@@ -2224,7 +2224,7 @@ class DBClient:
 
         The probability is emitted by timesfm-service when V9_3_BTC_ENABLED=true
         (companion PR not yet opened — Billy approves before that's created).
-        Read by BOTH v9_3_btc_raw_lgb (drop-in replacement) AND v9_3_btc_tight
+        Read by BOTH v9_3_btc_blend (drop-in replacement) AND v9_3_btc_tight_blend
         (high-precision corner) GHOST strategies.
 
         Idempotent: COALESCE preserves any existing value on conflict
@@ -2299,8 +2299,8 @@ class DBClient:
         migrations/add_probability_lgb_v9_5_xrp_column.sql (2026-05-23).
 
         The probability is emitted by timesfm-service when V9_5_XRP_ENABLED=true
-        (timesfm PR #160, merged 2026-05-23). Read by BOTH v9_5_xrp_raw_lgb
-        (drop-in moderate) AND v9_5_xrp_tight (high-precision corner) GHOST
+        (timesfm PR #160, merged 2026-05-23). Read by BOTH v9_5_xrp_blend
+        (drop-in moderate) AND v9_5_xrp_tight_blend (high-precision corner) GHOST
         strategies.
 
         Idempotent: COALESCE preserves any existing value on conflict
