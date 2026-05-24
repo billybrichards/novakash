@@ -1,6 +1,6 @@
--- Migration: seed v9_2_eth_late_band_AB strategy row in strategy_configs
+-- Migration: seed v9_2_eth_late_band_AB_blend strategy row in strategy_configs
 -- Date: 2026-05-24
--- Purpose: Belt-and-braces seed for the new v9_2_eth_late_band_AB strategy
+-- Purpose: Belt-and-braces seed for the new v9_2_eth_late_band_AB_blend strategy
 --          ahead of the engine boot. The canonical write path is
 --          StrategyRegistry.seed_registry_to_db() which runs on engine
 --          startup and UPSERTs every loaded YAML config. This migration
@@ -46,24 +46,24 @@ INSERT INTO strategy_configs (
     created_at,
     updated_at
 ) VALUES (
-    'v9_2_eth_late_band_AB',
+    'v9_2_eth_late_band_AB_blend',
     '1.0.0',
     'GHOST',
     'ETH',
     '5m',
-    -- Raw YAML body — kept in sync with engine/strategies/configs/v9_2_eth_late_band_AB.yaml
+    -- Raw YAML body — kept in sync with engine/strategies/configs/v9_2_eth_late_band_AB_blend.yaml
     -- The engine's seed_registry_to_db() will re-UPSERT this from the
     -- canonical YAML file at boot, so this string is the belt-and-braces
     -- starting state only (matches the YAML byte-for-byte at PR time).
-    $$name: v9_2_eth_late_band_AB
-strategy_id: v9_2_eth_late_band_AB
+    $$name: v9_2_eth_late_band_AB_blend
+strategy_id: v9_2_eth_late_band_AB_blend
 version: "1.0.0"
 status: GHOST
 mode: GHOST
 asset: ETH
 timescale: 5m
-hooks_file: v9_2_eth_late_band_AB.py
-pre_gate_hook: evaluate_v9_2_eth_late_band_AB
+hooks_file: v9_2_eth_late_band_AB_blend.py
+pre_gate_hook: evaluate_v9_2_eth_late_band_AB_blend
 sizing:
   type: kelly
   fraction: 0.025
@@ -85,7 +85,7 @@ risk:
 $$,
     '[{"type":"chainlink_freshness"}]'::jsonb,
     '{"type":"kelly","fraction":0.025,"max_collateral_pct":0.025,"max_position_usd":5}'::jsonb,
-    'v9_2_eth_late_band_AB.py',
+    'v9_2_eth_late_band_AB_blend.py',
     NOW(),
     NOW()
 )
@@ -94,4 +94,4 @@ ON CONFLICT (strategy_id, version) DO NOTHING;
 -- Verify
 SELECT strategy_id, version, mode, asset, timescale, hooks_file
 FROM strategy_configs
-WHERE strategy_id = 'v9_2_eth_late_band_AB';
+WHERE strategy_id = 'v9_2_eth_late_band_AB_blend';

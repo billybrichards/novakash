@@ -1,4 +1,4 @@
-"""v9_5_xrp_late_band_AB — UP-only XRP 5m late-window strategy (GHOST).
+"""v9_5_xrp_late_band_AB_blend — UP-only XRP 5m late-window strategy (GHOST).
 
 Fires on raw probability_lgb_v9_5_xrp at the audit-recommended late-window
 operating point. UP direction only — RDS note #629 explicit: "no usable
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_5_xrp_late_band_AB"
+_STRATEGY_ID = "v9_5_xrp_late_band_AB_blend"
 _VERSION = "1.0.0"
 
 # Audit operating point per RDS note #629.
@@ -112,7 +112,7 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_5_xrp_late_band_AB(surface: "FullDataSurface") -> StrategyDecision:
+def evaluate_v9_5_xrp_late_band_AB_blend(surface: "FullDataSurface") -> StrategyDecision:
     p_xrp = getattr(surface, "probability_lgb_v9_5_xrp", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
@@ -195,7 +195,7 @@ def evaluate_v9_5_xrp_late_band_AB(surface: "FullDataSurface") -> StrategyDecisi
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_5_xrp_late_band_AB_pass",
+        entry_reason="v9_5_xrp_late_band_AB_blend_pass",
         skip_reason=None,
         metadata=meta,
     )
