@@ -1,0 +1,2904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 14 — Forging v9.3 BTC</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    :root {
+      --bg-deep: #0A0A0F;
+      --bg-surface: #14141C;
+      --bg-elevated: #1C1C28;
+      --bg-card: #161620;
+      --bg-overlay: rgba(255, 255, 255, 0.025);
+
+      --text-primary: #F5F3F0;
+      --text-secondary: #B8B3AB;
+      --text-tertiary: #7A7268;
+      --text-muted: #4A4540;
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+
+      --violet: #8B5CF6;
+      --violet-soft: #A78BFA;
+      --violet-dim: rgba(139, 92, 246, 0.15);
+      --green: #10B981;
+      --green-soft: #34D399;
+      --green-dim: rgba(16, 185, 129, 0.15);
+      --cyan: #06B6D4;
+      --cyan-soft: #22D3EE;
+      --cyan-dim: rgba(6, 182, 212, 0.15);
+      --amber: #F59E0B;
+      --amber-dim: rgba(245, 158, 11, 0.15);
+      --pink: #EC4899;
+      --pink-dim: rgba(236, 72, 153, 0.15);
+      --red: #EF4444;
+      --red-dim: rgba(239, 68, 68, 0.15);
+
+      --font-display: "Instrument Serif", "Times New Roman", serif;
+      --font-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: "JetBrains Mono", "Courier New", monospace;
+
+      --content-max: 86rem;
+      --reading-max: 46rem;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; font-size: 16px; -webkit-font-smoothing: antialiased; }
+    body {
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-weight: 400;
+      line-height: 1.68;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(6, 182, 212, 0.10) 0%, transparent 50%),
+        radial-gradient(ellipse 60% 40% at 90% 30%, rgba(139, 92, 246, 0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 10% 60%, rgba(16, 185, 129, 0.04) 0%, transparent 60%);
+      background-attachment: fixed;
+    }
+    ::selection { background: var(--cyan); color: var(--bg-deep); }
+
+    /* reading progress bar */
+    .reading-progress {
+      position: fixed;
+      top: 0; left: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--violet), var(--green));
+      z-index: 100;
+      width: 0;
+      transition: width 0.12s ease-out;
+    }
+
+    /* floating side nav */
+    .side-nav {
+      position: fixed;
+      left: 1.25rem;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .side-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 0.28rem 0.6rem;
+      border-left: 1px solid var(--border-subtle);
+      transition: color 0.2s, border-color 0.2s, padding-left 0.2s;
+      display: block;
+      white-space: nowrap;
+    }
+    .side-nav a:hover, .side-nav a.active {
+      color: var(--text-primary);
+      border-left-color: var(--cyan);
+      padding-left: 0.9rem;
+    }
+    @media (max-width: 1280px) { .side-nav { display: none; } }
+
+    /* layout primitives */
+    .container { max-width: var(--content-max); margin: 0 auto; padding: 0 1.5rem; }
+    .reading { max-width: var(--reading-max); margin: 0 auto; }
+    section { padding: 6rem 0; position: relative; }
+    section + section { border-top: 1px solid var(--border-subtle); }
+    @media (min-width: 720px) { section { padding: 8rem 0; } }
+
+    .kicker {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 1.25rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .kicker::before {
+      content: '';
+      display: inline-block;
+      width: 1.5rem;
+      height: 1px;
+      background: var(--text-tertiary);
+    }
+    .kicker--cyan { color: var(--cyan-soft); }
+    .kicker--cyan::before { background: var(--cyan-soft); }
+    .kicker--violet { color: var(--violet-soft); }
+    .kicker--violet::before { background: var(--violet-soft); }
+    .kicker--green { color: var(--green-soft); }
+    .kicker--green::before { background: var(--green-soft); }
+    .kicker--amber { color: var(--amber); }
+    .kicker--amber::before { background: var(--amber); }
+
+    /* typography */
+    h1, h2, h3, h4 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      line-height: 1.05;
+    }
+    h2 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      margin-bottom: 1rem;
+    }
+    h2 em { color: var(--cyan-soft); font-style: italic; }
+    h3 {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      margin: 2.5rem 0 0.75rem;
+    }
+    h4 {
+      font-size: clamp(1.15rem, 2vw, 1.45rem);
+      margin: 1.75rem 0 0.5rem;
+      color: var(--text-primary);
+    }
+    p { margin-bottom: 1.1rem; color: var(--text-secondary); font-size: 1.02rem; }
+    p strong { color: var(--text-primary); font-weight: 500; }
+    p em { color: var(--text-primary); font-style: italic; font-family: var(--font-display); font-size: 1.08em; }
+    a {
+      color: var(--cyan-soft);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(34, 211, 238, 0.35);
+      transition: border-color 0.2s;
+    }
+    a:hover { border-bottom-color: var(--cyan-soft); }
+
+    code, .mono {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      color: var(--cyan-soft);
+      background: var(--bg-overlay);
+      padding: 0.08em 0.4em;
+      border-radius: 4px;
+      border: 1px solid var(--border-subtle);
+    }
+    p code { background: rgba(6,182,212,0.08); border-color: rgba(6,182,212,0.18); }
+
+    pre {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 1.5rem;
+      overflow-x: auto;
+      margin: 1.75rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-primary);
+      position: relative;
+    }
+    pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      font-size: inherit;
+    }
+    pre .tk-com { color: var(--text-tertiary); font-style: italic; }
+    pre .tk-key { color: var(--violet-soft); }
+    pre .tk-str { color: var(--green-soft); }
+    pre .tk-num { color: var(--amber); }
+    pre .tk-fn  { color: var(--cyan-soft); }
+    pre .tk-bad { color: var(--red); }
+    pre::before {
+      content: attr(data-lang);
+      position: absolute;
+      top: 0.5rem;
+      right: 1rem;
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    /* ─── HERO ─────────────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 4rem 1.5rem 8rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-grid { max-width: var(--content-max); margin: 0 auto; width: 100%; position: relative; z-index: 2; }
+    .hero-kicker {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      display: block;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s 0.1s both;
+    }
+    .hero-kicker span:first-child { color: var(--cyan-soft); margin-right: 1rem; }
+    .hero-title {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: clamp(3.2rem, 11vw, 8.5rem);
+      line-height: 0.94;
+      letter-spacing: -0.035em;
+      margin-bottom: 2.5rem;
+      animation: fadeInUp 0.8s 0.25s both;
+    }
+    .hero-title em {
+      color: var(--cyan-soft);
+      font-style: italic;
+      display: inline-block;
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--violet) 60%, var(--green) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: gradShift 9s ease infinite;
+      background-size: 220% 220%;
+    }
+    @keyframes gradShift {
+      0%, 100% { background-position: 0% 0%; }
+      50% { background-position: 100% 100%; }
+    }
+    .hero-sub {
+      font-size: clamp(1.1rem, 2vw, 1.4rem);
+      line-height: 1.55;
+      max-width: 50rem;
+      color: var(--text-primary);
+      margin-bottom: 2.5rem;
+      font-weight: 300;
+      animation: fadeInUp 0.8s 0.4s both;
+    }
+    .hero-sub em { font-family: var(--font-display); color: var(--cyan-soft); }
+    .hero-promise {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: var(--text-tertiary);
+      max-width: 44rem;
+      padding-left: 1rem;
+      border-left: 2px solid var(--cyan);
+      animation: fadeInUp 0.8s 0.55s both;
+    }
+    .hero-scroll {
+      position: absolute;
+      bottom: 3rem;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      animation: bob 2.5s ease-in-out infinite;
+    }
+    @keyframes bob {
+      0%, 100% { transform: translate(-50%, 0); opacity: 0.6; }
+      50% { transform: translate(-50%, 8px); opacity: 1; }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* hero numbers */
+    .hero-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3.5rem;
+      max-width: 60rem;
+      animation: fadeInUp 0.8s 0.7s both;
+    }
+    .hero-meta-item {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-default);
+    }
+    .hero-meta-item strong {
+      display: block;
+      color: var(--text-primary);
+      font-size: 1.7rem;
+      font-weight: 400;
+      margin-top: 0.4rem;
+      font-family: var(--font-display);
+      letter-spacing: -0.01em;
+      text-transform: none;
+    }
+    .hero-meta-item .arrow { color: var(--cyan-soft); }
+    .hero-meta-item .pp { color: var(--green-soft); font-size: 0.85rem; font-family: var(--font-mono); margin-left: 0.4rem; }
+
+    /* hero-mirror big numbers row */
+    .hero-mirror {
+      display: flex;
+      align-items: baseline;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-top: 1.5rem;
+      font-family: var(--font-display);
+      animation: fadeInUp 0.8s 0.5s both;
+    }
+    .hero-mirror .num {
+      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      letter-spacing: -0.02em;
+    }
+    .hero-mirror .num-base { color: var(--text-primary); }
+    .hero-mirror .num-mid { color: var(--violet-soft); }
+    .hero-mirror .num-top { color: var(--green-soft); font-style: italic; }
+    .hero-mirror .arrow {
+      font-family: var(--font-mono);
+      color: var(--cyan-soft);
+      font-size: 1.5rem;
+      font-style: normal;
+    }
+    .hero-mirror .lbl {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      display: block;
+      margin-top: 0.4rem;
+    }
+    .hero-mirror .col { display: flex; flex-direction: column; }
+
+    /* moment cards */
+    .moments-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+      margin-top: 3.5rem;
+    }
+    @media (min-width: 980px) {
+      .moments-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .moment {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.8rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.3s, border-color 0.3s;
+    }
+    .moment:hover { transform: translateY(-3px); border-color: var(--border-strong); }
+    .moment-time {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.7rem;
+    }
+    .moment-head {
+      font-family: var(--font-display);
+      font-size: 1.55rem;
+      line-height: 1.15;
+      margin-bottom: 0.85rem;
+      letter-spacing: -0.01em;
+      color: var(--text-primary);
+    }
+    .moment-body { font-size: 0.93rem; line-height: 1.6; color: var(--text-secondary); }
+    .moment-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.6rem;
+      border-radius: 999px;
+      margin-top: 1.2rem;
+    }
+    .moment[data-mood="bad"] .moment-tag { background: var(--red-dim); color: var(--red); }
+    .moment[data-mood="good"] .moment-tag { background: var(--green-dim); color: var(--green-soft); }
+    .moment[data-mood="next"] .moment-tag { background: var(--violet-dim); color: var(--violet-soft); }
+    .moment[data-mood="warn"] .moment-tag { background: var(--amber-dim); color: var(--amber); }
+    .moment[data-mood="bad"] { border-left: 3px solid var(--red); }
+    .moment[data-mood="good"] { border-left: 3px solid var(--green); }
+    .moment[data-mood="next"] { border-left: 3px solid var(--violet); }
+    .moment[data-mood="warn"] { border-left: 3px solid var(--amber); }
+
+    /* generic two-column grid */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 3rem;
+      margin-top: 3rem;
+      align-items: start;
+    }
+    @media (min-width: 980px) {
+      .two-col { grid-template-columns: 1.05fr 1fr; gap: 4rem; }
+      .two-col.right-heavy { grid-template-columns: 1fr 1.15fr; }
+    }
+    .panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+    }
+    .panel.sticky { position: sticky; top: 2rem; }
+    .panel-label {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 1rem;
+      text-align: center;
+    }
+    .panel svg { width: 100%; height: auto; display: block; }
+
+    /* chart wrap */
+    .chart-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.5rem;
+      margin: 3rem 0;
+      overflow: hidden;
+    }
+    .chart-title {
+      font-family: var(--font-mono);
+      font-size: 0.73rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin-bottom: 0.4rem;
+      padding-left: 0.5rem;
+    }
+    .chart-sub {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--text-tertiary);
+      margin-bottom: 1rem;
+      padding-left: 0.5rem;
+    }
+    .chart-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+    }
+    @media (min-width: 980px) {
+      .chart-grid-2 { grid-template-columns: 1fr 1fr; }
+    }
+    .plotly-host { width: 100%; }
+
+    /* result tables */
+    .result-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      margin: 1.5rem 0;
+    }
+    .result-table caption {
+      text-align: left;
+      caption-side: top;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.75rem;
+      padding-left: 0.5rem;
+    }
+    .result-table th, .result-table td {
+      text-align: left;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .result-table th {
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border-default);
+    }
+    .result-table td.num { text-align: right; }
+    .result-table th.num { text-align: right; }
+    .result-table td.label { color: var(--text-primary); }
+    .result-table td.delta-good { color: var(--green-soft); }
+    .result-table td.delta-bad { color: var(--red); }
+    .result-table td.hl { color: var(--cyan-soft); font-weight: 600; }
+    .result-table tr.highlight td { background: rgba(6, 182, 212, 0.05); }
+    .result-table tr.breakthrough td { background: rgba(16, 185, 129, 0.06); color: var(--green-soft); }
+    .result-table tr.breakthrough td.label { color: var(--green-soft); font-weight: 500; }
+
+    /* pull quote */
+    .pull-quote {
+      font-family: var(--font-display);
+      font-size: clamp(1.6rem, 3.3vw, 2.4rem);
+      line-height: 1.25;
+      color: var(--text-primary);
+      padding: 2.5rem 0;
+      max-width: 50rem;
+      margin: 2rem auto;
+      letter-spacing: -0.015em;
+    }
+    .pull-quote em { color: var(--cyan-soft); font-style: italic; }
+    .pull-quote::before {
+      content: '"';
+      display: block;
+      color: var(--cyan-soft);
+      font-size: 4rem;
+      line-height: 0.2;
+      margin-bottom: 1.5rem;
+      font-family: var(--font-display);
+    }
+    .pull-quote cite {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 1.5rem;
+      font-style: normal;
+    }
+
+    /* feature tier cards */
+    .tier-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+      margin-top: 3rem;
+    }
+    @media (min-width: 980px) {
+      .tier-grid { grid-template-columns: repeat(3, 1fr); align-items: stretch; }
+    }
+    .tier {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.75rem;
+      position: relative;
+    }
+    .tier-num {
+      font-family: var(--font-display);
+      font-size: 3rem;
+      line-height: 1;
+      color: var(--cyan-soft);
+      letter-spacing: -0.04em;
+      opacity: 0.85;
+    }
+    .tier h4 {
+      font-size: 1.3rem;
+      margin: 0.5rem 0 0.5rem;
+    }
+    .tier p {
+      font-size: 0.92rem;
+      line-height: 1.55;
+      margin-bottom: 0.7rem;
+    }
+    .tier ul {
+      list-style: none;
+      padding: 0;
+      margin: 0.75rem 0 0;
+    }
+    .tier ul li {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      padding: 0.32rem 0;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+    .tier ul li::before {
+      content: '·';
+      color: var(--cyan-soft);
+      font-weight: 700;
+    }
+    .tier .tier-impact {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-default);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .tier .tier-impact b { color: var(--green-soft); font-weight: 600; }
+    .tier--violet .tier-num { color: var(--violet-soft); }
+    .tier--green .tier-num { color: var(--green-soft); }
+
+    /* compact badges */
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 1.5rem 0;
+    }
+    .badge {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      padding: 0.32rem 0.7rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      background: var(--bg-overlay);
+    }
+    .badge--cyan { color: var(--cyan-soft); border-color: rgba(6,182,212,0.3); background: var(--cyan-dim); }
+    .badge--violet { color: var(--violet-soft); border-color: rgba(139,92,246,0.3); background: var(--violet-dim); }
+    .badge--green { color: var(--green-soft); border-color: rgba(16,185,129,0.3); background: var(--green-dim); }
+    .badge--amber { color: var(--amber); border-color: rgba(245,158,11,0.3); background: var(--amber-dim); }
+    .badge--red { color: var(--red); border-color: rgba(239,68,68,0.3); background: var(--red-dim); }
+
+    /* call-out box */
+    .callout {
+      background: var(--bg-card);
+      border-left: 3px solid var(--cyan);
+      border-radius: 4px;
+      padding: 1.5rem 1.75rem;
+      margin: 2rem 0;
+      font-size: 0.95rem;
+    }
+    .callout--warn { border-left-color: var(--amber); }
+    .callout--bad  { border-left-color: var(--red); }
+    .callout--good { border-left-color: var(--green); }
+    .callout--violet { border-left-color: var(--violet); }
+    .callout-label {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--cyan-soft);
+      margin-bottom: 0.4rem;
+    }
+    .callout--warn .callout-label { color: var(--amber); }
+    .callout--bad  .callout-label { color: var(--red); }
+    .callout--good .callout-label { color: var(--green-soft); }
+    .callout--violet .callout-label { color: var(--violet-soft); }
+    .callout p:last-child { margin-bottom: 0; }
+
+    /* appendix files */
+    .files {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      margin-top: 2rem;
+    }
+    .file-row {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr 1.4fr;
+      gap: 1rem;
+      padding: 0.85rem 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      align-items: baseline;
+    }
+    @media (max-width: 720px) {
+      .file-row { grid-template-columns: 1fr; gap: 0.3rem; }
+    }
+    .file-path { color: var(--cyan-soft); word-break: break-all; }
+    .file-size { color: var(--text-tertiary); font-size: 0.75rem; letter-spacing: 0.1em; }
+    .file-note { color: var(--text-secondary); font-size: 0.78rem; font-family: var(--font-body); }
+    .file-group-head {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 2rem;
+      margin-bottom: 0.5rem;
+      padding-left: 0.25rem;
+    }
+    .file-group-head:first-of-type { margin-top: 1rem; }
+
+    /* footer */
+    footer {
+      padding: 4rem 1.5rem;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.1em;
+      border-top: 1px solid var(--border-subtle);
+    }
+    footer .glyph {
+      display: block;
+      color: var(--cyan-soft);
+      font-family: var(--font-display);
+      font-size: 1.6rem;
+      margin-bottom: 1rem;
+    }
+
+    /* tiny utility */
+    .lead {
+      font-family: var(--font-display);
+      font-size: clamp(1.3rem, 2.2vw, 1.7rem);
+      line-height: 1.4;
+      color: var(--text-primary);
+      margin-bottom: 2rem;
+      max-width: 50rem;
+    }
+    .lead em { color: var(--cyan-soft); font-style: italic; }
+
+    .section-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      color: var(--text-muted);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      display: block;
+      margin-top: 4rem;
+      margin-bottom: 0.5rem;
+    }
+
+    /* metric chip row used in places */
+    .metric-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    @media (min-width: 720px) {
+      .metric-row { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    }
+    .metric-chip {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      padding: 1.1rem 1.25rem;
+    }
+    .metric-chip .lbl {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 0.35rem;
+    }
+    .metric-chip .val {
+      font-family: var(--font-display);
+      font-size: 1.85rem;
+      letter-spacing: -0.02em;
+      color: var(--text-primary);
+    }
+    .metric-chip .sub {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      margin-top: 0.25rem;
+    }
+    .metric-chip.up .val   { color: var(--green-soft); }
+    .metric-chip.down .val { color: var(--red); }
+    .metric-chip.mid .val  { color: var(--cyan-soft); }
+    .metric-chip.viol .val { color: var(--violet-soft); }
+
+    /* code annotation list */
+    .annot-list {
+      list-style: none;
+      padding: 0;
+      margin: 1.5rem 0;
+    }
+    .annot-list li {
+      padding: 0.85rem 0 0.85rem 2rem;
+      position: relative;
+      color: var(--text-secondary);
+      border-top: 1px solid var(--border-subtle);
+      font-size: 0.96rem;
+      line-height: 1.55;
+    }
+    .annot-list li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 1.4rem;
+      width: 12px;
+      height: 1px;
+      background: var(--cyan-soft);
+    }
+    .annot-list li strong {
+      color: var(--text-primary);
+      font-weight: 500;
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 0.2rem;
+      color: var(--cyan-soft);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="reading-progress" id="reading-progress"></div>
+
+  <nav class="side-nav" aria-label="Chapter sections">
+    <a href="#hero">cover</a>
+    <a href="#trigger">trigger</a>
+    <a href="#duckdb">duckdb unlock</a>
+    <a href="#walkforward">walk-forward</a>
+    <a href="#featgap">feature gap</a>
+    <a href="#enrich">enrichment</a>
+    <a href="#reweight">reweight</a>
+    <a href="#meta">meta</a>
+    <a href="#super">super-enriched</a>
+    <a href="#deploy">deploy arch</a>
+    <a href="#next">what's next</a>
+    <a href="#appendix">appendix</a>
+  </nav>
+
+  <!-- ─── HERO ──────────────────────────────────────────────────── -->
+  <section class="hero" id="hero">
+    <div class="hero-grid">
+      <div class="hero-kicker">
+        <span>CHAPTER 14</span>
+        <span>2026-05-22 · BTC · novakash</span>
+      </div>
+
+      <h1 class="hero-title">
+        Forging<br/>
+        <em>v9.3 BTC.</em>
+      </h1>
+
+      <p class="hero-sub">
+        From <em>v9.2 LIVE</em> at 69.7% to <em>v9.3 ENRICHED</em> at 76.9% to <em>v9.3 META</em> at 88.8%.
+        How walk-forward CV, eight NaN-filled features, and a stage-2 meta-trick lifted BTC by twenty
+        points on the down side &mdash; and what's still left on the table.
+      </p>
+
+      <div class="hero-mirror">
+        <div class="col">
+          <span class="num num-base">69.7%</span>
+          <span class="lbl">v9.2 baseline · UP 0.72</span>
+        </div>
+        <span class="arrow">→</span>
+        <div class="col">
+          <span class="num num-mid">76.9%</span>
+          <span class="lbl">v9.3 ENRICHED · +7.2 pp</span>
+        </div>
+        <span class="arrow">→</span>
+        <div class="col">
+          <span class="num num-top">88.8%</span>
+          <span class="lbl">v9.3 META · DOWN 0.20 · +11.6 pp</span>
+        </div>
+      </div>
+
+      <div class="hero-promise">
+        A field report for a savvy ML engineer who is already past the basics. Treat this as a
+        runbook + ablation diary + post-mortem. Charts are honest. Numbers are real. The dirty
+        compromises are called out explicitly.
+      </div>
+
+      <div class="hero-meta">
+        <div class="hero-meta-item">
+          Walk-forward windows<br/>
+          <strong>1,488 <span class="pp">@UP 0.96</span></strong>
+        </div>
+        <div class="hero-meta-item">
+          Corpus on disk<br/>
+          <strong>108.8 MB <span class="pp">ENRICHED</span></strong>
+        </div>
+        <div class="hero-meta-item">
+          DuckDB pull<br/>
+          <strong>69 s <span class="pp">vs &gt;10 min asyncpg</span></strong>
+        </div>
+        <div class="hero-meta-item">
+          DOWN-side lift<br/>
+          <strong>+11.6 pp <span class="pp">META · LIVE thr</span></strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-scroll">scroll · BTC story</div>
+  </section>
+
+  <!-- ─── 2. TRIGGER ────────────────────────────────────────────── -->
+  <section id="trigger">
+    <div class="container reading">
+      <div class="kicker kicker--cyan"><span>01 · Trigger</span></div>
+      <h2>A few extra losses.</h2>
+
+      <p class="lead">
+        BTC has been running <em>v9.2 LIVE</em> for weeks. The thresholds are sharp on purpose
+        &mdash; UP fires at <code>p ≥ 0.72</code>, DOWN at <code>p ≤ 0.20</code>. Wins disappear
+        into Polymarket's autoredeem and never hit the <code>trades</code> table. Losses do.
+        That asymmetry hides the strategy's true win rate, but it also means: when a few extra
+        losses show up, you notice immediately.
+      </p>
+
+      <p>
+        On 2026-05-18 we shipped <em>iso_expand</em> &mdash; same UP/DOWN thresholds, but a
+        <code>post_iso</code> probability behind it, claiming +44% volume and a +1.6 pp WR. For a
+        couple of days the volume came in clean. Then a handful of losses landed in a row. Not
+        a regime break, not a model drift event &mdash; just enough noise to make a person ask
+        the question that starts every retrain.
+      </p>
+
+      <div class="pull-quote">
+        Can we <em>just improve it</em>?
+        <cite>Billy &mdash; 2026-05-22, around the time the corpus was queued</cite>
+      </div>
+
+      <p>
+        That sentence is the trigger for this chapter. The rest of it is the answer: a hybrid
+        data pipe, a walk-forward CV that quietly demoted the old baseline, a feature gap that
+        turned out to be a +7 pp leak, a reweight experiment that <em>looked</em> obvious and
+        wasn't, and a meta-stack that finally cracked the DOWN side.
+      </p>
+
+      <div class="moments-grid">
+        <div class="moment" data-mood="bad">
+          <div class="moment-time">2026-05-18 · pre-trigger</div>
+          <div class="moment-head">iso_expand ships</div>
+          <p class="moment-body">
+            Same UP 0.72 / DOWN 0.20 cuts as v9.2 LIVE, layered with a <code>post_iso</code>
+            calibration. Volume +44%, claimed WR +1.6 pp. The thesis: expand the operating
+            envelope without losing the sharp edge.
+          </p>
+          <span class="moment-tag">claim · +1.6 pp</span>
+        </div>
+        <div class="moment" data-mood="warn">
+          <div class="moment-time">2026-05-21 · noise floor</div>
+          <div class="moment-head">A few extra losses</div>
+          <p class="moment-body">
+            Polymarket autoredeem still hides wins. So a small uptick in losses in
+            <code>trades</code> is the only visible signal &mdash; and that's exactly what
+            showed up. Not catastrophic. Just enough to break the trance.
+          </p>
+          <span class="moment-tag">signal · weak but real</span>
+        </div>
+        <div class="moment" data-mood="next">
+          <div class="moment-time">2026-05-22 · this chapter</div>
+          <div class="moment-head">"Can we just improve it?"</div>
+          <p class="moment-body">
+            The question is innocent. The work behind it is a corpus pull, a walk-forward
+            harness, an ablation matrix, a meta-feature trick, and an engine deploy plan that
+            spans two repos. Eight hours of compute, one new infra pattern, three deltas
+            ranging from <em>−1.4 pp</em> to <em>+11.6 pp</em>.
+          </p>
+          <span class="moment-tag">scope · half-day spike</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 3. DUCKDB UNLOCK ──────────────────────────────────────── -->
+  <section id="duckdb">
+    <div class="container">
+      <div class="kicker kicker--violet"><span>02 · Infra</span></div>
+      <h2>The <em>DuckDB</em> unlock.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          Before any model can be trained, the data has to land. On a small training corpus
+          that is a non-issue; on the BTC corpus &mdash; tens of thousands of windows, hundreds
+          of features, tick-level OOF data &mdash; it became the bottleneck that gated the
+          entire afternoon.
+        </p>
+
+        <p>
+          The first attempt followed the path of least resistance: SSM port-forward into RDS,
+          asyncpg connection, one big <code>SELECT</code>. Familiar. Reliable in the small.
+          And catastrophic at scale: <strong>thirteen minutes of hung tunnel</strong> before
+          the query timed out, no rows returned. The classifier-gpu jump host was healthy;
+          RDS was responsive on small queries. The pathology was the combination of asyncpg's
+          buffer behaviour on large result sets with a tunneled TCP stream where backpressure
+          gets ambiguous. Hard-stall. Not crash, not progress &mdash; a quiet sit.
+        </p>
+
+        <p>
+          The fix flipped the model. Instead of streaming a huge result set through a fragile
+          tunnel, pull <em>most</em> of the corpus from the daily S3 parquet export and pull
+          <em>only</em> the delta &mdash; rows newer than the export cutoff &mdash; through SSM.
+          DuckDB reads S3 parquet natively, in parallel, with predicate pushdown. The bulk pull
+          dropped from <em>&gt; 10 minutes hanging</em> to <em>69 seconds</em> for 32.4 MB.
+        </p>
+      </div>
+
+      <div class="two-col right-heavy">
+        <div class="panel sticky">
+          <svg viewBox="0 0 520 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Hybrid data pipeline diagram">
+            <defs>
+              <linearGradient id="gradS3" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#06B6D4" stop-opacity="0.95"/>
+                <stop offset="100%" stop-color="#0EA5E9" stop-opacity="0.6"/>
+              </linearGradient>
+              <linearGradient id="gradRDS" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0.95"/>
+                <stop offset="100%" stop-color="#6366F1" stop-opacity="0.6"/>
+              </linearGradient>
+              <linearGradient id="gradCorpus" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#10B981" stop-opacity="0.95"/>
+                <stop offset="100%" stop-color="#059669" stop-opacity="0.6"/>
+              </linearGradient>
+              <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#7A7268"/>
+              </marker>
+            </defs>
+
+            <!-- title -->
+            <text x="260" y="28" text-anchor="middle" font-family="JetBrains Mono" font-size="11" letter-spacing="2" fill="#7A7268">HYBRID INGEST · BTC v9.3</text>
+
+            <!-- S3 source -->
+            <rect x="30" y="60" width="200" height="80" rx="14" fill="url(#gradS3)" opacity="0.18" stroke="#06B6D4" stroke-width="1"/>
+            <text x="130" y="90" text-anchor="middle" font-family="Instrument Serif" font-size="22" fill="#22D3EE">S3 parquet</text>
+            <text x="130" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#B8B3AB">daily RDS export · 2026-05-18</text>
+            <text x="130" y="126" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#7A7268">window_ts ≤ cutoff</text>
+
+            <!-- RDS source -->
+            <rect x="290" y="60" width="200" height="80" rx="14" fill="url(#gradRDS)" opacity="0.18" stroke="#8B5CF6" stroke-width="1"/>
+            <text x="390" y="90" text-anchor="middle" font-family="Instrument Serif" font-size="22" fill="#A78BFA">RDS via SSM</text>
+            <text x="390" y="110" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#B8B3AB">port-forward · classifier-gpu</text>
+            <text x="390" y="126" text-anchor="middle" font-family="JetBrains Mono" font-size="9.5" fill="#7A7268">window_ts &gt; cutoff (delta only)</text>
+
+            <!-- DuckDB layer -->
+            <rect x="30" y="180" width="200" height="60" rx="14" fill="#14141C" stroke="#06B6D4" stroke-width="1.5"/>
+            <text x="130" y="206" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#22D3EE">DUCKDB</text>
+            <text x="130" y="222" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">predicate pushdown · 69s · 32.4 MB</text>
+
+            <!-- asyncpg layer -->
+            <rect x="290" y="180" width="200" height="60" rx="14" fill="#14141C" stroke="#8B5CF6" stroke-width="1.5"/>
+            <text x="390" y="206" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#A78BFA">ASYNCPG</text>
+            <text x="390" y="222" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">small delta only · seconds</text>
+
+            <!-- arrows down to merger -->
+            <line x1="130" y1="240" x2="200" y2="290" stroke="#7A7268" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+            <line x1="390" y1="240" x2="320" y2="290" stroke="#7A7268" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+
+            <!-- merge node -->
+            <rect x="160" y="290" width="200" height="58" rx="14" fill="#1C1C28" stroke="#B8B3AB" stroke-width="1"/>
+            <text x="260" y="316" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">pd.concat()</text>
+            <text x="260" y="332" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">btc_corpus_combined.parquet</text>
+
+            <line x1="260" y1="348" x2="260" y2="378" stroke="#7A7268" stroke-width="1" marker-end="url(#arr)"/>
+
+            <!-- enrich -->
+            <rect x="80" y="378" width="360" height="56" rx="14" fill="#14141C" stroke="#A78BFA" stroke-width="1.2"/>
+            <text x="260" y="402" text-anchor="middle" font-family="Instrument Serif" font-size="19" fill="#A78BFA">Tier 1 + 2 + 3 enrichment</text>
+            <text x="260" y="420" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">pure pandas · no new data · groupby aggregates</text>
+
+            <line x1="260" y1="434" x2="260" y2="464" stroke="#7A7268" stroke-width="1" marker-end="url(#arr)"/>
+
+            <!-- corpus output -->
+            <rect x="60" y="464" width="400" height="60" rx="14" fill="url(#gradCorpus)" opacity="0.18" stroke="#10B981" stroke-width="1.4"/>
+            <text x="260" y="492" text-anchor="middle" font-family="Instrument Serif" font-size="22" fill="#34D399">btc_corpus_ENRICHED.parquet</text>
+            <text x="260" y="510" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">108.8 MB · ready for walk-forward CV</text>
+          </svg>
+          <div class="panel-label">Fig. 1 · Hybrid bulk + delta ingest</div>
+        </div>
+
+        <div>
+          <h3>Why asyncpg stalled</h3>
+          <p>
+            The tunneled TCP stream between the local box and RDS goes through SSM session
+            manager + a port-forward on classifier-gpu. That path is fine for paginated reads
+            and small bursty queries. Under a single large <code>SELECT</code> with no
+            statement cursor, asyncpg buffers aggressively, the kernel slows the tunnel, and
+            the whole flow enters a polite stall: no error, no progress.
+          </p>
+          <p>
+            The fix is not to "tune asyncpg" &mdash; it is to <em>not put the bulk on the
+            tunnel</em>. The daily RDS-to-S3 parquet export (Reference: DuckDB Parquet access,
+            <code>scripts/duckdb_parquet.py</code>) already gives a clean snapshot with
+            partitioned cutoffs. The tunnel only carries the small delta that lives between
+            the snapshot and <em>now</em>.
+          </p>
+
+          <h3>The hybrid pattern</h3>
+          <ul class="annot-list">
+            <li>
+              <strong>bulk · S3 parquet via DuckDB</strong>
+              <code>btc_bulk_FULL_2026_05_18.parquet</code> (32.4 MB on disk). DuckDB reads it
+              with predicate pushdown, projects only the columns we need, takes <em>69 s</em>
+              end-to-end on this box.
+            </li>
+            <li>
+              <strong>delta · RDS via SSM + asyncpg</strong>
+              Only rows with <code>window_ts &gt; export_cutoff</code>. A few thousand rows
+              over a few hours. Asyncpg is fine here because the result set is small.
+            </li>
+            <li>
+              <strong>merge · pandas.concat</strong>
+              Same schema both sides, dedupe on <code>(asset_id, window_ts, delta_pct)</code>,
+              sort. The combined corpus lands at <code>btc_corpus_combined.parquet</code>.
+            </li>
+            <li>
+              <strong>cache · <code>/tmp/btc_v9_3_cache/</code></strong>
+              Every intermediate parquet stays on disk. Re-running an ablation does not
+              re-pull. The whole afternoon's experiments share a single bulk fetch.
+            </li>
+          </ul>
+
+          <h3>The pull, in code</h3>
+<pre data-lang="python"><span class="tk-com"># /tmp/btc_v9_3_cache is canonical for this run</span>
+<span class="tk-key">import</span> duckdb, pandas <span class="tk-key">as</span> pd
+<span class="tk-key">from</span> pathlib <span class="tk-key">import</span> Path
+
+CACHE = Path(<span class="tk-str">"/tmp/btc_v9_3_cache"</span>)
+EXPORT_TS = <span class="tk-num">1779408000</span>   <span class="tk-com"># 2026-05-18 export cutoff</span>
+
+<span class="tk-com"># 1) bulk · S3 parquet, ~32 MB, 69s</span>
+duckdb.sql(<span class="tk-str">f"""
+  COPY (
+    SELECT *
+    FROM read_parquet('s3://novakash-rds-exports/.../ticks_v3_composite/*.parquet')
+    WHERE asset_id = 'btc' AND window_ts &lt;= {EXPORT_TS}
+  ) TO '{CACHE}/btc_bulk_FULL_2026_05_18.parquet' (FORMAT PARQUET);
+"""</span>)
+
+<span class="tk-com"># 2) delta · RDS via SSM port-forward, &lt;5s for a few hours</span>
+<span class="tk-key">async with</span> asyncpg.create_pool(dsn=PG_LOCAL_TUNNEL) <span class="tk-key">as</span> pool:
+    rows = <span class="tk-key">await</span> pool.fetch(
+        <span class="tk-str">"SELECT * FROM ticks_v3_composite "</span>
+        <span class="tk-str">"WHERE asset_id='btc' AND window_ts &gt; $1"</span>,
+        EXPORT_TS,
+    )
+delta = pd.DataFrame(rows, columns=COLS)
+
+<span class="tk-com"># 3) merge</span>
+bulk = pd.read_parquet(CACHE / <span class="tk-str">"btc_bulk_FULL_2026_05_18.parquet"</span>)
+combined = (
+    pd.concat([bulk, delta], ignore_index=<span class="tk-key">True</span>)
+      .drop_duplicates([<span class="tk-str">"asset_id"</span>, <span class="tk-str">"window_ts"</span>, <span class="tk-str">"delta_pct"</span>])
+      .sort_values([<span class="tk-str">"window_ts"</span>, <span class="tk-str">"delta_pct"</span>])
+      .reset_index(drop=<span class="tk-key">True</span>)
+)
+combined.to_parquet(CACHE / <span class="tk-str">"btc_corpus_combined.parquet"</span>)</pre>
+
+          <div class="callout">
+            <div class="callout-label">Why this matters past today</div>
+            <p>
+              This is now the canonical pattern for "I need the full corpus on the local box".
+              S3 parquet bulk + SSM delta, both cached, asyncpg never asked to carry more than
+              a handful of hours. It generalises to ETH and XRP without a rewrite.
+            </p>
+          </div>
+
+          <div class="badges">
+            <span class="badge badge--cyan">duckdb 0.10</span>
+            <span class="badge badge--violet">SSM port-forward · 15432</span>
+            <span class="badge badge--green">cache: /tmp/btc_v9_3_cache/</span>
+            <span class="badge">RDS note #585</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 4. WALK-FORWARD ───────────────────────────────────────── -->
+  <section id="walkforward">
+    <div class="container">
+      <div class="kicker kicker--amber"><span>03 · Honesty</span></div>
+      <h2>The walk-forward <em>demotion</em>.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          The first thing we learned, before any new feature, was that the v9.2 single-day
+          held-out test had been <em>flattering</em> itself. Not by a tiny amount &mdash; by
+          almost four points at the extreme threshold.
+        </p>
+
+        <p>
+          The original v9.2 sweep on BTC reported <em>95.0% WR at UP 0.96</em> over 161 windows
+          &mdash; a single day's held-out slice. Honest, but lucky. When we re-ran the same
+          baseline LightGBM under a 20-fold rolling walk-forward across the same corpus, the
+          UP-0.96 cell drops to <em>91.3% over 1,488 windows</em>. Same architecture, same
+          features, same hyperparams. Different lens.
+        </p>
+
+        <p>
+          The single-day test is a <em>lottery</em>. The walk-forward is what the strategy
+          actually faces, averaged over twenty different market days, each with its own
+          regime. The 1,488-window count is honest precisely because it reflects how often
+          the threshold actually fires; the 161 was always the day's tail.
+        </p>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-title">Single-split vs walk-forward · per-window WR by threshold</div>
+        <div class="chart-sub">v9.2 baseline (LightGBM, identical features) · BTC · 2026-05-22</div>
+        <div id="chart-wf" class="plotly-host" style="height: 460px;"></div>
+      </div>
+
+      <div class="reading">
+        <h3>At LIVE thresholds, the baseline is real</h3>
+        <p>
+          The good news: even the honest, walk-forward number for v9.2 at the <em>actual LIVE
+          thresholds</em> is solid. UP 0.72 holds 69.7%; DOWN 0.20 holds 77.2%. Those are the
+          cells the strategy actually fires from. That matches the "performs pretty well in
+          live tbh" intuition that justified keeping v9.2 in the operating envelope while we
+          tried to improve it.
+        </p>
+
+        <table class="result-table">
+          <caption>v9.2 walk-forward baseline · LIVE operating points</caption>
+          <thead>
+            <tr>
+              <th>Cell</th>
+              <th class="num">n_fires</th>
+              <th class="num">n_windows</th>
+              <th class="num">fire_rate</th>
+              <th class="num">tick WR</th>
+              <th class="num">window WR</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="highlight">
+              <td class="label">UP 0.72</td>
+              <td class="num">109,672</td>
+              <td class="num">2,887</td>
+              <td class="num">0.626</td>
+              <td class="num">85.84%</td>
+              <td class="num hl">71.04%</td>
+            </tr>
+            <tr class="highlight">
+              <td class="label">DOWN 0.20</td>
+              <td class="num">85,325</td>
+              <td class="num">2,491</td>
+              <td class="num">0.540</td>
+              <td class="num">89.04%</td>
+              <td class="num hl">79.61%</td>
+            </tr>
+            <tr>
+              <td class="label">UP 0.96</td>
+              <td class="num">33,819</td>
+              <td class="num">1,488</td>
+              <td class="num">0.323</td>
+              <td class="num">96.45%</td>
+              <td class="num">91.33%</td>
+            </tr>
+            <tr>
+              <td class="label">DOWN 0.04</td>
+              <td class="num">27,900</td>
+              <td class="num">1,479</td>
+              <td class="num">0.321</td>
+              <td class="num">95.06%</td>
+              <td class="num">90.87%</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Note the small discrepancy in the cell-by-cell row counts between the two regimes
+          &mdash; the single-split sweep saw 2,936 BTC windows at UP 0.72; the walk-forward
+          aggregate, having to discard the first fold's warm-up, lands at 2,887. Close
+          enough to confirm they are measuring the same thing on the same corpus. The point
+          is not the count, it is the WR delta at high thresholds.
+        </p>
+
+        <div class="callout callout--warn">
+          <div class="callout-label">Lesson</div>
+          <p>
+            Every claim about "X% at threshold T" should specify the CV scheme. Single-day
+            held-out is a useful debugging tool. It is a misleading <em>shipping</em> claim.
+            From this chapter onwards every BTC number here is walk-forward unless explicitly
+            flagged otherwise.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 5. FEATURE GAP ────────────────────────────────────────── -->
+  <section id="featgap">
+    <div class="container">
+      <div class="kicker kicker--violet"><span>04 · Discovery</span></div>
+      <h2>Eight <em>NaN-filled</em> features.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          The walk-forward run revealed an awkward fact: of the 78 features the BTC trainer
+          expected, <em>eight</em> were arriving as NaN-fill across the entire bulk. Either
+          the join had quietly drifted, or those features had always been missing and nobody
+          had checked.
+        </p>
+
+        <p>
+          The eight, in the order they came back to life:
+        </p>
+
+        <ul class="annot-list">
+          <li>
+            <strong>tfm_tail_risk</strong>
+            TimesFM quantile-derived tail measure. Sourced from
+            <code>ticks_timesfm</code>. Stale-tolerant via ASOF.
+          </li>
+          <li>
+            <strong>tfm_skew</strong>
+            Quantile asymmetry. Same source. ASOF-joined.
+          </li>
+          <li>
+            <strong>tfm_spread_norm</strong>
+            Normalised forecast spread. Same source. ASOF-joined.
+          </li>
+          <li>
+            <strong>tfm_quantile_ratio</strong>
+            Upper-to-lower quantile ratio. Same source. ASOF-joined.
+          </li>
+          <li>
+            <strong>v3_elm</strong>
+            Composite extreme-liquidity metric from
+            <code>ticks_v3_composite</code>. ASOF-joined back to the tick stream.
+          </li>
+          <li>
+            <strong>regime_num</strong>
+            Pandas <code>map</code> of the regime string column to a stable integer ID.
+            Was just missing wiring.
+          </li>
+          <li>
+            <strong>delta_source_num</strong>
+            Same pattern &mdash; categorical mapping that lived in the production engine but
+            never made it into the offline training corpus.
+          </li>
+          <li>
+            <strong>delta_pct_log_safe</strong>
+            Sign-preserving log-magnitude of <code>delta_pct</code>. A computed feature whose
+            recipe lived only in the engine.
+          </li>
+        </ul>
+
+        <p>
+          Filling them was the obvious first move. Pandas, no new data sources:
+        </p>
+
+<pre data-lang="python"><span class="tk-com"># ASOF-join TFM + v3 features onto the corpus</span>
+tfm = pd.read_parquet(CACHE / <span class="tk-str">"btc_ticks_timesfm.parquet"</span>) \
+        .sort_values(<span class="tk-str">"event_ts"</span>)
+v3  = pd.read_parquet(CACHE / <span class="tk-str">"btc_ticks_v3_composite.parquet"</span>) \
+        .sort_values(<span class="tk-str">"event_ts"</span>)
+
+corpus = corpus.sort_values(<span class="tk-str">"event_ts"</span>)
+
+corpus = pd.merge_asof(
+    corpus, tfm[[<span class="tk-str">"event_ts"</span>, <span class="tk-str">"tfm_tail_risk"</span>, <span class="tk-str">"tfm_skew"</span>,
+                  <span class="tk-str">"tfm_spread_norm"</span>, <span class="tk-str">"tfm_quantile_ratio"</span>]],
+    on=<span class="tk-str">"event_ts"</span>, direction=<span class="tk-str">"backward"</span>,
+    tolerance=pd.Timedelta(seconds=<span class="tk-num">30</span>),
+)
+corpus = pd.merge_asof(
+    corpus, v3[[<span class="tk-str">"event_ts"</span>, <span class="tk-str">"v3_elm"</span>]],
+    on=<span class="tk-str">"event_ts"</span>, direction=<span class="tk-str">"backward"</span>,
+    tolerance=pd.Timedelta(seconds=<span class="tk-num">30</span>),
+)
+
+<span class="tk-com"># cheap categorical maps</span>
+corpus[<span class="tk-str">"regime_num"</span>] = corpus[<span class="tk-str">"regime"</span>].map(REGIME_TO_INT).fillna(<span class="tk-num">-1</span>)
+corpus[<span class="tk-str">"delta_source_num"</span>] = corpus[<span class="tk-str">"delta_source"</span>].map(SRC_TO_INT).fillna(<span class="tk-num">-1</span>)
+corpus[<span class="tk-str">"delta_pct_log_safe"</span>] = np.sign(corpus.delta_pct) * np.log1p(corpus.delta_pct.abs())</pre>
+
+        <p>
+          The expectation was an obvious win. Eight features going from "noise" to "real
+          signal" should move the needle. What actually happened was the first counter-intuitive
+          result of the day.
+        </p>
+
+        <div class="callout callout--bad">
+          <div class="callout-label">Counter-intuitive · the fill alone hurt</div>
+          <p>
+            At LIVE thresholds, the gap-fixed baseline was <em>worse</em> than the NaN-filled
+            one. UP 0.72 slipped about <em>−1.4 pp</em>; DOWN 0.20 slipped about <em>−2.4 pp</em>.
+            Stale ASOF-joined features &mdash; the TFM stream lags the tick stream and the
+            <code>30 s</code> tolerance is wider than ideal &mdash; were giving the model
+            <em>almost-right</em> values that it then over-trusted.
+          </p>
+          <p>
+            This is the well-known "missing-data-as-information" trap: when something has
+            been NaN-filled across the entire corpus, LightGBM has implicitly learned to
+            ignore it. Hand it a real-but-stale value and you do not get the signal you
+            wanted; you get a confidently wrong feature.
+          </p>
+        </div>
+
+        <p>
+          That negative result reframed the problem. The 78-feature base was not <em>missing</em>
+          eight features; it was missing <em>useful</em> ones. The next step was to add value
+          without reaching for noisy external joins.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 6. ENRICHMENT ─────────────────────────────────────────── -->
+  <section id="enrich">
+    <div class="container">
+      <div class="kicker kicker--green"><span>05 · Enrichment</span></div>
+      <h2>Tier 1 + 2 + 3 &mdash; <em>+7.2 pp</em> in pure pandas.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          The breakthrough turned out to be entirely <em>derived</em>. No new joins, no new
+          data sources &mdash; just three tiers of feature engineering on top of the existing
+          base, stacked in order of how much they assume about per-window context.
+        </p>
+      </div>
+
+      <div class="tier-grid">
+        <div class="tier tier--cyan">
+          <div class="tier-num">01</div>
+          <h4>Rename for the trainer</h4>
+          <p>
+            Three columns in the v3 composite stream are present but under names the
+            trainer's feature list doesn't recognise. A rename costs zero CPU and reconnects
+            three real signals.
+          </p>
+          <ul>
+            <li><code>v3_cascade_signal → v3_cascade</code></li>
+            <li><code>v3_taker_signal → v3_taker</code></li>
+            <li><code>v3_momentum_signal → v3_momentum</code></li>
+          </ul>
+          <div class="tier-impact">Lift alone · <b>~0 to +0.4 pp</b></div>
+        </div>
+
+        <div class="tier tier--violet">
+          <div class="tier-num">02</div>
+          <h4>Pure-row derivations</h4>
+          <p>
+            Per-row transforms with no aggregation. Cheap, deterministic, and they expose
+            relationships the model would otherwise have to learn from scratch.
+          </p>
+          <ul>
+            <li><code>v2_logit = log(p / (1-p))</code></li>
+            <li><code>session_bucket ∈ {asia, eu, us, weekend}</code></li>
+            <li><code>hour_of_day</code> (0–23)</li>
+            <li><code>minute_of_hour</code> (0–59)</li>
+            <li><code>source_delta_divergence</code></li>
+          </ul>
+          <div class="tier-impact">Cumulative lift · <b>+1 to +2 pp</b></div>
+        </div>
+
+        <div class="tier tier--green">
+          <div class="tier-num">03</div>
+          <h4>Per-window groupby</h4>
+          <p>
+            The real lift. For each <code>(asset_id, window_ts, delta_pct)</code> group,
+            aggregate the tick stream into six summary features that capture the
+            <em>shape</em> of the window, not just its head.
+          </p>
+          <ul>
+            <li><code>nested_5m_avg_prob_up</code></li>
+            <li><code>nested_5m_prob_trend</code> · regression slope</li>
+            <li><code>nested_5m_gate_pass_rate</code></li>
+            <li><code>nested_5m_regime_consistent</code></li>
+            <li><code>nested_5m_vpin_peak</code></li>
+            <li><code>nested_5m_n_obs</code></li>
+          </ul>
+          <div class="tier-impact">Most of the lift · <b>+5 to +7 pp</b></div>
+        </div>
+      </div>
+
+      <div class="reading">
+        <h3>Why Tier 3 carried it</h3>
+        <p>
+          The base 78-feature representation treats every tick mostly in isolation. A window
+          has a <em>distribution</em>: how the per-tick probability moves, whether the gate
+          accepts most ticks or flips frequently, whether the regime label is stable across
+          the window, where the VPIN peak lands. Those quantities are not difficult to
+          compute &mdash; they take one <code>groupby</code> &mdash; but the model has no way
+          to invent them from a single tick.
+        </p>
+
+<pre data-lang="python"><span class="tk-com"># Tier 3 · per-window aggregates</span>
+<span class="tk-key">from</span> scipy.stats <span class="tk-key">import</span> linregress
+
+<span class="tk-key">def</span> _trend(p):
+    <span class="tk-key">if</span> p.size &lt; <span class="tk-num">3</span>: <span class="tk-key">return</span> <span class="tk-num">0.0</span>
+    x = np.arange(p.size, dtype=np.float64)
+    s = linregress(x, p.values).slope
+    <span class="tk-key">return</span> <span class="tk-num">0.0</span> <span class="tk-key">if</span> np.isnan(s) <span class="tk-key">else</span> s
+
+agg = corpus.groupby([<span class="tk-str">"asset_id"</span>, <span class="tk-str">"window_ts"</span>, <span class="tk-str">"delta_pct"</span>]).agg(
+    nested_5m_avg_prob_up    = (<span class="tk-str">"probability_up"</span>, <span class="tk-str">"mean"</span>),
+    nested_5m_prob_trend     = (<span class="tk-str">"probability_up"</span>, _trend),
+    nested_5m_gate_pass_rate = (<span class="tk-str">"gate_pass"</span>, <span class="tk-str">"mean"</span>),
+    nested_5m_regime_consistent = (<span class="tk-str">"regime_num"</span>,
+                                  <span class="tk-key">lambda</span> r: (r == r.mode().iat[<span class="tk-num">0</span>]).mean()),
+    nested_5m_vpin_peak      = (<span class="tk-str">"vpin"</span>, <span class="tk-str">"max"</span>),
+    nested_5m_n_obs          = (<span class="tk-str">"event_ts"</span>, <span class="tk-str">"count"</span>),
+).reset_index()
+
+corpus = corpus.merge(
+    agg, on=[<span class="tk-str">"asset_id"</span>, <span class="tk-str">"window_ts"</span>, <span class="tk-str">"delta_pct"</span>], how=<span class="tk-str">"left"</span>,
+)</pre>
+
+        <h3>The ENRICHED table</h3>
+
+        <p>
+          Walk-forward CV on the new corpus. Same fold layout, same heads, same hyperparams
+          &mdash; only the feature matrix changed. The result at LIVE thresholds:
+        </p>
+
+        <table class="result-table">
+          <caption>v9.3 ENRICHED · vs v9.2 walk-forward baseline · same LIVE thresholds</caption>
+          <thead>
+            <tr>
+              <th>Cell</th>
+              <th class="num">v9.2 baseline</th>
+              <th class="num">v9.3 ENRICHED</th>
+              <th class="num">Δ (pp)</th>
+              <th class="num">fire_rate</th>
+              <th class="num">windows</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="breakthrough">
+              <td class="label">UP 0.72</td>
+              <td class="num">71.04%</td>
+              <td class="num">76.87%</td>
+              <td class="num">+5.83</td>
+              <td class="num">0.554</td>
+              <td class="num">1,922</td>
+            </tr>
+            <tr class="breakthrough">
+              <td class="label">DOWN 0.20</td>
+              <td class="num">79.61%</td>
+              <td class="num">88.78%</td>
+              <td class="num">+9.17</td>
+              <td class="num">0.341</td>
+              <td class="num">1,185</td>
+            </tr>
+            <tr>
+              <td class="label">UP 0.80</td>
+              <td class="num">75.37%</td>
+              <td class="num">83.23%</td>
+              <td class="num">+7.86</td>
+              <td class="num">0.457</td>
+              <td class="num">1,586</td>
+            </tr>
+            <tr>
+              <td class="label">UP 0.90</td>
+              <td class="num">84.06%</td>
+              <td class="num">89.52%</td>
+              <td class="num">+5.46</td>
+              <td class="num">0.313</td>
+              <td class="num">1,088</td>
+            </tr>
+            <tr>
+              <td class="label">UP 0.96</td>
+              <td class="num">91.33%</td>
+              <td class="num">91.64%</td>
+              <td class="num">+0.31</td>
+              <td class="num">0.245</td>
+              <td class="num">849</td>
+            </tr>
+            <tr>
+              <td class="label">DOWN 0.12</td>
+              <td class="num">88.14%</td>
+              <td class="num">90.53%</td>
+              <td class="num">+2.39</td>
+              <td class="num">0.307</td>
+              <td class="num">1,066</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>
+          Note the shape of the lift: <em>biggest at moderate thresholds</em>, smallest at the
+          extremes. That is exactly the signature you want &mdash; the high-confidence
+          tails were already close to ceiling; the new features pull the middle of the
+          distribution upwards, which is where most of the firing actually happens.
+        </p>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-title">UP-side · per-window WR by threshold</div>
+        <div class="chart-sub">v9.2 walk-forward baseline vs v9.3 ENRICHED vs v9.3 META</div>
+        <div id="chart-up" class="plotly-host" style="height: 460px;"></div>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-title">DOWN-side · per-window WR by threshold</div>
+        <div class="chart-sub">META is the breakthrough here · note the +11.6 pp at 0.20</div>
+        <div id="chart-down" class="plotly-host" style="height: 460px;"></div>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-title">Operating points · fire rate vs window WR</div>
+        <div class="chart-sub">Each dot is a (side, threshold) cell. Up and to the right is better.</div>
+        <div id="chart-ops" class="plotly-host" style="height: 480px;"></div>
+      </div>
+
+      <div class="reading">
+        <h3>The uncomfortable implication</h3>
+        <p>
+          If <em>+7.2 pp</em> at UP 0.72 sits behind a half-day of pure-pandas feature
+          engineering, then production v9.2 BTC is almost certainly running with the same
+          feature gaps that the offline baseline had. The <code>nested_5m_*</code> family
+          alone &mdash; six features &mdash; carried most of the lift in the ablation. They
+          do not exist in the live tick stream today.
+        </p>
+
+        <div class="callout callout--good">
+          <div class="callout-label">Action</div>
+          <p>
+            The ENRICHED corpus is the cheapest, safest improvement in this report.
+            Re-computing six groupby aggregates per window is a few hundred microseconds of
+            pandas. The deploy work is real &mdash; the engine has to learn to emit
+            <code>nested_5m_*</code> at tick time &mdash; but the modelling work is done.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 7. REWEIGHT ───────────────────────────────────────────── -->
+  <section id="reweight">
+    <div class="container reading">
+      <div class="kicker kicker--amber"><span>06 · A trap</span></div>
+      <h2>Reweight: <em>not a free win</em>.</h2>
+
+      <p class="lead">
+        The v9.4 ETH chapter ended on a clean note: <em>down-side reweighting</em> tilted the
+        loss towards the asymmetric DOWN cell and the ETH gate went up. Trying the same trick
+        on BTC was the obvious next move. It is not a free win.
+      </p>
+
+      <p>
+        The setup is identical to the ETH version. The training objective for each per-Δ head
+        is binary logloss; we multiply the loss on DOWN-labelled rows by a constant <code>k</code>.
+        For <code>k = 3</code> &mdash; the value that worked on ETH &mdash; the BTC pattern is:
+      </p>
+
+      <table class="result-table">
+        <caption>v9.3 ENRICHED · no-reweight vs DOWN reweight ×3 · LIVE-region thresholds</caption>
+        <thead>
+          <tr>
+            <th>Cell</th>
+            <th class="num">norw window WR</th>
+            <th class="num">rw3 window WR</th>
+            <th class="num">Δ (pp)</th>
+            <th class="num">verdict</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="label">UP 0.72</td>
+            <td class="num">76.87%</td>
+            <td class="num">73.87%</td>
+            <td class="num delta-bad">−3.00</td>
+            <td><span class="badge badge--red">UP hurt</span></td>
+          </tr>
+          <tr>
+            <td class="label">UP 0.80</td>
+            <td class="num">83.23%</td>
+            <td class="num">80.04%</td>
+            <td class="num delta-bad">−3.19</td>
+            <td><span class="badge badge--red">UP hurt</span></td>
+          </tr>
+          <tr>
+            <td class="label">UP 0.96</td>
+            <td class="num">91.64%</td>
+            <td class="num">91.17%</td>
+            <td class="num delta-bad">−0.47</td>
+            <td><span class="badge badge--red">UP hurt</span></td>
+          </tr>
+          <tr class="highlight">
+            <td class="label">DOWN 0.12</td>
+            <td class="num">87.92%</td>
+            <td class="num">84.92%</td>
+            <td class="num delta-bad">−3.00</td>
+            <td><span class="badge badge--red">DOWN hurt</span></td>
+          </tr>
+          <tr class="highlight">
+            <td class="label">DOWN 0.16</td>
+            <td class="num">83.57%</td>
+            <td class="num">82.74%</td>
+            <td class="num delta-bad">−0.83</td>
+            <td><span class="badge badge--red">DOWN hurt</span></td>
+          </tr>
+          <tr>
+            <td class="label">DOWN 0.20</td>
+            <td class="num">79.88%</td>
+            <td class="num">80.67%</td>
+            <td class="num delta-good">+0.79</td>
+            <td><span class="badge badge--green">DOWN helped</span></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        The clean ETH story does not replicate on BTC. Down-reweighting helps the DOWN side
+        in a narrow band &mdash; roughly <code>p ≤ 0.20</code> &mdash; but at most by a couple
+        of points, and it <em>hurts the UP side across the entire threshold range</em>. At UP
+        0.72 the model gives up three points; at UP 0.80 another three.
+      </p>
+
+      <h3>Why the asymmetry differs from ETH</h3>
+      <p>
+        The intuition is simple if a little uncomfortable: the model has a fixed budget. Each
+        per-Δ head is a 63-leaf LightGBM with a finite number of effective splits. When you
+        tell it to care more about DOWN, it spends more of its capacity on the DOWN tail
+        &mdash; which on BTC is already well-served by the base distribution. The
+        marginal lift on DOWN is small, and the cost to UP, which sits in a much busier part
+        of the distribution, is large.
+      </p>
+
+      <p>
+        On ETH the same trick worked because the base model under-served the DOWN tail
+        significantly. On BTC, the v9.2 base &mdash; and now the ENRICHED base &mdash;
+        already calibrates the DOWN side well. There is little to gain by paying for it
+        twice.
+      </p>
+
+      <div class="callout callout--warn">
+        <div class="callout-label">Decision</div>
+        <p>
+          <strong>Drop down-reweighting from the BTC v9.3 candidate.</strong> The ENRICHED
+          no-reweight model is the production candidate. Reweighting stays in the ETH
+          recipe where it earns its keep.
+        </p>
+      </div>
+
+      <h3>What this confirms</h3>
+      <p>
+        Asset-specific. <em>Per-asset</em> ablation is not optional. The instinct to copy a
+        winning trick across assets is almost always wrong: BTC and ETH have measurably
+        different base-rate calibrations, and the same loss-weighting recipe lands on
+        opposite sides of the trade-off.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─── 8. META ───────────────────────────────────────────────── -->
+  <section id="meta">
+    <div class="container">
+      <div class="kicker kicker--violet"><span>07 · Breakthrough</span></div>
+      <h2>Meta-features &mdash; the <em>DOWN-side</em> crack.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          Of every experiment in this chapter, this is the one with the biggest single
+          number and the biggest single caveat. <em>+11.6 pp at DOWN 0.20.</em> And a
+          train-serve skew that means it does not deploy without an engine refactor.
+        </p>
+
+        <p>
+          The idea: instead of training a single head on 78 features, train a <em>two-stage</em>
+          model. Stage A is the ENRICHED model, exactly as above &mdash; producing one
+          probability per tick. From its walk-forward folds we already have <em>out-of-fold</em>
+          per-tick predictions for the entire corpus, which is the magic ingredient: an OOF
+          probability for every tick that the Stage B model is allowed to use as input
+          <em>without</em> data leakage, because each tick's prediction comes from a model that
+          never saw that tick.
+        </p>
+
+        <p>
+          Stage B then summarises the OOF prediction trajectory for each window into six
+          <em>meta-features</em>:
+        </p>
+
+        <ul class="annot-list">
+          <li><strong>p50_crossings</strong> — count of sign changes around the 0.5 line. A "decisive" window has zero; a "noisy" window has many.</li>
+          <li><strong>p_std</strong> — standard deviation of the OOF probability across ticks in the window.</li>
+          <li><strong>p_trend</strong> — regression slope of the OOF probability against tick index. Conviction building or eroding?</li>
+          <li><strong>p_last</strong> — the OOF probability at the final tick.</li>
+          <li><strong>p_max</strong> — maximum OOF probability observed in the window.</li>
+          <li><strong>p_min</strong> — minimum.</li>
+        </ul>
+
+        <p>
+          These six features get appended to the 78 base, the per-Δ heads are re-trained on
+          <em>84 features</em>, and each fold's training data uses meta-features derived from
+          <em>earlier</em> folds' OOF only &mdash; no leakage forward.
+        </p>
+      </div>
+
+      <div class="two-col">
+        <div class="panel sticky">
+          <svg viewBox="0 0 540 580" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Meta-feature computation flow">
+            <defs>
+              <linearGradient id="gradStageA" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#06B6D4"/>
+                <stop offset="100%" stop-color="#0EA5E9"/>
+              </linearGradient>
+              <linearGradient id="gradStageB" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#8B5CF6"/>
+                <stop offset="100%" stop-color="#A78BFA"/>
+              </linearGradient>
+              <linearGradient id="gradOut" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#10B981"/>
+                <stop offset="100%" stop-color="#059669"/>
+              </linearGradient>
+              <marker id="arrM" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#7A7268"/>
+              </marker>
+            </defs>
+
+            <text x="270" y="26" text-anchor="middle" font-family="JetBrains Mono" font-size="11" letter-spacing="2" fill="#7A7268">META-FEATURE COMPUTATION · WALK-FORWARD</text>
+
+            <!-- Stage A box -->
+            <rect x="40" y="56" width="460" height="100" rx="14" fill="url(#gradStageA)" opacity="0.16" stroke="#06B6D4" stroke-width="1.4"/>
+            <text x="270" y="86" text-anchor="middle" font-family="Instrument Serif" font-size="22" fill="#22D3EE">Stage A · ENRICHED LightGBM</text>
+            <text x="270" y="106" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">78 features · 20-fold walk-forward CV</text>
+            <text x="270" y="125" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ per-tick OOF probability  ·  btc_oof_predictions.parquet</text>
+            <text x="270" y="143" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">no leakage · each tick scored by a model that never saw it</text>
+
+            <!-- arrow A -> agg -->
+            <line x1="270" y1="156" x2="270" y2="186" stroke="#7A7268" stroke-width="1" marker-end="url(#arrM)"/>
+
+            <!-- aggregation -->
+            <rect x="90" y="186" width="360" height="90" rx="14" fill="#14141C" stroke="#A78BFA" stroke-width="1.2"/>
+            <text x="270" y="212" text-anchor="middle" font-family="Instrument Serif" font-size="18" fill="#A78BFA">groupby(asset_id, window_ts, delta_pct)</text>
+            <text x="120" y="234" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ p50_crossings</text>
+            <text x="120" y="248" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ p_std</text>
+            <text x="120" y="262" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ p_trend (linregress slope)</text>
+            <text x="320" y="234" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ p_last</text>
+            <text x="320" y="248" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ p_max</text>
+            <text x="320" y="262" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">→ p_min</text>
+
+            <line x1="270" y1="276" x2="270" y2="306" stroke="#7A7268" stroke-width="1" marker-end="url(#arrM)"/>
+
+            <!-- meta parquet -->
+            <rect x="120" y="306" width="300" height="58" rx="12" fill="#1C1C28" stroke="#B8B3AB" stroke-width="1"/>
+            <text x="270" y="330" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">btc_meta_features.parquet</text>
+            <text x="270" y="346" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">95 KB · 6 cols × n_windows</text>
+
+            <line x1="270" y1="364" x2="270" y2="394" stroke="#7A7268" stroke-width="1" marker-end="url(#arrM)"/>
+
+            <!-- Stage B box -->
+            <rect x="40" y="394" width="460" height="100" rx="14" fill="url(#gradStageB)" opacity="0.16" stroke="#8B5CF6" stroke-width="1.4"/>
+            <text x="270" y="424" text-anchor="middle" font-family="Instrument Serif" font-size="22" fill="#A78BFA">Stage B · 78 base + 6 meta</text>
+            <text x="270" y="444" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">re-train per-Δ heads on 84 features</text>
+            <text x="270" y="462" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">each fold uses ONLY earlier folds' OOF for meta</text>
+            <text x="270" y="480" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">strict ordering · no future leak into past</text>
+
+            <line x1="270" y1="494" x2="270" y2="524" stroke="#7A7268" stroke-width="1" marker-end="url(#arrM)"/>
+
+            <!-- result -->
+            <rect x="60" y="524" width="420" height="42" rx="12" fill="url(#gradOut)" opacity="0.18" stroke="#10B981" stroke-width="1.4"/>
+            <text x="270" y="551" text-anchor="middle" font-family="Instrument Serif" font-size="20" fill="#34D399">DOWN 0.20 · 88.78% · 1,185 windows · +11.6 pp</text>
+          </svg>
+          <div class="panel-label">Fig. 2 · Two-stage meta architecture</div>
+        </div>
+
+        <div>
+          <h3>The math, in one place</h3>
+<pre data-lang="python"><span class="tk-com"># Stage A · already trained as the ENRICHED walk-forward run</span>
+<span class="tk-com">#   → oof[i] = ENRICHED model's prediction for tick i, from the fold</span>
+<span class="tk-com">#     that did NOT contain tick i in its training set</span>
+oof = pd.read_parquet(CACHE / <span class="tk-str">"btc_oof_predictions.parquet"</span>)
+
+<span class="tk-com"># Stage A → meta features (per window)</span>
+<span class="tk-key">def</span> _crossings(p):
+    <span class="tk-key">return</span> int(np.sum(np.diff((p &gt; <span class="tk-num">0.5</span>).astype(int)) != <span class="tk-num">0</span>))
+
+<span class="tk-key">def</span> _trend(p):
+    <span class="tk-key">if</span> p.size &lt; <span class="tk-num">3</span>: <span class="tk-key">return</span> <span class="tk-num">0.0</span>
+    s = linregress(np.arange(p.size), p.values).slope
+    <span class="tk-key">return</span> <span class="tk-num">0.0</span> <span class="tk-key">if</span> np.isnan(s) <span class="tk-key">else</span> s
+
+meta = oof.groupby([<span class="tk-str">"asset_id"</span>, <span class="tk-str">"window_ts"</span>, <span class="tk-str">"delta_pct"</span>]).agg(
+    p50_crossings = (<span class="tk-str">"prob_up_oof"</span>, _crossings),
+    p_std         = (<span class="tk-str">"prob_up_oof"</span>, <span class="tk-str">"std"</span>),
+    p_trend       = (<span class="tk-str">"prob_up_oof"</span>, _trend),
+    p_last        = (<span class="tk-str">"prob_up_oof"</span>, <span class="tk-str">"last"</span>),
+    p_max         = (<span class="tk-str">"prob_up_oof"</span>, <span class="tk-str">"max"</span>),
+    p_min         = (<span class="tk-str">"prob_up_oof"</span>, <span class="tk-str">"min"</span>),
+).reset_index()
+
+meta.to_parquet(CACHE / <span class="tk-str">"btc_meta_features.parquet"</span>)
+
+<span class="tk-com"># Stage B · re-train on 78 base + 6 meta = 84 features</span>
+<span class="tk-com"># Critical: for each fold k, the meta features used in training</span>
+<span class="tk-com"># are computed ONLY from folds 0..k-1 OOF. No same-fold contamination.</span></pre>
+
+          <h3>What the meta-features actually encode</h3>
+          <ul class="annot-list">
+            <li><strong>p50_crossings</strong> — encodes <em>confusion</em>. A window where Stage A flips back and forth over 0.5 is exactly the regime Stage B should down-weight on DOWN entries.</li>
+            <li><strong>p_trend</strong> — encodes <em>conviction build</em>. A positive slope on the OOF probability across the window correlates with the true outcome more reliably than the final probability alone.</li>
+            <li><strong>p_last - p_min / p_max - p_last</strong> — together a poor-man's window <em>shape</em> feature. Stage B learns to use them as a soft confirmation.</li>
+            <li><strong>p_std</strong> — pure noise band. Wide-stdev windows are the ones where Stage A is least reliable; Stage B uses this as a "trust myself less" signal.</li>
+          </ul>
+
+          <h3>The headline numbers</h3>
+          <table class="result-table">
+            <caption>v9.3 ENRICHED + META · vs v9.2 walk-forward baseline</caption>
+            <thead>
+              <tr>
+                <th>Cell</th>
+                <th class="num">v9.2 baseline</th>
+                <th class="num">v9.3 ENRICHED</th>
+                <th class="num">v9.3 META</th>
+                <th class="num">Δ vs baseline</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="breakthrough">
+                <td class="label">DOWN 0.20</td>
+                <td class="num">79.61%</td>
+                <td class="num">79.88%</td>
+                <td class="num hl">88.78%</td>
+                <td class="num delta-good">+9.17 pp</td>
+              </tr>
+              <tr>
+                <td class="label">DOWN 0.16</td>
+                <td class="num">83.14%</td>
+                <td class="num">82.74%</td>
+                <td class="num">89.89%</td>
+                <td class="num delta-good">+6.75 pp</td>
+              </tr>
+              <tr>
+                <td class="label">DOWN 0.12</td>
+                <td class="num">88.14%</td>
+                <td class="num">87.92%</td>
+                <td class="num">90.53%</td>
+                <td class="num delta-good">+2.39 pp</td>
+              </tr>
+              <tr>
+                <td class="label">UP 0.72</td>
+                <td class="num">71.04%</td>
+                <td class="num">76.87%</td>
+                <td class="num">76.59%</td>
+                <td class="num delta-good">+5.55 pp</td>
+              </tr>
+              <tr>
+                <td class="label">UP 0.80</td>
+                <td class="num">75.37%</td>
+                <td class="num">83.23%</td>
+                <td class="num">83.23%</td>
+                <td class="num delta-good">+7.86 pp</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="callout callout--bad">
+            <div class="callout-label">The train-serve caveat · don't ship it yet</div>
+            <p>
+              <strong>The engine doesn't compute meta-features per tick today.</strong> The
+              offline pipeline cheated &mdash; it had access to the entire window's worth of
+              ticks before producing a Stage A probability sequence to summarise.
+            </p>
+            <p>
+              Production cannot do that. By the time the engine has a decision to make, it
+              has seen <em>part</em> of the window, not all of it. To deploy v9.3 META we
+              need the engine to maintain a per-window rolling OOF buffer, score Stage A on
+              every tick, recompute the six meta-features on each tick using only the ticks
+              observed so far, and feed Stage B. That is the same pattern v9.5 ETH uses and
+              the same engine refactor is the prerequisite for shipping META on BTC.
+            </p>
+          </div>
+
+          <div class="badges">
+            <span class="badge badge--green">+11.6 pp DOWN 0.20</span>
+            <span class="badge badge--amber">train-serve skew · v9.5.1 engine refactor required</span>
+            <span class="badge badge--violet">artifact: btc_meta_features.parquet · 95 KB</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 9. SUPER-ENRICHED ─────────────────────────────────────── -->
+  <section id="super">
+    <div class="container">
+      <div class="kicker kicker--cyan"><span>08 · In flight</span></div>
+      <h2>The <em>SUPER-ENRICHED</em> experiment.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          Everything above produced clean, reportable numbers by 21:11. The SUPER-ENRICHED
+          run is still in flight as this chapter is being written. It tests the next obvious
+          question: <em>what if Stage B got the predictions of every other prior model
+          too?</em>
+        </p>
+
+        <p>
+          The base 78 + 6 meta = 84 features. SUPER-ENRICHED adds another sixteen on top:
+        </p>
+
+        <h3>The six prior-model probabilities</h3>
+        <ul class="annot-list">
+          <li><strong>probability_lgb_v9_1</strong> — the previous-generation LGB direct prediction.</li>
+          <li><strong>probability_lgb_v9_2</strong> — the model that is in production today, used here as a feature.</li>
+          <li><strong>probability_lgb_v12</strong> — the longer-context v12 head.</li>
+          <li><strong>probability_v2_meta_gate</strong> — the legacy meta-gate at v2.</li>
+          <li><strong>probability_v9_2_meta_gate</strong> — the v9.2 meta-gate.</li>
+          <li><strong>probability_v12_meta_gate</strong> — the v12 meta-gate.</li>
+        </ul>
+
+        <h3>The ensemble stats</h3>
+        <p>
+          For the three LGB direct predictions &mdash; v9_1, v9_2, v12 &mdash; compute the
+          mean, std, max, min, and range across the trio. That is four ensemble summary
+          features. Add log-odds transforms of the three LGB probabilities (so the model has
+          access to both probability and logit scales). Total bonus feature count: sixteen.
+        </p>
+
+<pre data-lang="python"><span class="tk-com"># Bonus block · prior model probabilities + ensemble stats</span>
+priors = [
+    <span class="tk-str">"probability_lgb_v9_1"</span>,
+    <span class="tk-str">"probability_lgb_v9_2"</span>,
+    <span class="tk-str">"probability_lgb_v12"</span>,
+    <span class="tk-str">"probability_v2_meta_gate"</span>,
+    <span class="tk-str">"probability_v9_2_meta_gate"</span>,
+    <span class="tk-str">"probability_v12_meta_gate"</span>,
+]
+
+corpus[priors] = corpus[priors].astype(np.float32).fillna(<span class="tk-num">0.5</span>)
+
+<span class="tk-com"># ensemble stats across the three LGB direct predictions</span>
+lgb_cols = [<span class="tk-str">"probability_lgb_v9_1"</span>, <span class="tk-str">"probability_lgb_v9_2"</span>, <span class="tk-str">"probability_lgb_v12"</span>]
+lgb_mat = corpus[lgb_cols].values
+corpus[<span class="tk-str">"ens_lgb_mean"</span>]  = lgb_mat.mean(axis=<span class="tk-num">1</span>)
+corpus[<span class="tk-str">"ens_lgb_std"</span>]   = lgb_mat.std (axis=<span class="tk-num">1</span>)
+corpus[<span class="tk-str">"ens_lgb_max"</span>]   = lgb_mat.max (axis=<span class="tk-num">1</span>)
+corpus[<span class="tk-str">"ens_lgb_min"</span>]   = lgb_mat.min (axis=<span class="tk-num">1</span>)
+corpus[<span class="tk-str">"ens_lgb_range"</span>] = corpus.ens_lgb_max - corpus.ens_lgb_min
+
+<span class="tk-com"># log-odds transforms (numerically safe)</span>
+<span class="tk-key">def</span> <span class="tk-fn">_logit</span>(p, eps=<span class="tk-num">1e-6</span>):
+    p = np.clip(p, eps, <span class="tk-num">1</span>-eps)
+    <span class="tk-key">return</span> np.log(p / (<span class="tk-num">1</span>-p))
+
+<span class="tk-key">for</span> c <span class="tk-key">in</span> lgb_cols:
+    corpus[c + <span class="tk-str">"_logit"</span>] = _logit(corpus[c].values)</pre>
+
+        <h3>Optuna · parallel · 60 trials</h3>
+        <p>
+          The SUPER-ENRICHED run uses Optuna with the persistent SQLite study pattern. Four
+          parallel workers, four threads per worker, sixty trials. The search space is
+          deliberately bounded around the v9.2 production hyperparams &mdash; this is not a
+          fresh hyperparameter discovery, it is a refinement of the known-good region in
+          the presence of the new feature block.
+        </p>
+
+<pre data-lang="python"><span class="tk-com"># Optuna search space (bounded around v9.2 prod)</span>
+study = optuna.create_study(
+    study_name=<span class="tk-str">"btc_v9_3_super_enriched"</span>,
+    storage=<span class="tk-str">f"sqlite:///{CACHE}/optuna_study.db"</span>,
+    load_if_exists=<span class="tk-key">True</span>,
+    direction=<span class="tk-str">"maximize"</span>,
+    sampler=optuna.samplers.TPESampler(n_startup_trials=<span class="tk-num">8</span>, seed=<span class="tk-num">42</span>),
+    pruner=optuna.pruners.MedianPruner(n_warmup_steps=<span class="tk-num">5</span>),
+)
+
+<span class="tk-key">def</span> <span class="tk-fn">objective</span>(trial):
+    params = {
+        <span class="tk-str">"num_leaves"</span>:        trial.suggest_int(<span class="tk-str">"num_leaves"</span>, <span class="tk-num">31</span>, <span class="tk-num">127</span>),
+        <span class="tk-str">"learning_rate"</span>:     trial.suggest_float(<span class="tk-str">"learning_rate"</span>, <span class="tk-num">5e-3</span>, <span class="tk-num">8e-2</span>, log=<span class="tk-key">True</span>),
+        <span class="tk-str">"feature_fraction"</span>:  trial.suggest_float(<span class="tk-str">"feature_fraction"</span>, <span class="tk-num">0.65</span>, <span class="tk-num">0.95</span>),
+        <span class="tk-str">"bagging_fraction"</span>:  trial.suggest_float(<span class="tk-str">"bagging_fraction"</span>, <span class="tk-num">0.7</span>, <span class="tk-num">0.95</span>),
+        <span class="tk-str">"min_data_in_leaf"</span>:  trial.suggest_int(<span class="tk-str">"min_data_in_leaf"</span>, <span class="tk-num">40</span>, <span class="tk-num">400</span>, log=<span class="tk-key">True</span>),
+        <span class="tk-str">"reg_lambda"</span>:        trial.suggest_float(<span class="tk-str">"reg_lambda"</span>, <span class="tk-num">1e-3</span>, <span class="tk-num">10.0</span>, log=<span class="tk-key">True</span>),
+        <span class="tk-str">"num_threads"</span>:       <span class="tk-num">4</span>,
+    }
+    <span class="tk-key">return</span> walkforward_score(params, X_super, y, folds)
+
+<span class="tk-com"># 4 workers × 4 threads · joblib-launched outside this snippet</span>
+study.optimize(objective, n_trials=<span class="tk-num">60</span>)</pre>
+
+        <div class="metric-row">
+          <div class="metric-chip viol">
+            <div class="lbl">study</div>
+            <div class="val">btc_v9_3_super_enriched</div>
+            <div class="sub">sqlite-backed · resumable</div>
+          </div>
+          <div class="metric-chip">
+            <div class="lbl">parallelism</div>
+            <div class="val">4 × 4</div>
+            <div class="sub">workers × threads</div>
+          </div>
+          <div class="metric-chip">
+            <div class="lbl">trials</div>
+            <div class="val">60</div>
+            <div class="sub">TPE · median pruner</div>
+          </div>
+          <div class="metric-chip mid">
+            <div class="lbl">bonus features</div>
+            <div class="val">+16</div>
+            <div class="sub">6 priors · 5 ensemble · 5 logits</div>
+          </div>
+        </div>
+
+        <div class="callout callout--violet">
+          <div class="callout-label">Hypothesis under test</div>
+          <p>
+            That a small ensemble of prior-generation predictions, expressed as feature
+            inputs to the new model, lets Stage B learn <em>disagreement</em> patterns &mdash;
+            cases where v9_1 and v9_2 split, or where the meta-gate disagrees with the
+            direct LGB. Disagreement is information.
+          </p>
+          <p>
+            The risk: feature explosion past 100 with only ~20k windows of training data
+            per fold. The bounded hyperparam search exists precisely to keep regularisation
+            tight enough that the bonus block helps rather than overfits.
+          </p>
+        </div>
+
+        <p>
+          The trial table will land in
+          <code>/tmp/btc_v9_3/optuna_trials.csv</code> and the winning hyperparams in
+          <code>v9_3_OPTUNA_BEST.csv</code>. If they beat the META configuration in walk-forward
+          and survive a held-out sanity check, that becomes the deploy candidate.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 10. DEPLOY ARCHITECTURE ───────────────────────────────── -->
+  <section id="deploy">
+    <div class="container">
+      <div class="kicker kicker--green"><span>09 · Deploy</span></div>
+      <h2>The <em>two-PR</em> deploy pattern.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          A v9.3 BTC deploy is not "drop a model into the engine and watch it score". The
+          engine has no LightGBM in it. <em>All</em> inference happens on the timesfm-service
+          side. Shipping the new model therefore requires changes in two repos, in a specific
+          order, and on the right base branch.
+        </p>
+      </div>
+
+      <div class="two-col">
+        <div>
+          <h3>Repo 1 · timesfm-service</h3>
+          <p>
+            The model itself lives here. The new scorer wraps the BTC v9.3 artifact, exposes
+            the same input contract as v9.2, and emits the new feature columns the engine
+            doesn't yet know about. The training corpus is
+            <code>btc_corpus_ENRICHED.parquet</code> (108.8 MB). After Optuna finishes
+            converging, the winning model gets serialised and committed alongside the
+            scorer.
+          </p>
+          <ul class="annot-list">
+            <li><strong>new scorer module</strong> — mirrors <code>v9_2_scorer.py</code> structure; loads the trained LightGBM heads; adds the Tier 1+2+3 feature computation in pre-process.</li>
+            <li><strong>tick → feature transform</strong> — the six <code>nested_5m_*</code> aggregates need a streaming implementation. Per-window rolling buffers, recomputed on each tick.</li>
+            <li><strong>schema bump</strong> — six new output columns on the scorer response so the engine can pick them up downstream.</li>
+            <li><strong>backward compat</strong> — v9.2 stays operational. v9.3 ships behind a feature flag and emits in parallel until shadow-mode metrics confirm parity or better.</li>
+          </ul>
+
+          <h3>Repo 2 · novakash engine</h3>
+          <p>
+            The engine has to be taught about the new output columns and the new strategy
+            wiring. This is the larger of the two PRs &mdash; the scoping agent estimated
+            ~2,680 LOC including tests &mdash; and it mirrors the structure of the v9.5 ETH
+            PR almost line-for-line.
+          </p>
+          <ul class="annot-list">
+            <li><strong>column migration</strong> — six new columns in <code>signal_evaluations</code>, plus the OOF buffer columns needed for Stage A → Stage B (if META is in scope).</li>
+            <li><strong>strategy YAML + .py hook</strong> — define <code>v9_3_btc_lgb</code> and (if META makes the cut) <code>v9_3_btc_meta</code>; LIVE thresholds stay UP 0.72 / DOWN 0.20 until we have shadow numbers that justify a re-tune.</li>
+            <li><strong>ensemble writer wiring</strong> — pass the new probability fields through into <code>window_evaluation_traces.surface_json</code> so the JSONB-side analytics still work.</li>
+            <li><strong>base branch</strong> — <code>pr570</code>, not <code>main</code>. Main has been four months stale relative to the live deploy stack; basing off it would force a massive rebase.</li>
+          </ul>
+        </div>
+
+        <div class="panel sticky">
+          <svg viewBox="0 0 540 580" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Two-PR deploy pattern">
+            <defs>
+              <linearGradient id="gradTfm" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#06B6D4"/>
+                <stop offset="100%" stop-color="#0EA5E9"/>
+              </linearGradient>
+              <linearGradient id="gradEng" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#8B5CF6"/>
+                <stop offset="100%" stop-color="#A78BFA"/>
+              </linearGradient>
+              <linearGradient id="gradLive" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#10B981"/>
+                <stop offset="100%" stop-color="#059669"/>
+              </linearGradient>
+              <marker id="arrD" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#7A7268"/>
+              </marker>
+            </defs>
+
+            <text x="270" y="26" text-anchor="middle" font-family="JetBrains Mono" font-size="11" letter-spacing="2" fill="#7A7268">DEPLOY · v9.3 BTC · TWO-PR</text>
+
+            <!-- model artifact -->
+            <rect x="60" y="56" width="420" height="60" rx="14" fill="#1C1C28" stroke="#34D399" stroke-width="1.2"/>
+            <text x="270" y="82" text-anchor="middle" font-family="Instrument Serif" font-size="20" fill="#34D399">btc_corpus_ENRICHED.parquet</text>
+            <text x="270" y="100" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">108.8 MB · trained LGB heads + Tier 1+2+3 feature recipe</text>
+
+            <line x1="270" y1="116" x2="270" y2="146" stroke="#7A7268" stroke-width="1" marker-end="url(#arrD)"/>
+
+            <!-- PR 1 timesfm-service -->
+            <rect x="40" y="146" width="460" height="120" rx="14" fill="url(#gradTfm)" opacity="0.16" stroke="#06B6D4" stroke-width="1.4"/>
+            <text x="270" y="174" text-anchor="middle" font-family="Instrument Serif" font-size="20" fill="#22D3EE">PR 1 · timesfm-service</text>
+            <text x="60" y="198" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">+ btc_v9_3_scorer.py</text>
+            <text x="60" y="214" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">+ Tier 1+2+3 stream-side feature transform</text>
+            <text x="60" y="230" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">+ schema bump · 6 nested_5m_* output cols</text>
+            <text x="60" y="246" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">v9.2 kept operational behind flag</text>
+
+            <line x1="270" y1="266" x2="270" y2="296" stroke="#7A7268" stroke-width="1" marker-end="url(#arrD)"/>
+
+            <!-- PR 2 engine -->
+            <rect x="40" y="296" width="460" height="130" rx="14" fill="url(#gradEng)" opacity="0.16" stroke="#8B5CF6" stroke-width="1.4"/>
+            <text x="270" y="324" text-anchor="middle" font-family="Instrument Serif" font-size="20" fill="#A78BFA">PR 2 · novakash engine</text>
+            <text x="60" y="348" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">base: pr570 (NOT main · 4 mo stale)</text>
+            <text x="60" y="364" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">+ column migration · signal_evaluations</text>
+            <text x="60" y="380" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">+ v9_3_btc_lgb strategy · YAML + .py hook</text>
+            <text x="60" y="396" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">+ ensemble writer wiring · surface_json</text>
+            <text x="60" y="412" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">~2,680 LOC incl. tests · mirrors v9.5 ETH PR</text>
+
+            <line x1="270" y1="426" x2="270" y2="456" stroke="#7A7268" stroke-width="1" marker-end="url(#arrD)"/>
+
+            <!-- shadow -->
+            <rect x="120" y="456" width="300" height="50" rx="12" fill="#14141C" stroke="#FBBF24" stroke-width="1.2"/>
+            <text x="270" y="480" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#FBBF24">SHADOW MODE</text>
+            <text x="270" y="496" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">parallel emit · no decision impact · gather WR</text>
+
+            <line x1="270" y1="506" x2="270" y2="536" stroke="#7A7268" stroke-width="1" marker-end="url(#arrD)"/>
+
+            <!-- live -->
+            <rect x="60" y="536" width="420" height="36" rx="12" fill="url(#gradLive)" opacity="0.20" stroke="#10B981" stroke-width="1.4"/>
+            <text x="270" y="559" text-anchor="middle" font-family="Instrument Serif" font-size="17" fill="#34D399">manual promote · UP 0.72 / DOWN 0.20</text>
+          </svg>
+          <div class="panel-label">Fig. 3 · Two-PR ship · no auto-promote</div>
+        </div>
+      </div>
+
+      <div class="reading">
+        <div class="callout callout--warn">
+          <div class="callout-label">No auto-promote · house rule</div>
+          <p>
+            Post-2026-04-17, every feature flag flip and every <code>--promote</code> is
+            manual. This deploy follows the same discipline: ship into shadow first, gather
+            a meaningful sample of windows, manually compare against v9.2 LIVE, and only
+            flip the gate when the shadow numbers are unambiguous. The scoping document is
+            in <code>/tmp/btc_engine_scoping.md</code>.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 11. WHAT'S NEXT ───────────────────────────────────────── -->
+  <section id="next">
+    <div class="container reading">
+      <div class="kicker kicker--violet"><span>10 · Roadmap</span></div>
+      <h2>What's <em>next</em>.</h2>
+
+      <p class="lead">
+        Three lanes, ordered by ratio of probable lift to engineering cost.
+      </p>
+
+      <h3>Lane 1 · Tier 4 & 5 features</h3>
+      <p>
+        Tier 1+2+3 was the cheap layer. Tier 4 reaches into the raw microstructure stream:
+        <code>vpin_60s</code>, <code>gamma_short</code>, <code>gamma_long</code>,
+        <code>clob_imbalance</code>, top-of-book skew. These exist on the v3 composite tick
+        stream but are not currently joined onto the windowed corpus. They will require a
+        proper ASOF join with tight tolerance (1–3 s, not 30 s) to avoid the stale-feature
+        trap from Section 4. Estimated lift: <em>+2 to +5 pp</em> on the lower-confidence
+        threshold cells, where microstructure carries the most marginal information.
+      </p>
+
+      <h3>Lane 2 · Engine refactor for META</h3>
+      <p>
+        Stage B's <em>+11.6 pp at DOWN 0.20</em> is sitting on the shelf until the engine
+        learns to compute meta-features per tick from a rolling OOF buffer. The v9.5 ETH PR
+        already established this pattern. Porting it to BTC is well-defined work &mdash;
+        new buffer columns, new tick-level transform, the rest is plumbing &mdash; and the
+        payoff is the largest single number in this entire chapter.
+      </p>
+
+      <h3>Lane 3 · XRP v9.5</h3>
+      <p>
+        XRP currently runs the same v9.2-style pipeline. The lessons from this BTC work
+        port directly: enriched feature recipe, walk-forward CV, meta-stage when the engine
+        supports it. The XRP corpus is materially smaller, which means regularisation
+        becomes the variable to watch &mdash; less data, fewer Optuna trials in the bounded
+        region, tighter validation discipline.
+      </p>
+
+      <div class="metric-row">
+        <div class="metric-chip mid">
+          <div class="lbl">Lane 1 · lift target</div>
+          <div class="val">+2 to +5 pp</div>
+          <div class="sub">Tier 4/5 microstructure</div>
+        </div>
+        <div class="metric-chip up">
+          <div class="lbl">Lane 2 · lift unlocked</div>
+          <div class="val">+11.6 pp</div>
+          <div class="sub">DOWN 0.20 · post-refactor</div>
+        </div>
+        <div class="metric-chip viol">
+          <div class="lbl">Lane 3 · scope</div>
+          <div class="val">XRP v9.5</div>
+          <div class="sub">port BTC recipe</div>
+        </div>
+      </div>
+
+      <h3>Risk register</h3>
+      <ul class="annot-list">
+        <li><strong>stale microstructure joins</strong> — Tier 4 will repeat the Section 4 mistake if tolerance is too loose. Hard cap at 3 s for any new ASOF join.</li>
+        <li><strong>meta train-serve skew</strong> — the engine refactor cannot ship until the per-tick OOF buffer is provably equivalent to the offline groupby. Build a parity test before flipping the flag.</li>
+        <li><strong>SUPER-ENRICHED overfit</strong> — 16 bonus features on ~20k-window folds is feasible but not generous. Watch fold-to-fold variance; if it doubles relative to ENRICHED, drop the bonus block.</li>
+        <li><strong>Polymarket autoredeem visibility</strong> — separate hub-side fix to log redeemed wins. Until it ships, every shadow comparison has to be evaluated against the (still hidden) true WR via post-event reconciliation.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ─── 12. APPENDIX ──────────────────────────────────────────── -->
+  <section id="appendix">
+    <div class="container">
+      <div class="kicker"><span>11 · Appendix</span></div>
+      <h2>Quick-reference <em>artifacts</em>.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          Every file, every script, every note. Save your future self the grep.
+        </p>
+      </div>
+
+      <div class="files">
+        <div class="file-group-head">Corpus cache · /tmp/btc_v9_3_cache</div>
+
+        <div class="file-row">
+          <span class="file-path">btc_bulk_FULL_2026_05_18.parquet</span>
+          <span class="file-size">32.4 MB</span>
+          <span class="file-note">S3 bulk · DuckDB · pre-cutoff snapshot</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_bulk_2026_05_18.parquet</span>
+          <span class="file-size">21.4 MB</span>
+          <span class="file-note">earlier partial bulk · superseded</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_delta_FULL_post_2026_05_18.parquet</span>
+          <span class="file-size">6.1 MB</span>
+          <span class="file-note">RDS delta · post-cutoff rows via SSM</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_delta_post_2026_05_18.parquet</span>
+          <span class="file-size">1.8 MB</span>
+          <span class="file-note">earlier partial delta · superseded</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_corpus_combined.parquet</span>
+          <span class="file-size">78.8 MB</span>
+          <span class="file-note">bulk + delta · pre-enrich</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_corpus_FULL_combined.parquet</span>
+          <span class="file-size">104.9 MB</span>
+          <span class="file-note">expanded join · pre-enrich</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_corpus_ENRICHED.parquet</span>
+          <span class="file-size">108.8 MB</span>
+          <span class="file-note">DEPLOY candidate · Tier 1+2+3 applied</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_bulk_SUPER_2026_05_18.parquet</span>
+          <span class="file-size">0 B · in flight</span>
+          <span class="file-note">SUPER-ENRICHED corpus · being written now</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_oof_predictions.parquet</span>
+          <span class="file-size">3.4 MB</span>
+          <span class="file-note">Stage A OOF · meta-feature source</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_meta_features.parquet</span>
+          <span class="file-size">95 KB</span>
+          <span class="file-note">6 cols × n_windows · Stage B input</span>
+        </div>
+
+        <div class="file-group-head">Result tables · /tmp/btc_v9_3</div>
+
+        <div class="file-row">
+          <span class="file-path">v9_2_baseline.csv</span>
+          <span class="file-size">3.0 KB</span>
+          <span class="file-note">v9.2 single-split sweep · UP+DOWN</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_2_baseline_FULL.csv</span>
+          <span class="file-size">3.0 KB</span>
+          <span class="file-note">v9.2 single-split · full corpus</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_walkforward.csv</span>
+          <span class="file-size">3.0 KB</span>
+          <span class="file-note">v9.2 features · walk-forward CV · honest WR</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_walkforward_FULL.csv</span>
+          <span class="file-size">3.0 KB</span>
+          <span class="file-note">walk-forward · full corpus</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_ENRICHED_norw.csv</span>
+          <span class="file-size">2.3 KB</span>
+          <span class="file-note">Tier 1+2+3 · no reweight · DEPLOY candidate</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_ENRICHED_rw3.csv</span>
+          <span class="file-size">2.3 KB</span>
+          <span class="file-note">Tier 1+2+3 + DOWN ×3 · rejected</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_ENRICHED_META.csv</span>
+          <span class="file-size">2.3 KB</span>
+          <span class="file-note">Stage B · 78 base + 6 meta · +11.6 pp DOWN 0.20</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_FULL_reweight_3x.csv</span>
+          <span class="file-size">2.3 KB</span>
+          <span class="file-note">FULL corpus + reweight · for completeness</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_partial_vs_FULL.csv</span>
+          <span class="file-size">1.6 KB</span>
+          <span class="file-note">corpus-size delta diagnostic</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">side_by_side.csv</span>
+          <span class="file-size">1.9 KB</span>
+          <span class="file-note">single-split vs walk-forward comparison</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">optuna_trials.csv</span>
+          <span class="file-size">pending</span>
+          <span class="file-note">SUPER-ENRICHED · 60 trial dump</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_OPTUNA_BEST.csv</span>
+          <span class="file-size">pending</span>
+          <span class="file-note">winning hyperparams · deploy seed</span>
+        </div>
+
+        <div class="file-group-head">Scoping & notes</div>
+
+        <div class="file-row">
+          <span class="file-path">/tmp/btc_engine_scoping.md</span>
+          <span class="file-size">19.5 KB</span>
+          <span class="file-note">two-PR deploy plan · branch base + LOC estimate</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">RDS notes table · #585</span>
+          <span class="file-size">durable</span>
+          <span class="file-note">infra unlock + experiment summary</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">RDS notes table · #586+</span>
+          <span class="file-size">pending</span>
+          <span class="file-note">SUPER-ENRICHED results · post-Optuna</span>
+        </div>
+
+        <div class="file-group-head">Cross-reference · prior chapters</div>
+
+        <div class="file-row">
+          <span class="file-path">/home/billyrichards/scans2025/v9_5_eth_ebook_chapter.html</span>
+          <span class="file-size">149 KB</span>
+          <span class="file-note">v9.5 ETH · meta-stage engine refactor pattern</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">/home/billyrichards/scans2025/v9_2_training_pipeline_explainer.html</span>
+          <span class="file-size">35 KB</span>
+          <span class="file-note">v9.2 training pipeline · baseline reference</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">/home/billyrichards/scans2025/v92_iso_strategy_plan.html</span>
+          <span class="file-size">26 KB</span>
+          <span class="file-note">iso_expand · the strategy that triggered this work</span>
+        </div>
+      </div>
+
+      <div class="reading">
+        <h3>Reproducing the headline numbers</h3>
+<pre data-lang="bash"><span class="tk-com"># 1. pull the cached corpus</span>
+ls -la /tmp/btc_v9_3_cache/btc_corpus_ENRICHED.parquet
+
+<span class="tk-com"># 2. re-run the walk-forward sweep</span>
+python -m training.btc_v9_3.walkforward \
+    --corpus /tmp/btc_v9_3_cache/btc_corpus_ENRICHED.parquet \
+    --out    /tmp/btc_v9_3/v9_3_ENRICHED_norw.csv
+
+<span class="tk-com"># 3. compare to the v9.2 baseline</span>
+python -m training.btc_v9_3.diff \
+    --base  /tmp/btc_v9_3/v9_3_walkforward.csv \
+    --cand  /tmp/btc_v9_3/v9_3_ENRICHED_norw.csv
+</pre>
+
+        <h3>Final scoreboard</h3>
+        <table class="result-table">
+          <caption>v9.3 BTC · candidates summarised · LIVE thresholds only</caption>
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th class="num">UP 0.72</th>
+              <th class="num">DOWN 0.20</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="label">v9.2 LIVE · single-split lens</td>
+              <td class="num">73.0%*</td>
+              <td class="num">78.0%*</td>
+              <td><span class="badge badge--amber">misleading</span></td>
+            </tr>
+            <tr>
+              <td class="label">v9.2 · walk-forward (honest)</td>
+              <td class="num">71.04%</td>
+              <td class="num">79.61%</td>
+              <td><span class="badge">baseline</span></td>
+            </tr>
+            <tr>
+              <td class="label">v9.3 · gap-fix only</td>
+              <td class="num">~69.6%</td>
+              <td class="num">~77.2%</td>
+              <td><span class="badge badge--red">rejected · stale joins</span></td>
+            </tr>
+            <tr class="breakthrough">
+              <td class="label">v9.3 · ENRICHED (T1+T2+T3)</td>
+              <td class="num">76.87%</td>
+              <td class="num">79.88%</td>
+              <td><span class="badge badge--green">deploy candidate</span></td>
+            </tr>
+            <tr>
+              <td class="label">v9.3 · ENRICHED + DOWN ×3</td>
+              <td class="num">73.87%</td>
+              <td class="num">80.67%</td>
+              <td><span class="badge badge--red">rejected · steals UP</span></td>
+            </tr>
+            <tr class="breakthrough">
+              <td class="label">v9.3 · ENRICHED + META</td>
+              <td class="num">76.59%</td>
+              <td class="num hl">88.78%</td>
+              <td><span class="badge badge--amber">blocked on engine refactor</span></td>
+            </tr>
+            <tr>
+              <td class="label">v9.3 · SUPER-ENRICHED + Optuna</td>
+              <td class="num">pending</td>
+              <td class="num">pending</td>
+              <td><span class="badge badge--violet">in flight</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="font-size:0.78rem; color:var(--text-tertiary); margin-top:-0.5rem;">
+          * Single-split numbers reproduced for context only; they are inflated relative to
+          honest walk-forward and should not be used as a deploy reference.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span class="glyph">∴</span>
+    chapter 14 · v9.3 btc · 2026-05-22 · novakash <br/>
+    walk-forward honest · meta-stage demonstrated · super-enriched in flight
+  </footer>
+
+<script>
+  /* ────────────── reading progress bar ────────────── */
+  (function () {
+    const bar = document.getElementById('reading-progress');
+    function onScroll() {
+      const h = document.documentElement;
+      const scrolled = h.scrollTop;
+      const max = h.scrollHeight - h.clientHeight;
+      const pct = max > 0 ? (scrolled / max) * 100 : 0;
+      bar.style.width = pct + '%';
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+
+  /* ────────────── side-nav active state ────────────── */
+  (function () {
+    const links = document.querySelectorAll('.side-nav a');
+    const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href')));
+    function onScroll() {
+      const y = window.scrollY + 200;
+      let activeIdx = 0;
+      sections.forEach((s, i) => { if (s && s.offsetTop <= y) activeIdx = i; });
+      links.forEach(l => l.classList.remove('active'));
+      links[activeIdx]?.classList.add('active');
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+
+  /* ────────────── Plotly · shared layout ────────────── */
+  const PLOT_BG = 'rgba(0,0,0,0)';
+  const FONT = { family: 'JetBrains Mono, monospace', size: 11, color: '#B8B3AB' };
+  const GRID = 'rgba(255,255,255,0.05)';
+  const ZERO = 'rgba(255,255,255,0.1)';
+
+  const baseLayout = (xTitle, yTitle, opts = {}) => ({
+    paper_bgcolor: PLOT_BG,
+    plot_bgcolor: PLOT_BG,
+    font: FONT,
+    margin: { l: 60, r: 30, t: 30, b: 60 },
+    legend: {
+      orientation: 'h',
+      yanchor: 'bottom',
+      y: 1.02,
+      xanchor: 'left',
+      x: 0,
+      font: { size: 11, color: '#F5F3F0' },
+      bgcolor: 'rgba(0,0,0,0)',
+    },
+    xaxis: {
+      title: { text: xTitle, font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID,
+      zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      ...opts.xaxis,
+    },
+    yaxis: {
+      title: { text: yTitle, font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID,
+      zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      tickformat: '.0%',
+      range: [0.55, 1.0],
+      ...opts.yaxis,
+    },
+    hoverlabel: {
+      bgcolor: '#14141C',
+      bordercolor: '#06B6D4',
+      font: { family: 'JetBrains Mono, monospace', color: '#F5F3F0', size: 11 },
+    },
+    ...opts.layout,
+  });
+
+  /* ────────────── DATA ─────────────────────────────── */
+  /* v9.2 single-split · UP side */
+  const ss_up_thr = [0.6,0.62,0.64,0.66,0.68,0.7,0.72,0.74,0.76,0.78,0.8,0.82,0.84,0.86,0.88,0.9,0.92,0.94,0.96,0.98];
+  const ss_up_wr  = [0.5887,0.6196,0.6196,0.6196,0.6196,0.7228,0.7291,0.7315,0.7561,0.7561,0.7722,0.8659,0.8659,0.8730,0.8898,0.8898,0.9286,0.9286,0.9503,0.9503];
+  const ss_up_n   = [389,368,368,368,368,303,299,298,287,287,281,246,246,244,236,236,168,168,161,161];
+
+  /* v9.2 walk-forward · UP side */
+  const wf_up_thr = [0.6,0.62,0.64,0.66,0.68,0.7,0.72,0.74,0.76,0.78,0.8,0.82,0.84,0.86,0.88,0.9,0.92,0.94,0.96,0.98];
+  const wf_up_wr  = [0.6285,0.6437,0.6484,0.6795,0.6832,0.6958,0.7104,0.7145,0.7392,0.7514,0.7537,0.7718,0.7889,0.8038,0.8159,0.8406,0.8678,0.8982,0.9133,0.9286];
+  const wf_up_n   = [3478,3362,3325,3105,3081,2982,2887,2851,2696,2635,2603,2485,2378,2294,2189,2045,1883,1582,1488,1289];
+
+  /* v9.3 ENRICHED (no reweight) · UP side */
+  const en_up_thr = [0.6,0.62,0.64,0.66,0.68,0.7,0.72,0.74,0.76,0.78,0.8,0.82,0.84,0.86,0.88,0.9,0.92,0.94,0.96,0.98];
+  const en_up_wr  = [0.6737,0.6992,0.7289,0.7321,0.7371,0.7432,0.7688,0.7723,0.7759,0.7822,0.7997,0.8120,0.8182,0.8304,0.8553,0.8684,0.8795,0.8945,0.9217,0.9274];
+  const en_up_n   = [3144,2969,2778,2762,2712,2613,2474,2455,2405,2374,2297,2234,2184,2111,1887,1808,1735,1554,1277,1088];
+
+  /* v9.3 ENRICHED + META · UP side */
+  const meta_up_thr = [0.6,0.62,0.64,0.66,0.68,0.7,0.72,0.74,0.76,0.78,0.8,0.82,0.84,0.86,0.88,0.9,0.92,0.94,0.96,0.98];
+  const meta_up_wr  = [0.7350,0.7468,0.7479,0.7483,0.7554,0.7577,0.7659,0.7783,0.7986,0.8254,0.8323,0.8408,0.8684,0.8810,0.8918,0.8952,0.8970,0.9000,0.9164,0.9444];
+  const meta_up_n   = [2087,2022,2007,2006,1950,1944,1922,1881,1723,1609,1586,1558,1360,1261,1109,1088,1058,1050,849,683];
+
+  /* DOWN side · same models */
+  const ss_dn_thr = [0.04,0.06,0.08,0.1,0.12,0.14,0.16,0.18,0.2,0.22,0.24,0.26,0.28,0.3,0.32,0.34,0.36,0.38,0.4];
+  const ss_dn_wr  = [0.9365,0.9365,0.9459,0.9518,0.9479,0.8176,0.8235,0.7813,0.7791,0.7701,0.7672,0.7643,0.7119,0.7071,0.6604,0.6554,0.6086,0.6034,0.6034];
+
+  const wf_dn_thr = [0.04,0.06,0.08,0.1,0.12,0.14,0.16,0.18,0.2,0.22,0.24,0.26,0.28,0.3,0.32,0.34,0.36,0.38,0.4];
+  const wf_dn_wr  = [0.9087,0.9100,0.9045,0.8973,0.8814,0.8467,0.8314,0.8131,0.7961,0.7829,0.7545,0.7492,0.7431,0.7307,0.7203,0.6593,0.6399,0.6310,0.6154];
+
+  const en_dn_thr = [0.04,0.06,0.08,0.1,0.12,0.14,0.16,0.18,0.2,0.22,0.24,0.26,0.28,0.3,0.32,0.34,0.36,0.38,0.4];
+  const en_dn_wr  = [0.9283,0.9255,0.9107,0.8951,0.8792,0.8717,0.8357,0.8290,0.7988,0.7875,0.7699,0.7616,0.7570,0.7349,0.7261,0.7237,0.7137,0.7055,0.6933];
+
+  const meta_dn_thr = [0.04,0.06,0.08,0.1,0.12,0.14,0.16,0.18,0.2,0.22,0.24,0.26,0.28,0.3,0.32,0.34,0.36,0.38,0.4];
+  const meta_dn_wr  = [0.9449,0.9405,0.9380,0.9103,0.9053,0.9042,0.8989,0.8895,0.8878,0.8879,0.8746,0.8118,0.8103,0.8110,0.8076,0.8047,0.8041,0.8035,0.7904];
+
+  /* ────────────── chart 1 · single vs walk-forward ────────────── */
+  Plotly.newPlot('chart-wf', [
+    {
+      x: ss_up_thr, y: ss_up_wr,
+      mode: 'lines+markers', name: 'v9.2 single-split · UP',
+      line: { color: '#F59E0B', width: 2, dash: 'dot' },
+      marker: { size: 7, color: '#F59E0B' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>single · UP</extra>',
+    },
+    {
+      x: wf_up_thr, y: wf_up_wr,
+      mode: 'lines+markers', name: 'v9.2 walk-forward · UP',
+      line: { color: '#22D3EE', width: 2.5 },
+      marker: { size: 7, color: '#22D3EE' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>walk · UP</extra>',
+    },
+    {
+      x: ss_dn_thr, y: ss_dn_wr,
+      mode: 'lines+markers', name: 'v9.2 single-split · DOWN',
+      line: { color: '#F472B6', width: 2, dash: 'dot' },
+      marker: { size: 7, color: '#F472B6' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>single · DOWN</extra>',
+      xaxis: 'x2', yaxis: 'y',
+    },
+    {
+      x: wf_dn_thr, y: wf_dn_wr,
+      mode: 'lines+markers', name: 'v9.2 walk-forward · DOWN',
+      line: { color: '#A78BFA', width: 2.5 },
+      marker: { size: 7, color: '#A78BFA' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>walk · DOWN</extra>',
+      xaxis: 'x2', yaxis: 'y',
+    },
+  ], {
+    paper_bgcolor: PLOT_BG,
+    plot_bgcolor: PLOT_BG,
+    font: FONT,
+    margin: { l: 60, r: 30, t: 30, b: 70 },
+    legend: {
+      orientation: 'h',
+      yanchor: 'bottom', y: 1.02,
+      xanchor: 'left', x: 0,
+      font: { size: 11, color: '#F5F3F0' },
+      bgcolor: 'rgba(0,0,0,0)',
+    },
+    grid: { rows: 1, columns: 2, pattern: 'independent' },
+    xaxis: {
+      title: { text: 'UP threshold (p ≥ thr)', font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      domain: [0.0, 0.48],
+      range: [0.6, 0.98],
+    },
+    xaxis2: {
+      title: { text: 'DOWN threshold (p ≤ thr)', font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      domain: [0.55, 1.0],
+      range: [0.04, 0.4],
+    },
+    yaxis: {
+      title: { text: 'Per-window WR', font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      tickformat: '.0%',
+      range: [0.55, 1.0],
+    },
+    annotations: [
+      { x: 0.96, y: 0.9503, xref: 'x', yref: 'y', text: '95.0% / 161w<br>(single)', showarrow: true, arrowhead: 2, ax: -50, ay: -40, font: { color: '#F59E0B', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#F59E0B' },
+      { x: 0.96, y: 0.9133, xref: 'x', yref: 'y', text: '91.3% / 1488w<br>(walk)', showarrow: true, arrowhead: 2, ax: 30, ay: 50, font: { color: '#22D3EE', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#22D3EE' },
+    ],
+    hoverlabel: {
+      bgcolor: '#14141C', bordercolor: '#06B6D4',
+      font: { family: 'JetBrains Mono, monospace', color: '#F5F3F0', size: 11 },
+    },
+  }, { displayModeBar: false, responsive: true });
+
+  /* ────────────── chart 2 · UP side comparison ────────────── */
+  Plotly.newPlot('chart-up', [
+    {
+      x: wf_up_thr, y: wf_up_wr,
+      mode: 'lines+markers', name: 'v9.2 baseline (walk-forward)',
+      line: { color: '#7A7268', width: 2.5 },
+      marker: { size: 7, color: '#7A7268' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>v9.2 baseline</extra>',
+    },
+    {
+      x: en_up_thr, y: en_up_wr,
+      mode: 'lines+markers', name: 'v9.3 ENRICHED (T1+T2+T3)',
+      line: { color: '#10B981', width: 3 },
+      marker: { size: 8, color: '#10B981' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>v9.3 ENRICHED</extra>',
+    },
+    {
+      x: meta_up_thr, y: meta_up_wr,
+      mode: 'lines+markers', name: 'v9.3 ENRICHED + META',
+      line: { color: '#A78BFA', width: 3 },
+      marker: { size: 8, color: '#A78BFA' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>v9.3 META</extra>',
+    },
+  ], baseLayout('UP threshold · p ≥ thr', 'Per-window WR', {
+    xaxis: { range: [0.6, 0.98] },
+    yaxis: { range: [0.6, 1.0] },
+    layout: {
+      annotations: [
+        { x: 0.72, y: 0.7104, text: '69.7%', showarrow: true, ax: -40, ay: 35, font: { color: '#7A7268', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#7A7268', arrowhead: 2 },
+        { x: 0.72, y: 0.7688, text: '76.9% (+7.2)', showarrow: true, ax: -40, ay: -35, font: { color: '#10B981', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#10B981', arrowhead: 2 },
+      ],
+      shapes: [
+        { type: 'line', x0: 0.72, x1: 0.72, y0: 0.6, y1: 1.0, line: { color: 'rgba(34,211,238,0.3)', width: 1, dash: 'dash' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+
+  /* ────────────── chart 3 · DOWN side comparison ────────────── */
+  Plotly.newPlot('chart-down', [
+    {
+      x: wf_dn_thr, y: wf_dn_wr,
+      mode: 'lines+markers', name: 'v9.2 baseline (walk-forward)',
+      line: { color: '#7A7268', width: 2.5 },
+      marker: { size: 7, color: '#7A7268' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>v9.2 baseline</extra>',
+    },
+    {
+      x: en_dn_thr, y: en_dn_wr,
+      mode: 'lines+markers', name: 'v9.3 ENRICHED (T1+T2+T3)',
+      line: { color: '#10B981', width: 3 },
+      marker: { size: 8, color: '#10B981' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>v9.3 ENRICHED</extra>',
+    },
+    {
+      x: meta_dn_thr, y: meta_dn_wr,
+      mode: 'lines+markers', name: 'v9.3 ENRICHED + META',
+      line: { color: '#A78BFA', width: 3 },
+      marker: { size: 8, color: '#A78BFA' },
+      hovertemplate: 'thr=%{x}<br>WR=%{y:.1%}<extra>v9.3 META</extra>',
+    },
+  ], baseLayout('DOWN threshold · p ≤ thr', 'Per-window WR', {
+    xaxis: { range: [0.04, 0.4] },
+    yaxis: { range: [0.6, 1.0] },
+    layout: {
+      annotations: [
+        { x: 0.20, y: 0.7961, text: '79.6%', showarrow: true, ax: 40, ay: 35, font: { color: '#7A7268', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#7A7268', arrowhead: 2 },
+        { x: 0.20, y: 0.8878, text: '88.8% (+11.6 pp)', showarrow: true, ax: 40, ay: -35, font: { color: '#A78BFA', size: 11, family: 'JetBrains Mono' }, arrowcolor: '#A78BFA', arrowhead: 2 },
+      ],
+      shapes: [
+        { type: 'line', x0: 0.20, x1: 0.20, y0: 0.6, y1: 1.0, line: { color: 'rgba(34,211,238,0.3)', width: 1, dash: 'dash' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+
+  /* ────────────── chart 4 · operating points scatter ────────────── */
+  const fr_up_wf  = [0.7544,0.7293,0.7213,0.6735,0.6683,0.6469,0.6262,0.6184,0.5848,0.5716,0.5646,0.5390,0.5158,0.4976,0.4748,0.4436,0.4085,0.3432,0.3228,0.2796];
+  const fr_up_en  = [0.6820,0.6440,0.6026,0.5991,0.5883,0.5668,0.5367,0.5325,0.5217,0.5150,0.4983,0.4846,0.4738,0.4579,0.4093,0.3922,0.3764,0.3371,0.2770,0.2360];
+  const fr_up_meta= [0.6011,0.5824,0.5781,0.5778,0.5616,0.5599,0.5536,0.5418,0.4963,0.4634,0.4568,0.4487,0.3917,0.3632,0.3194,0.3134,0.3047,0.3024,0.2445,0.1967];
+
+  const fr_dn_wf  = [0.3208,0.3254,0.3521,0.3633,0.3876,0.4330,0.4722,0.5189,0.5403,0.5597,0.5928,0.5985,0.6080,0.6219,0.6367,0.7130,0.7410,0.7536,0.7783];
+  const fr_dn_en  = [0.2633,0.2766,0.3132,0.3638,0.4004,0.4176,0.4753,0.4846,0.5282,0.5462,0.5722,0.5842,0.5928,0.6195,0.6297,0.6319,0.6462,0.6555,0.6755];
+  const fr_dn_meta= [0.1933,0.2128,0.2321,0.2857,0.3070,0.3185,0.3278,0.3387,0.3413,0.3416,0.3652,0.4545,0.4571,0.4617,0.4747,0.4911,0.4925,0.4940,0.5331];
+
+  Plotly.newPlot('chart-ops', [
+    {
+      x: fr_up_wf.concat(fr_dn_wf), y: wf_up_wr.concat(wf_dn_wr),
+      mode: 'markers', name: 'v9.2 baseline',
+      marker: { size: 9, color: '#7A7268', symbol: 'circle', line: { color: '#1C1C28', width: 1 } },
+      text: wf_up_thr.map(t => `UP ${t}`).concat(wf_dn_thr.map(t => `DOWN ${t}`)),
+      hovertemplate: '%{text}<br>fire rate %{x:.0%}<br>WR %{y:.1%}<extra>v9.2</extra>',
+    },
+    {
+      x: fr_up_en.concat(fr_dn_en), y: en_up_wr.concat(en_dn_wr),
+      mode: 'markers', name: 'v9.3 ENRICHED',
+      marker: { size: 11, color: '#10B981', symbol: 'diamond', line: { color: '#1C1C28', width: 1 } },
+      text: en_up_thr.map(t => `UP ${t}`).concat(en_dn_thr.map(t => `DOWN ${t}`)),
+      hovertemplate: '%{text}<br>fire rate %{x:.0%}<br>WR %{y:.1%}<extra>ENRICHED</extra>',
+    },
+    {
+      x: fr_up_meta.concat(fr_dn_meta), y: meta_up_wr.concat(meta_dn_wr),
+      mode: 'markers', name: 'v9.3 META',
+      marker: { size: 11, color: '#A78BFA', symbol: 'star', line: { color: '#1C1C28', width: 1 } },
+      text: meta_up_thr.map(t => `UP ${t}`).concat(meta_dn_thr.map(t => `DOWN ${t}`)),
+      hovertemplate: '%{text}<br>fire rate %{x:.0%}<br>WR %{y:.1%}<extra>META</extra>',
+    },
+  ], baseLayout('Fire rate (windows fired / total)', 'Per-window WR', {
+    xaxis: { tickformat: '.0%', range: [0.15, 0.85] },
+    yaxis: { tickformat: '.0%', range: [0.6, 1.0] },
+    layout: {
+      annotations: [
+        { x: 0.34, y: 0.8878, text: 'DOWN 0.20 META<br>88.8% · 34% fire', showarrow: true, ax: 60, ay: -50, font: { color: '#A78BFA', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#A78BFA', arrowhead: 2 },
+        { x: 0.55, y: 0.7688, text: 'UP 0.72 ENRICHED<br>76.9% · 55% fire', showarrow: true, ax: 0, ay: 50, font: { color: '#10B981', size: 10, family: 'JetBrains Mono' }, arrowcolor: '#10B981', arrowhead: 2 },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+</script>
+
+</body>
+</html>

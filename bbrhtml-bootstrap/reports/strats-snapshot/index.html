@@ -1,0 +1,178 @@
+<!doctype html><html><head><meta charset=utf-8><title>Strategy Snapshot v3 · 2026-05-23 · 22:26</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0e14;color:#d1d5db;line-height:1.5;padding:24px}
+.page{max-width:1280px;margin:0 auto}
+h1{font-size:1.8rem;color:#f3f4f6;margin-bottom:4px}
+h2{font-size:1.2rem;color:#f3f4f6;margin:32px 0 12px;border-left:3px solid #3b82f6;padding-left:10px}
+h3{font-size:0.95rem;color:#e5e7eb;margin:14px 0 8px}
+.subtitle{color:#9ca3af;font-size:0.9rem;margin-bottom:24px}
+table{width:100%;border-collapse:collapse;font-size:0.9rem;margin:10px 0}
+th{text-align:left;padding:8px 10px;color:#9ca3af;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #1f2937;font-weight:500}
+td{padding:8px 10px;border-bottom:1px solid #1f2937;font-size:0.88rem}
+.pos{color:#4ade80} .neg{color:#f87171} .muted{color:#6b7280} .warn{color:#fbbf24}
+.tile-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+.tile{background:#111827;padding:16px;border-radius:8px;border:1px solid #1f2937}
+.tile-val{font-size:1.6rem;font-weight:700;color:#f3f4f6}
+.tile-val.pos{color:#4ade80} .tile-val.neg{color:#f87171}
+.tile-label{color:#9ca3af;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;margin-top:4px}
+.tile-sub{color:#6b7280;font-size:0.75rem;margin-top:4px}
+.callout{background:#0f1825;border-left:4px solid #fbbf24;padding:14px 18px;border-radius:6px;margin:16px 0;font-size:0.9rem}
+.callout.danger{border-color:#f87171} .callout.good{border-color:#4ade80}
+.callout.info{border-color:#3b82f6}
+code{font-family:monospace;background:#1f2937;padding:1px 6px;border-radius:3px;font-size:0.85em;color:#fbbf24}
+.ghost-card{background:#111827;padding:14px;border-radius:8px;border-left:3px solid #6b7280;margin:8px 0}
+.ghost-card.good{border-left-color:#4ade80}
+.ghost-card.warn{border-left-color:#fb923c}
+.ghost-card.bad{border-left-color:#f87171}
+ul{padding-left:20px;margin:8px 0} li{margin:6px 0}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+</style></head><body><div class=page>
+
+<h1>Strategy Snapshot v3 · 2026-05-23 22:26:14 UTC</h1>
+<div class=subtitle>
+  Gamma-verified throughout. <strong>New in v3</strong>: Gamma-verified GHOST trades (v9.5 ETH + v9.5 XRP full trade-by-trade), bankroll scaling proposal for $100 top-up, latest engine state.
+  <br>Saved to <code>tasks/2026-05-23-strats-snapshot/</code> and <code>~/scans2025/</code>
+</div>
+
+<div class=tile-grid>
+  <div class=tile>
+    <div class='tile-val neg'>$-3.34</div>
+    <div class=tile-label>24h LIVE PnL (Gamma)</div>
+    <div class=tile-sub>24 fires · 15W/5L/4P</div>
+  </div>
+  <div class=tile>
+    <div class='tile-val pos'>$+6.50</div>
+    <div class=tile-label>8h LIVE PnL (Gamma)</div>
+    <div class=tile-sub>8 fires · 8W/0L/0P</div>
+  </div>
+  <div class=tile>
+    <div class='tile-val'>$29.78</div>
+    <div class=tile-label>Wallet effective</div>
+    <div class=tile-sub>pUSD $26.78 + USDC $3.00</div>
+  </div>
+  <div class=tile>
+    <div class='tile-val'>0.25</div>
+    <div class=tile-label>bet_fraction (current)</div>
+    <div class=tile-sub>~$5.25/fire at current bankroll · dd_kill 0.45</div>
+  </div>
+</div>
+
+<h2>1 · LIVE 24h (Gamma-verified)</h2>
+<table>
+<thead><tr><th>Strategy</th><th>Fires</th><th>W</th><th>L</th><th>U</th><th>WR</th><th>Stake</th><th>True PnL</th></tr></thead>
+<tbody>
+<tr><td><code>v9_2_raw_lgb</code></td><td>9</td><td class='pos'>7</td><td class='neg'>2</td><td class='muted'>0</td><td>78%</td><td>$33.65</td><td><span style='color:#4ade80'>+$0.99</span></td></tr><tr><td><code>v9_2_iso_strict</code></td><td>3</td><td class='pos'>1</td><td class='neg'>1</td><td class='muted'>1</td><td>50%</td><td>$18.32</td><td><span style='color:#f87171'>$-3.95</span></td></tr><tr><td><code>v9_2_iso_expand</code></td><td>3</td><td class='pos'>1</td><td class='neg'>2</td><td class='muted'>0</td><td>33%</td><td>$19.49</td><td><span style='color:#f87171'>$-7.34</span></td></tr><tr><td><code>v9_2_v12_combo</code></td><td>9</td><td class='pos'>6</td><td class='neg'>0</td><td class='muted'>3</td><td>100%</td><td>$43.95</td><td><span style='color:#4ade80'>+$6.96</span></td></tr>
+<tr style='background:#0f1825;font-weight:600'>
+  <td>TOTAL</td><td>24</td><td class='pos'>15</td><td class='neg'>5</td>
+  <td class='muted'>4</td><td>75%</td>
+  <td>$115.41</td><td><span style='color:#f87171'>$-3.34</span></td>
+</tr>
+</tbody></table>
+
+<h2>2 · LIVE 8h (Gamma-verified)</h2>
+<table>
+<thead><tr><th>Strategy</th><th>Fires</th><th>W</th><th>L</th><th>U</th><th>WR</th><th>Stake</th><th>True PnL</th></tr></thead>
+<tbody>
+<tr><td><code>v9_2_raw_lgb</code></td><td>3</td><td class='pos'>3</td><td class='neg'>0</td><td class='muted'>0</td><td>100%</td><td>$13.39</td><td><span style='color:#4ade80'>+$3.92</span></td></tr><tr><td><code>v9_2_iso_strict</code></td><td>1</td><td class='pos'>1</td><td class='neg'>0</td><td class='muted'>0</td><td>100%</td><td>$4.46</td><td><span style='color:#4ade80'>+$0.49</span></td></tr><tr><td><code>v9_2_iso_expand</code></td><td>2</td><td class='pos'>2</td><td class='neg'>0</td><td class='muted'>0</td><td>100%</td><td>$9.95</td><td><span style='color:#4ade80'>+$0.99</span></td></tr><tr><td><code>v9_2_v12_combo</code></td><td>2</td><td class='pos'>2</td><td class='neg'>0</td><td class='muted'>0</td><td>100%</td><td>$9.99</td><td><span style='color:#4ade80'>+$1.10</span></td></tr>
+<tr style='background:#0f1825;font-weight:600'>
+  <td>TOTAL</td><td>8</td><td class='pos'>8</td><td class='neg'>0</td>
+  <td class='muted'>0</td><td>100%</td>
+  <td>$37.79</td><td><span style='color:#4ade80'>+$6.50</span></td>
+</tr>
+</tbody></table>
+
+<div class='callout good'>
+  <strong>8h is recovering well</strong> — all 4 LIVE strats positive, no losses on resolved fires in 8h. The 5 losses from earlier in 24h came from just 2 correlated windows (per note #608).
+</div>
+
+<h2>3 · GHOST v9.5 ETH — Gamma-verified per fire (last 24h)</h2>
+<p class=subtitle>2 fires at current 0.96/0.04 thresholds. Each row is a real GHOST evaluation cross-checked via Polymarket Gamma API for actual market resolution.</p>
+<table>
+<thead><tr><th>Window</th><th>Probability</th><th>Direction fired</th><th>Oracle resolved</th><th>Verdict</th></tr></thead>
+<tbody><tr><td>1779546000</td><td>1.0000</td><td>YES</td><td>UP</td><td class='pos'><strong>WIN</strong></td></tr><tr><td>1779554100</td><td>0.0000</td><td>NO</td><td>UP</td><td class='neg'><strong>LOSS</strong></td></tr></tbody>
+</table>
+<div class='callout danger'>
+  <strong>v9.5 ETH GHOST: 1W/1L (n=2)</strong> — UP fire at p=1.0 won; DOWN fire at p=0.0 LOST.
+  Model said "0% chance UP" but reality was UP → confirms note #598's anti-calibration on DOWN tail.
+  <strong>Recommendation: if/when promoted LIVE, UP-side ONLY at p≥0.96.</strong> Disable DOWN entirely until v9.5 ETH model retrain.
+</div>
+
+<h2>4 · GHOST v9.5 XRP raw — Gamma-verified per fire (since unblocked ~3h ago)</h2>
+<p class=subtitle>9 fires at 0.82/0.20 thresholds. Just unblocked today via PR #577.</p>
+<table>
+<thead><tr><th>Window</th><th>Probability</th><th>Direction</th><th>Oracle</th><th>Verdict</th></tr></thead>
+<tbody><tr><td>1779566100</td><td>0.8593</td><td>YES</td><td>UP</td><td class='pos'><strong>WIN</strong></td></tr><tr><td>1779567000</td><td>0.8705</td><td>YES</td><td>UP</td><td class='pos'><strong>WIN</strong></td></tr><tr><td>1779567300</td><td>0.8324</td><td>YES</td><td>UP</td><td class='pos'><strong>WIN</strong></td></tr><tr><td>1779569700</td><td>0.9214</td><td>YES</td><td>UP</td><td class='pos'><strong>WIN</strong></td></tr><tr><td>1779570000</td><td>0.9059</td><td>YES</td><td>DOWN</td><td class='neg'><strong>LOSS</strong></td></tr><tr><td>1779570300</td><td>0.8705</td><td>YES</td><td>UP</td><td class='pos'><strong>WIN</strong></td></tr><tr><td>1779571200</td><td>0.9214</td><td>YES</td><td>DOWN</td><td class='neg'><strong>LOSS</strong></td></tr><tr><td>1779572100</td><td>0.8327</td><td>YES</td><td>DOWN</td><td class='neg'><strong>LOSS</strong></td></tr><tr><td>1779574500</td><td>0.8561</td><td>YES</td><td>—</td><td class='muted'><strong>PENDING</strong></td></tr></tbody>
+</table>
+<div class='callout danger'>
+  <strong>v9.5 XRP GHOST: 5W/3L/1P (n=8 resolved) = 62% WR</strong>
+  <br>⚠️ <strong>Losses cluster at HIGH probabilities</strong> — losing fires were at p=0.83, 0.91, 0.92 (the most confident predictions). Same anti-calibration pattern as v9.5 ETH.
+  <br><strong>v9.5 family pathology is now confirmed across BOTH ETH and XRP.</strong> Note #598's retrain recommendation extends to the whole v9.5 family.
+</div>
+
+<h2>5 · Other GHOST strategies (24h)</h2>
+<div class=two-col>
+  <div class='ghost-card warn'>
+    <h3>v9.3 BTC raw — 11 fires · UP 7W/3L · DN 0W/1L</h3>
+    <p style='font-size:0.85rem;color:#9ca3af'>UP≥0.72 / DN≤0.20 · eval[60,210]</p>
+    <p>WR 64% vs training 80% target. Note #605: well-calibrated in 0.70-0.80 band.</p>
+  </div>
+  <div class='ghost-card muted'>
+    <h3>v9.3 BTC tight — 0 fires</h3>
+    <p style='font-size:0.85rem;color:#9ca3af'>UP≥0.935 / DN≤0.065 · eval[20,170]</p>
+    <p class=warn>Dead-on-arrival — model max ≈0.80 per note #605</p>
+  </div>
+  <div class='ghost-card muted'>
+    <h3>v9.5 XRP tight — 0 fires</h3>
+    <p style='font-size:0.85rem;color:#9ca3af'>UP≥0.95 / DN≤0.05 · eval[120,240]</p>
+    <p class=warn>Model max ≈0.92 so 0.95 threshold unreachable</p>
+  </div>
+</div>
+
+<h2>6 · Bankroll scaling proposal for $100 overnight top-up</h2>
+<p class=subtitle>Current bankroll ~$30 forced bet_fraction up to 0.25 (per-fire $5.25). If you top up to $100, that ratio becomes catastrophic ($17.50/fire). Here's my proposed reconfig.</p>
+<table>
+<thead><tr><th>Knob</th><th>Current</th><th>Proposed @ $100</th><th>Reasoning</th></tr></thead>
+<tbody>
+<tr><td><code>bet_fraction</code></td><td>0.25</td><td><strong>0.10</strong></td><td>10% Kelly → ~$7/fire at $100. Above $1 min, below catastrophic.</td></tr>
+<tr><td><code>max_drawdown_kill</code></td><td>0.45</td><td><strong>0.20</strong></td><td>Kill at $20 drawdown from peak. Survives normal bad-day volatility, kills catastrophic runs.</td></tr>
+<tr><td>Per-window cap</td><td>$25</td><td>$25 (keep)</td><td>Already protects correlation stacks.</td></tr>
+</tbody></table>
+<p style='font-size:0.85rem'><strong>Alternative tighter overnight stance</strong>: <code>bet_fraction 0.08 + dd_kill 0.15</code>. Stakes ~$5.60/fire, kills at $15 lost = survives 3 cap-maxed loss windows. Safer for unattended overnight.</p>
+
+<h2>7 · Engine + data quality issues (followups in flight)</h2>
+<div class='callout danger'>
+  <strong>2 active data-quality bugs</strong> — bg agent in flight to fix:
+  <ul>
+    <li><strong>Oracle backfiller gap</strong>: windows 1779562800, 1779563100, 1779567000… have NULL oracle_outcome despite being 3+ hours old. Intermittent.</li>
+    <li><strong>Reconciler LOSS-stamping lag</strong>: trades #9124, #9130, #9131 have oracle data BUT outcome=NULL. The reconciler's worthless-token path isn't stamping LOSS.</li>
+  </ul>
+  Both bugs hurt dashboard trustworthiness. Bg agent is patching both + backfilling missing windows.
+</div>
+
+<h2>8 · Active bg agents / open PRs</h2>
+<ul>
+  <li><strong>PR #582</strong> (engine feature emitters for v9.3 + v9.5) — bg agent reviewing + will merge if clean. Adds OI cum + CLOB pre + gamma_spread to BTC (and just OI to ETH/XRP — multi-asset CLOB is a separate followup).</li>
+  <li><strong>Oracle backfiller + reconciler stamp fix</strong> — bg agent in flight</li>
+  <li><strong>USDC.E → pUSD cron tweak</strong> — found existing crons on Montreal: <code>auto_withdraw_profit.py</code> and <code>auto_redeem_pending.py</code>. Need to either modify or add a new "maintain $100 pUSD steady state" cron. Awaiting Billy's specifics on the exact target.</li>
+  <li><strong>Trade-resume verification</strong> — polling for first LIVE trade post bet_fraction 0.25 fix (22:09 UTC)</li>
+</ul>
+
+<h2>9 · RDS notes touchpoints</h2>
+<ul>
+  <li>#586 — Gamma-verified post-mortem methodology</li>
+  <li>#598 — v9.5 ETH calibration (anti-calibrated DOWN — confirmed today by both ETH + XRP Gamma checks)</li>
+  <li>#605 — v9.3 BTC calibration</li>
+  <li>#607 — LIVE v9.2 family loss-window sweep (iso_strict + meta_gate ≥ 0.60 → 97.8% WR pocket)</li>
+  <li>#608 — Full session synthesis</li>
+  <li>#610 — Portfolio mechanics design (Billy's iso_strict_meta proposal)</li>
+  <li>#612 — Engine feature emitters PR (PR #582)</li>
+  <li>#614 — HTML regen + oracle backfiller / reconciler-lag findings</li>
+</ul>
+
+<p style='margin-top:32px;color:#6b7280;font-size:0.8rem'>
+Generated 2026-05-23T22:26:14.673803+00:00.<br>
+Files: <code>/home/billyrichards/bbrdev1/novakash/novakashmain/tasks/2026-05-23-strats-snapshot/index.html</code> · <code>/home/billyrichards/scans2025/strats-snapshot-20260523T222614Z.html</code>
+</p>
+
+</div></body></html>

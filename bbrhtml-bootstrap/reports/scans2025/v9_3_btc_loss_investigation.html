@@ -1,0 +1,1899 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>v9.3 BTC GHOST — Loss Investigation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {
+      --bg-deep: #0A0A0F; --bg-surface: #14141C; --bg-elevated: #1C1C28; --bg-card: #161620;
+      --text-primary: #F5F3F0; --text-secondary: #B8B3AB; --text-tertiary: #7A7268;
+      --border-subtle: rgba(255,255,255,0.06); --border-default: rgba(255,255,255,0.10); --border-strong: rgba(255,255,255,0.18);
+      --violet:#8B5CF6; --green:#10B981; --green-soft:#34D399; --cyan:#06B6D4; --cyan-soft:#22D3EE; --amber:#F59E0B;
+      --red:#EF4444; --red-dim: rgba(239,68,68,0.18);
+      --font-display:"Instrument Serif", serif;
+      --font-body:"IBM Plex Sans", sans-serif;
+      --font-mono:"JetBrains Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      background: var(--bg-deep); color: var(--text-primary);
+      font-family: var(--font-body); font-weight: 300;
+      line-height: 1.65; margin: 0; padding: 0;
+    }
+    .container { max-width: 1120px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+    h1, h2, h3 { font-family: var(--font-display); font-weight: 400; color: var(--text-primary); letter-spacing: -0.02em; }
+    h1 { font-size: 3.4rem; line-height: 1.05; margin: 0 0 1rem 0; }
+    h2 { font-size: 2.0rem; margin-top: 3.2rem; margin-bottom: 1.2rem; }
+    h3 { font-size: 1.35rem; margin-top: 2rem; margin-bottom: 0.8rem; color: var(--cyan-soft); font-family: var(--font-body); font-weight: 500; letter-spacing: 0; }
+    p { color: var(--text-secondary); font-size: 1.02rem; }
+    em { color: var(--cyan-soft); font-style: italic; }
+    strong { color: var(--text-primary); font-weight: 500; }
+    .lede { font-family: var(--font-display); font-size: 1.45rem; line-height: 1.5; color: var(--text-primary); font-style: italic; margin-top: 1.5rem; }
+    .hero {
+      background: linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-deep) 100%);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 4rem 0 3rem 0;
+    }
+    .meta-bar { display: flex; flex-wrap: wrap; gap: 1.5rem; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.78rem; margin-top: 1.5rem; }
+    .meta-bar span { display: inline-flex; gap: 0.5rem; }
+    .meta-bar b { color: var(--text-primary); font-weight: 500; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 2rem 0; }
+    .stat { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1.1rem 1.2rem; }
+    .stat-label { font-size: 0.72rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--font-mono); }
+    .stat-value { font-family: var(--font-display); font-size: 2.2rem; line-height: 1.0; color: var(--text-primary); margin-top: 0.4rem; }
+    .stat-value.green { color: var(--green-soft); }
+    .stat-value.red { color: var(--red); }
+    .stat-value.amber { color: var(--amber); }
+    .stat-value.cyan { color: var(--cyan-soft); }
+    .stat-sub { font-size: 0.78rem; color: var(--text-tertiary); margin-top: 0.5rem; font-family: var(--font-mono); }
+    .callout { background: rgba(6,182,212,0.04); border-left: 3px solid var(--cyan); padding: 1.1rem 1.4rem; margin: 1.5rem 0; border-radius: 0 6px 6px 0; }
+    .callout.amber { background: rgba(245,158,11,0.05); border-left-color: var(--amber); }
+    .callout.red { background: rgba(239,68,68,0.05); border-left-color: var(--red); }
+    .callout.green { background: rgba(16,185,129,0.05); border-left-color: var(--green); }
+    .callout-title { font-family: var(--font-mono); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan-soft); margin-bottom: 0.5rem; }
+    .callout.amber .callout-title { color: var(--amber); }
+    .callout.red .callout-title { color: var(--red); }
+    .callout.green .callout-title { color: var(--green-soft); }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
+    th, td { padding: 0.55rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border-subtle); }
+    th { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 500; background: var(--bg-surface); }
+    td.mono { font-family: var(--font-mono); font-size: 0.82rem; }
+    td.mono.red { color: var(--red); }
+    td.mono.green { color: var(--green-soft); }
+    .scroll-table { max-height: 480px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: 6px; }
+    .chart { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem; margin: 1.2rem 0; }
+    .footer { margin-top: 4rem; padding: 2rem 0; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
+    .toc { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1.2rem 1.4rem; margin: 2rem 0; }
+    .toc a { color: var(--cyan-soft); text-decoration: none; font-family: var(--font-mono); font-size: 0.85rem; }
+    .toc ul { margin: 0; padding-left: 1.2rem; }
+    .toc li { padding: 0.18rem 0; }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="container">
+      <div style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--cyan-soft); letter-spacing: 0.15em; text-transform: uppercase;">Investigation · GHOST mode · BTC 5m</div>
+      <h1>v9.3 BTC — where the losses are, and is there a winning threshold we missed?</h1>
+      <p class="lede">
+        v9.3 BTC has been emitting probabilities since PR #159 merged on 2026-05-23. No real money on the line — but we can read the GHOST tape and ask the honest question:
+        <em>can any operating point on this model beat the LIVE v9.2 BTC baseline?</em>
+      </p>
+      <div class="meta-bar">
+        <span>Data window: <b>2026-05-23 15:42 — 21:04 UTC</b></span>
+        <span>Windows: <b>58</b> (56 resolved)</span>
+        <span>Evals: <b>5,897</b></span>
+        <span>Generated: <b>2026-05-23 21:11 UTC</b></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <div class="toc">
+      <strong style="font-family: var(--font-body); color: var(--text-primary);">Contents</strong>
+      <ul>
+        <li><a href="#summary">1. Summary at a glance</a></li>
+        <li><a href="#setup">2. Setup: data, methodology, what counts as a "loss"</a></li>
+        <li><a href="#losses">3. Every loss at LIVE thresholds (UP 0.72 / DOWN 0.20)</a></li>
+        <li><a href="#sweep">4. Threshold sweep — UP and DOWN, 0.005 step</a></li>
+        <li><a href="#vs92">5. v9.3 vs v9.2 — same-window comparison</a></li>
+        <li><a href="#filter">6. Can v9.3 work as a filter on v9.2?</a></li>
+        <li><a href="#headline">7. The headline question</a></li>
+        <li><a href="#recommendation">8. Recommendation</a></li>
+      </ul>
+    </div>
+
+    <h2 id="summary">1. Summary at a glance</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="stat-label">v9.3 fires (LIVE)</div><div class="stat-value">12</div><div class="stat-sub">7 wins / 5 losses</div></div>
+      <div class="stat"><div class="stat-label">v9.3 WR (LIVE)</div><div class="stat-value amber">58.3%</div><div class="stat-sub">Wilson 95% LB: 32.0%</div></div>
+      <div class="stat"><div class="stat-label">v9.2 BTC same hours</div><div class="stat-value green">81.0%</div><div class="stat-sub">17/21 at LIVE thresholds</div></div>
+      <div class="stat"><div class="stat-label">v9.3 max prob</div><div class="stat-value red">0.8646</div><div class="stat-sub">vs planned tight 0.935</div></div>
+      <div class="stat"><div class="stat-label">v9.3 min prob</div><div class="stat-value red">0.1864</div><div class="stat-sub">vs planned tight 0.065</div></div>
+      <div class="stat"><div class="stat-label">Best Wilson LB found</div><div class="stat-value cyan">43.7%</div><div class="stat-sub">UP T=0.695, n=18</div></div>
+    </div>
+
+    <div class="callout amber">
+      <div class="callout-title">Headline finding</div>
+      <p style="margin:0;">
+        <strong>No threshold beats v9.2 BTC on the same windows.</strong> v9.3 BTC at its best UP operating point
+        (p≥0.695, n=18) hits 66.7% WR — but
+        v9.2 BTC at the <em>same</em> threshold on the <em>same</em> hours hits
+        81.8% (n=22). The v9.3 probability surface is
+        compressed (max emitted 0.8646, never reaching the planned 0.935 cutoff), so the planned tight
+        operating point literally never fires. There is one interesting filter signal — v9.3 confirmation of v9.2 UP
+        fires takes WR from 87.5% to 100% (6/6) — but n=6 is too small to action.
+      </p>
+    </div>
+
+    <h2 id="setup">2. Setup</h2>
+    <p>
+      v9.3 BTC scorer was merged in PR #159 at <em>2026-05-23 13:33:52 UTC</em>. It runs in GHOST mode — emissions are recorded
+      in <code>signal_evaluations.probability_lgb_v9_3_btc</code> but no decisions are placed. Two GHOST strategies exist:
+      <code>v9_3_btc_raw_lgb</code> (UP 0.72 / DOWN 0.20) and <code>v9_3_btc_tight</code> (UP 0.935 / DOWN 0.065).
+    </p>
+    <p>
+      For this investigation we pulled <strong>all 58 windows</strong> with at least one v9.3 BTC emission
+      and joined to <code>market_data</code> on <code>window_ts</code>. 56 resolved (30 UP / 26 DOWN); 2 unresolved.
+      Per-window dedup: we report <em>max</em> emitted probability per window (for UP-side fire decisions) and
+      <em>min</em> (for DOWN-side fire decisions). This matches how the engine would consume the signal — first crossing of the
+      threshold within the window triggers the decision.
+    </p>
+    <p>
+      A <em>loss</em> is defined as: <em>any</em> window where v9.3 BTC crossed the UP threshold and the market resolved DOWN,
+      OR crossed the DOWN threshold and resolved UP. Same-side wins (UP fire → UP outcome) and opposing-side wins (DOWN fire → DOWN outcome)
+      are wins. <code>close_price=0</code> in market_data so we cannot show price-move overlays in this report; outcomes are honest because
+      they come from Polymarket resolution.
+    </p>
+
+    <h2 id="losses">3. Every loss at LIVE thresholds (UP 0.72 / DOWN 0.20)</h2>
+    <p>
+      <strong>5 losses out of 12 fires (7W/5L, 58.3% WR, Wilson [32.0%, 80.7%])</strong>.
+      Wilson 95% lower bound at this small sample is below 30% — we genuinely cannot tell at LIVE thresholds whether v9.3 BTC is
+      profitable. By contrast, v9.2 BTC at p≥0.72 in the same hours hit 14/16 on UP and
+      3/5 on DOWN.
+    </p>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>Window (UTC)</th><th>Side</th><th>v9.3 fire p</th><th>v9.3 avg p</th><th>v9.2 max p</th><th>v9.2 avg p</th><th>Outcome</th><th>Regime</th>
+        </tr></thead>
+        <tbody>
+        <tr>
+      <td class="mono">2026-05-23 15:45 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono red">0.7771</td>
+      <td class="mono">0.5181</td>
+      <td class="mono">0.7005</td>
+      <td class="mono">0.4932</td>
+      <td class="mono">DOWN</td>
+      <td class="mono">TRANSITION</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 17:00 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono red">0.7369</td>
+      <td class="mono">0.4123</td>
+      <td class="mono">0.2634</td>
+      <td class="mono">0.2555</td>
+      <td class="mono">DOWN</td>
+      <td class="mono">—</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 17:30 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono red">0.7593</td>
+      <td class="mono">0.4717</td>
+      <td class="mono">0.7126</td>
+      <td class="mono">0.5322</td>
+      <td class="mono">DOWN</td>
+      <td class="mono">TRANSITION</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 18:50 UTC</td>
+      <td class="mono">DOWN</td>
+      <td class="mono red">0.1958</td>
+      <td class="mono">0.4697</td>
+      <td class="mono">0.7386</td>
+      <td class="mono">0.4160</td>
+      <td class="mono">UP</td>
+      <td class="mono">NORMAL</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 19:35 UTC</td>
+      <td class="mono">DOWN</td>
+      <td class="mono red">0.1864</td>
+      <td class="mono">0.4368</td>
+      <td class="mono">0.7186</td>
+      <td class="mono">0.3550</td>
+      <td class="mono">UP</td>
+      <td class="mono">TRANSITION</td>
+    </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Wins at LIVE thresholds (for contrast)</h3>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>Window (UTC)</th><th>Side</th><th>v9.3 fire p</th><th>v9.3 avg p</th><th>v9.2 max p</th><th>v9.2 avg p</th><th>Outcome</th><th>Regime</th>
+        </tr></thead>
+        <tbody>
+        <tr>
+      <td class="mono">2026-05-23 15:40 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7608</td>
+      <td class="mono">0.4354</td>
+      <td class="mono">0.7512</td>
+      <td class="mono">0.3914</td>
+      <td class="mono">UP</td>
+      <td class="mono">—</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 16:00 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7981</td>
+      <td class="mono">0.5147</td>
+      <td class="mono">0.7789</td>
+      <td class="mono">0.3082</td>
+      <td class="mono">UP</td>
+      <td class="mono">TRANSITION</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 16:35 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7987</td>
+      <td class="mono">0.5015</td>
+      <td class="mono">0.7722</td>
+      <td class="mono">0.4048</td>
+      <td class="mono">UP</td>
+      <td class="mono">CASCADE</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 17:15 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7399</td>
+      <td class="mono">0.4797</td>
+      <td class="mono">0.7317</td>
+      <td class="mono">0.4868</td>
+      <td class="mono">UP</td>
+      <td class="mono">NORMAL</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 17:50 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7682</td>
+      <td class="mono">0.5319</td>
+      <td class="mono">0.7400</td>
+      <td class="mono">0.3779</td>
+      <td class="mono">UP</td>
+      <td class="mono">TRANSITION</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 18:10 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7378</td>
+      <td class="mono">0.5114</td>
+      <td class="mono">0.7206</td>
+      <td class="mono">0.3504</td>
+      <td class="mono">UP</td>
+      <td class="mono">CASCADE</td>
+    </tr>
+<tr>
+      <td class="mono">2026-05-23 19:40 UTC</td>
+      <td class="mono">UP</td>
+      <td class="mono green">0.7588</td>
+      <td class="mono">0.4676</td>
+      <td class="mono">0.7040</td>
+      <td class="mono">0.3115</td>
+      <td class="mono">UP</td>
+      <td class="mono">TRANSITION</td>
+    </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout red">
+      <div class="callout-title">Pattern in the losses</div>
+      <p style="margin:0;">
+        All 3 UP-side losses fire in the 0.7369-0.7771 range — the very edge of v9.3's compressed output. The two DOWN-side
+        losses (fire p=0.1958 and 0.1864) are at the absolute floor of v9.3's emission range. <strong>v9.3 BTC's losses come
+        from windows where it is "barely confident enough" to fire</strong> — and the rare cases where it reaches its emission
+        extremes coincide with model uncertainty rather than calibrated high-conviction. v9.2 BTC's <em>average</em>
+        probability on the same losing windows is often below 0.5 (e.g. 0.2555, 0.3550, 0.4160) — both models agree the
+        regime is messy.
+      </p>
+    </div>
+
+    <h2 id="sweep">4. Threshold sweep — UP and DOWN, 0.005 step</h2>
+    <p>
+      Sweep UP T in [0.50, 0.80] and DOWN T in [0.20, 0.50] at 0.005 granularity. For each cutpoint we report n (windows fired,
+      dedup), wins, losses, win-rate, Wilson 95% lower bound, and v9.2 BTC's win-rate <em>at the same threshold</em> on the
+      full universe (apples-to-apples since v9.2 emits at every window v9.3 emits at, and emits in the same probability range).
+    </p>
+
+    <h3>Top UP operating points (n ≥ 10)</h3>
+    <table>
+      <thead><tr>
+        <th>UP T</th><th>v9.3 n</th><th>W</th><th>L</th><th>v9.3 WR</th><th>v9.3 Wilson LB</th><th>v9.2 n @ same T</th><th>v9.2 WR @ same T</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+      <td class="mono">0.695</td>
+      <td class="mono">18</td>
+      <td class="mono">12</td>
+      <td class="mono">6</td>
+      <td class="mono">0.667</td>
+      <td class="mono">0.437</td>
+      <td class="mono">22</td>
+      <td class="mono">0.818</td>
+    </tr>
+<tr>
+      <td class="mono">0.710</td>
+      <td class="mono">11</td>
+      <td class="mono">8</td>
+      <td class="mono">3</td>
+      <td class="mono">0.727</td>
+      <td class="mono">0.434</td>
+      <td class="mono">19</td>
+      <td class="mono">0.842</td>
+    </tr>
+<tr>
+      <td class="mono">0.715</td>
+      <td class="mono">11</td>
+      <td class="mono">8</td>
+      <td class="mono">3</td>
+      <td class="mono">0.727</td>
+      <td class="mono">0.434</td>
+      <td class="mono">17</td>
+      <td class="mono">0.882</td>
+    </tr>
+<tr>
+      <td class="mono">0.700</td>
+      <td class="mono">15</td>
+      <td class="mono">10</td>
+      <td class="mono">5</td>
+      <td class="mono">0.667</td>
+      <td class="mono">0.417</td>
+      <td class="mono">22</td>
+      <td class="mono">0.818</td>
+    </tr>
+<tr>
+      <td class="mono">0.500</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">39</td>
+      <td class="mono">0.615</td>
+    </tr>
+<tr>
+      <td class="mono">0.505</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">39</td>
+      <td class="mono">0.615</td>
+    </tr>
+      </tbody>
+    </table>
+
+    <h3>Top DOWN operating points (n ≥ 5)</h3>
+    <table>
+      <thead><tr>
+        <th>DN T</th><th>v9.3 n</th><th>W</th><th>L</th><th>v9.3 WR</th><th>v9.3 Wilson LB</th><th>v9.2 n @ same T</th><th>v9.2 WR @ same T</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+      <td class="mono">0.260</td>
+      <td class="mono">39</td>
+      <td class="mono">20</td>
+      <td class="mono">19</td>
+      <td class="mono">0.513</td>
+      <td class="mono">0.362</td>
+      <td class="mono">37</td>
+      <td class="mono">0.459</td>
+    </tr>
+<tr>
+      <td class="mono">0.285</td>
+      <td class="mono">46</td>
+      <td class="mono">23</td>
+      <td class="mono">23</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.361</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.280</td>
+      <td class="mono">42</td>
+      <td class="mono">21</td>
+      <td class="mono">21</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.355</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.265</td>
+      <td class="mono">40</td>
+      <td class="mono">20</td>
+      <td class="mono">20</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.352</td>
+      <td class="mono">53</td>
+      <td class="mono">0.453</td>
+    </tr>
+<tr>
+      <td class="mono">0.270</td>
+      <td class="mono">41</td>
+      <td class="mono">20</td>
+      <td class="mono">21</td>
+      <td class="mono">0.488</td>
+      <td class="mono">0.343</td>
+      <td class="mono">55</td>
+      <td class="mono">0.455</td>
+    </tr>
+<tr>
+      <td class="mono">0.275</td>
+      <td class="mono">41</td>
+      <td class="mono">20</td>
+      <td class="mono">21</td>
+      <td class="mono">0.488</td>
+      <td class="mono">0.343</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+      </tbody>
+    </table>
+
+    <div class="chart">
+      <div id="sweep-chart" style="height: 460px;"></div>
+    </div>
+    <div class="chart">
+      <div id="dn-sweep-chart" style="height: 380px;"></div>
+    </div>
+
+    <h3>Full UP sweep (all rows)</h3>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>UP T</th><th>v9.3 n</th><th>W</th><th>L</th><th>v9.3 WR</th><th>v9.3 Wilson LB</th><th>v9.2 n @ T</th><th>v9.2 WR @ T</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+      <td class="mono">0.500</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">39</td>
+      <td class="mono">0.615</td>
+    </tr>
+<tr>
+      <td class="mono">0.505</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">39</td>
+      <td class="mono">0.615</td>
+    </tr>
+<tr>
+      <td class="mono">0.510</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.515</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.520</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.525</td>
+      <td class="mono">56</td>
+      <td class="mono">30</td>
+      <td class="mono">26</td>
+      <td class="mono">0.536</td>
+      <td class="mono">0.407</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.530</td>
+      <td class="mono">55</td>
+      <td class="mono">29</td>
+      <td class="mono">26</td>
+      <td class="mono">0.527</td>
+      <td class="mono">0.398</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.535</td>
+      <td class="mono">55</td>
+      <td class="mono">29</td>
+      <td class="mono">26</td>
+      <td class="mono">0.527</td>
+      <td class="mono">0.398</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.540</td>
+      <td class="mono">55</td>
+      <td class="mono">29</td>
+      <td class="mono">26</td>
+      <td class="mono">0.527</td>
+      <td class="mono">0.398</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.545</td>
+      <td class="mono">55</td>
+      <td class="mono">29</td>
+      <td class="mono">26</td>
+      <td class="mono">0.527</td>
+      <td class="mono">0.398</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.550</td>
+      <td class="mono">55</td>
+      <td class="mono">29</td>
+      <td class="mono">26</td>
+      <td class="mono">0.527</td>
+      <td class="mono">0.398</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.555</td>
+      <td class="mono">53</td>
+      <td class="mono">28</td>
+      <td class="mono">25</td>
+      <td class="mono">0.528</td>
+      <td class="mono">0.397</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.560</td>
+      <td class="mono">53</td>
+      <td class="mono">28</td>
+      <td class="mono">25</td>
+      <td class="mono">0.528</td>
+      <td class="mono">0.397</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.565</td>
+      <td class="mono">52</td>
+      <td class="mono">27</td>
+      <td class="mono">25</td>
+      <td class="mono">0.519</td>
+      <td class="mono">0.387</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.570</td>
+      <td class="mono">52</td>
+      <td class="mono">27</td>
+      <td class="mono">25</td>
+      <td class="mono">0.519</td>
+      <td class="mono">0.387</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.575</td>
+      <td class="mono">52</td>
+      <td class="mono">27</td>
+      <td class="mono">25</td>
+      <td class="mono">0.519</td>
+      <td class="mono">0.387</td>
+      <td class="mono">38</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.580</td>
+      <td class="mono">52</td>
+      <td class="mono">27</td>
+      <td class="mono">25</td>
+      <td class="mono">0.519</td>
+      <td class="mono">0.387</td>
+      <td class="mono">37</td>
+      <td class="mono">0.649</td>
+    </tr>
+<tr>
+      <td class="mono">0.585</td>
+      <td class="mono">52</td>
+      <td class="mono">27</td>
+      <td class="mono">25</td>
+      <td class="mono">0.519</td>
+      <td class="mono">0.387</td>
+      <td class="mono">37</td>
+      <td class="mono">0.649</td>
+    </tr>
+<tr>
+      <td class="mono">0.590</td>
+      <td class="mono">52</td>
+      <td class="mono">27</td>
+      <td class="mono">25</td>
+      <td class="mono">0.519</td>
+      <td class="mono">0.387</td>
+      <td class="mono">37</td>
+      <td class="mono">0.649</td>
+    </tr>
+<tr>
+      <td class="mono">0.595</td>
+      <td class="mono">51</td>
+      <td class="mono">27</td>
+      <td class="mono">24</td>
+      <td class="mono">0.529</td>
+      <td class="mono">0.395</td>
+      <td class="mono">36</td>
+      <td class="mono">0.667</td>
+    </tr>
+<tr>
+      <td class="mono">0.600</td>
+      <td class="mono">51</td>
+      <td class="mono">27</td>
+      <td class="mono">24</td>
+      <td class="mono">0.529</td>
+      <td class="mono">0.395</td>
+      <td class="mono">33</td>
+      <td class="mono">0.667</td>
+    </tr>
+<tr>
+      <td class="mono">0.605</td>
+      <td class="mono">51</td>
+      <td class="mono">27</td>
+      <td class="mono">24</td>
+      <td class="mono">0.529</td>
+      <td class="mono">0.395</td>
+      <td class="mono">33</td>
+      <td class="mono">0.667</td>
+    </tr>
+<tr>
+      <td class="mono">0.610</td>
+      <td class="mono">48</td>
+      <td class="mono">25</td>
+      <td class="mono">23</td>
+      <td class="mono">0.521</td>
+      <td class="mono">0.383</td>
+      <td class="mono">32</td>
+      <td class="mono">0.688</td>
+    </tr>
+<tr>
+      <td class="mono">0.615</td>
+      <td class="mono">47</td>
+      <td class="mono">24</td>
+      <td class="mono">23</td>
+      <td class="mono">0.511</td>
+      <td class="mono">0.372</td>
+      <td class="mono">32</td>
+      <td class="mono">0.688</td>
+    </tr>
+<tr>
+      <td class="mono">0.620</td>
+      <td class="mono">46</td>
+      <td class="mono">24</td>
+      <td class="mono">22</td>
+      <td class="mono">0.522</td>
+      <td class="mono">0.381</td>
+      <td class="mono">32</td>
+      <td class="mono">0.688</td>
+    </tr>
+<tr>
+      <td class="mono">0.625</td>
+      <td class="mono">45</td>
+      <td class="mono">23</td>
+      <td class="mono">22</td>
+      <td class="mono">0.511</td>
+      <td class="mono">0.370</td>
+      <td class="mono">32</td>
+      <td class="mono">0.688</td>
+    </tr>
+<tr>
+      <td class="mono">0.630</td>
+      <td class="mono">45</td>
+      <td class="mono">23</td>
+      <td class="mono">22</td>
+      <td class="mono">0.511</td>
+      <td class="mono">0.370</td>
+      <td class="mono">32</td>
+      <td class="mono">0.688</td>
+    </tr>
+<tr>
+      <td class="mono">0.635</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">32</td>
+      <td class="mono">0.688</td>
+    </tr>
+<tr>
+      <td class="mono">0.640</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">31</td>
+      <td class="mono">0.710</td>
+    </tr>
+<tr>
+      <td class="mono">0.645</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">31</td>
+      <td class="mono">0.710</td>
+    </tr>
+<tr>
+      <td class="mono">0.650</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">30</td>
+      <td class="mono">0.733</td>
+    </tr>
+<tr>
+      <td class="mono">0.655</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">29</td>
+      <td class="mono">0.724</td>
+    </tr>
+<tr>
+      <td class="mono">0.660</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">26</td>
+      <td class="mono">0.808</td>
+    </tr>
+<tr>
+      <td class="mono">0.665</td>
+      <td class="mono">44</td>
+      <td class="mono">22</td>
+      <td class="mono">22</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.358</td>
+      <td class="mono">26</td>
+      <td class="mono">0.808</td>
+    </tr>
+<tr>
+      <td class="mono">0.670</td>
+      <td class="mono">36</td>
+      <td class="mono">20</td>
+      <td class="mono">16</td>
+      <td class="mono">0.556</td>
+      <td class="mono">0.396</td>
+      <td class="mono">26</td>
+      <td class="mono">0.808</td>
+    </tr>
+<tr>
+      <td class="mono">0.675</td>
+      <td class="mono">30</td>
+      <td class="mono">15</td>
+      <td class="mono">15</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.332</td>
+      <td class="mono">26</td>
+      <td class="mono">0.808</td>
+    </tr>
+<tr>
+      <td class="mono">0.680</td>
+      <td class="mono">26</td>
+      <td class="mono">15</td>
+      <td class="mono">11</td>
+      <td class="mono">0.577</td>
+      <td class="mono">0.389</td>
+      <td class="mono">26</td>
+      <td class="mono">0.808</td>
+    </tr>
+<tr>
+      <td class="mono">0.685</td>
+      <td class="mono">26</td>
+      <td class="mono">15</td>
+      <td class="mono">11</td>
+      <td class="mono">0.577</td>
+      <td class="mono">0.389</td>
+      <td class="mono">24</td>
+      <td class="mono">0.792</td>
+    </tr>
+<tr>
+      <td class="mono">0.690</td>
+      <td class="mono">22</td>
+      <td class="mono">13</td>
+      <td class="mono">9</td>
+      <td class="mono">0.591</td>
+      <td class="mono">0.387</td>
+      <td class="mono">23</td>
+      <td class="mono">0.826</td>
+    </tr>
+<tr>
+      <td class="mono">0.695</td>
+      <td class="mono">18</td>
+      <td class="mono">12</td>
+      <td class="mono">6</td>
+      <td class="mono">0.667</td>
+      <td class="mono">0.437</td>
+      <td class="mono">22</td>
+      <td class="mono">0.818</td>
+    </tr>
+<tr>
+      <td class="mono">0.700</td>
+      <td class="mono">15</td>
+      <td class="mono">10</td>
+      <td class="mono">5</td>
+      <td class="mono">0.667</td>
+      <td class="mono">0.417</td>
+      <td class="mono">22</td>
+      <td class="mono">0.818</td>
+    </tr>
+<tr>
+      <td class="mono">0.705</td>
+      <td class="mono">14</td>
+      <td class="mono">9</td>
+      <td class="mono">5</td>
+      <td class="mono">0.643</td>
+      <td class="mono">0.388</td>
+      <td class="mono">20</td>
+      <td class="mono">0.850</td>
+    </tr>
+<tr>
+      <td class="mono">0.710</td>
+      <td class="mono">11</td>
+      <td class="mono">8</td>
+      <td class="mono">3</td>
+      <td class="mono">0.727</td>
+      <td class="mono">0.434</td>
+      <td class="mono">19</td>
+      <td class="mono">0.842</td>
+    </tr>
+<tr>
+      <td class="mono">0.715</td>
+      <td class="mono">11</td>
+      <td class="mono">8</td>
+      <td class="mono">3</td>
+      <td class="mono">0.727</td>
+      <td class="mono">0.434</td>
+      <td class="mono">17</td>
+      <td class="mono">0.882</td>
+    </tr>
+<tr>
+      <td class="mono">0.720</td>
+      <td class="mono">10</td>
+      <td class="mono">7</td>
+      <td class="mono">3</td>
+      <td class="mono">0.700</td>
+      <td class="mono">0.397</td>
+      <td class="mono">16</td>
+      <td class="mono">0.875</td>
+    </tr>
+<tr>
+      <td class="mono">0.725</td>
+      <td class="mono">10</td>
+      <td class="mono">7</td>
+      <td class="mono">3</td>
+      <td class="mono">0.700</td>
+      <td class="mono">0.397</td>
+      <td class="mono">14</td>
+      <td class="mono">0.857</td>
+    </tr>
+<tr>
+      <td class="mono">0.730</td>
+      <td class="mono">10</td>
+      <td class="mono">7</td>
+      <td class="mono">3</td>
+      <td class="mono">0.700</td>
+      <td class="mono">0.397</td>
+      <td class="mono">14</td>
+      <td class="mono">0.857</td>
+    </tr>
+<tr>
+      <td class="mono">0.735</td>
+      <td class="mono">10</td>
+      <td class="mono">7</td>
+      <td class="mono">3</td>
+      <td class="mono">0.700</td>
+      <td class="mono">0.397</td>
+      <td class="mono">11</td>
+      <td class="mono">0.818</td>
+    </tr>
+<tr>
+      <td class="mono">0.740</td>
+      <td class="mono">7</td>
+      <td class="mono">5</td>
+      <td class="mono">2</td>
+      <td class="mono">0.714</td>
+      <td class="mono">0.359</td>
+      <td class="mono">10</td>
+      <td class="mono">0.800</td>
+    </tr>
+<tr>
+      <td class="mono">0.745</td>
+      <td class="mono">7</td>
+      <td class="mono">5</td>
+      <td class="mono">2</td>
+      <td class="mono">0.714</td>
+      <td class="mono">0.359</td>
+      <td class="mono">8</td>
+      <td class="mono">0.750</td>
+    </tr>
+<tr>
+      <td class="mono">0.750</td>
+      <td class="mono">7</td>
+      <td class="mono">5</td>
+      <td class="mono">2</td>
+      <td class="mono">0.714</td>
+      <td class="mono">0.359</td>
+      <td class="mono">6</td>
+      <td class="mono">1.000</td>
+    </tr>
+<tr>
+      <td class="mono">0.755</td>
+      <td class="mono">7</td>
+      <td class="mono">5</td>
+      <td class="mono">2</td>
+      <td class="mono">0.714</td>
+      <td class="mono">0.359</td>
+      <td class="mono">5</td>
+      <td class="mono">1.000</td>
+    </tr>
+<tr>
+      <td class="mono">0.760</td>
+      <td class="mono">5</td>
+      <td class="mono">4</td>
+      <td class="mono">1</td>
+      <td class="mono">0.800</td>
+      <td class="mono">0.376</td>
+      <td class="mono">3</td>
+      <td class="mono">1.000</td>
+    </tr>
+<tr>
+      <td class="mono">0.765</td>
+      <td class="mono">4</td>
+      <td class="mono">3</td>
+      <td class="mono">1</td>
+      <td class="mono">0.750</td>
+      <td class="mono">0.301</td>
+      <td class="mono">2</td>
+      <td class="mono">1.000</td>
+    </tr>
+<tr>
+      <td class="mono">0.770</td>
+      <td class="mono">3</td>
+      <td class="mono">2</td>
+      <td class="mono">1</td>
+      <td class="mono">0.667</td>
+      <td class="mono">0.208</td>
+      <td class="mono">2</td>
+      <td class="mono">1.000</td>
+    </tr>
+<tr>
+      <td class="mono">0.775</td>
+      <td class="mono">3</td>
+      <td class="mono">2</td>
+      <td class="mono">1</td>
+      <td class="mono">0.667</td>
+      <td class="mono">0.208</td>
+      <td class="mono">1</td>
+      <td class="mono">1.000</td>
+    </tr>
+<tr>
+      <td class="mono">0.780</td>
+      <td class="mono">2</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">1.000</td>
+      <td class="mono">0.342</td>
+      <td class="mono">0</td>
+      <td class="mono">—</td>
+    </tr>
+<tr>
+      <td class="mono">0.785</td>
+      <td class="mono">2</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">1.000</td>
+      <td class="mono">0.342</td>
+      <td class="mono">0</td>
+      <td class="mono">—</td>
+    </tr>
+<tr>
+      <td class="mono">0.790</td>
+      <td class="mono">2</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">1.000</td>
+      <td class="mono">0.342</td>
+      <td class="mono">0</td>
+      <td class="mono">—</td>
+    </tr>
+<tr>
+      <td class="mono">0.795</td>
+      <td class="mono">2</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">1.000</td>
+      <td class="mono">0.342</td>
+      <td class="mono">0</td>
+      <td class="mono">—</td>
+    </tr>
+<tr>
+      <td class="mono">0.800</td>
+      <td class="mono">0</td>
+      <td class="mono">0</td>
+      <td class="mono">0</td>
+      <td class="mono">—</td>
+      <td class="mono">—</td>
+      <td class="mono">0</td>
+      <td class="mono">—</td>
+    </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Full DOWN sweep (all rows)</h3>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>DN T</th><th>v9.3 n</th><th>W</th><th>L</th><th>v9.3 WR</th><th>v9.3 Wilson LB</th><th>v9.2 n @ T</th><th>v9.2 WR @ T</th>
+        </tr></thead>
+        <tbody>
+          <tr>
+      <td class="mono">0.200</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">2</td>
+      <td class="mono">0.000</td>
+      <td class="mono">0.000</td>
+      <td class="mono">5</td>
+      <td class="mono">0.600</td>
+    </tr>
+<tr>
+      <td class="mono">0.205</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">2</td>
+      <td class="mono">0.000</td>
+      <td class="mono">0.000</td>
+      <td class="mono">5</td>
+      <td class="mono">0.600</td>
+    </tr>
+<tr>
+      <td class="mono">0.210</td>
+      <td class="mono">2</td>
+      <td class="mono">0</td>
+      <td class="mono">2</td>
+      <td class="mono">0.000</td>
+      <td class="mono">0.000</td>
+      <td class="mono">6</td>
+      <td class="mono">0.667</td>
+    </tr>
+<tr>
+      <td class="mono">0.215</td>
+      <td class="mono">3</td>
+      <td class="mono">1</td>
+      <td class="mono">2</td>
+      <td class="mono">0.333</td>
+      <td class="mono">0.061</td>
+      <td class="mono">6</td>
+      <td class="mono">0.667</td>
+    </tr>
+<tr>
+      <td class="mono">0.220</td>
+      <td class="mono">4</td>
+      <td class="mono">2</td>
+      <td class="mono">2</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.150</td>
+      <td class="mono">6</td>
+      <td class="mono">0.667</td>
+    </tr>
+<tr>
+      <td class="mono">0.225</td>
+      <td class="mono">5</td>
+      <td class="mono">2</td>
+      <td class="mono">3</td>
+      <td class="mono">0.400</td>
+      <td class="mono">0.118</td>
+      <td class="mono">7</td>
+      <td class="mono">0.714</td>
+    </tr>
+<tr>
+      <td class="mono">0.230</td>
+      <td class="mono">6</td>
+      <td class="mono">2</td>
+      <td class="mono">4</td>
+      <td class="mono">0.333</td>
+      <td class="mono">0.097</td>
+      <td class="mono">8</td>
+      <td class="mono">0.750</td>
+    </tr>
+<tr>
+      <td class="mono">0.235</td>
+      <td class="mono">10</td>
+      <td class="mono">5</td>
+      <td class="mono">5</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.237</td>
+      <td class="mono">9</td>
+      <td class="mono">0.778</td>
+    </tr>
+<tr>
+      <td class="mono">0.240</td>
+      <td class="mono">21</td>
+      <td class="mono">10</td>
+      <td class="mono">11</td>
+      <td class="mono">0.476</td>
+      <td class="mono">0.283</td>
+      <td class="mono">10</td>
+      <td class="mono">0.800</td>
+    </tr>
+<tr>
+      <td class="mono">0.245</td>
+      <td class="mono">31</td>
+      <td class="mono">15</td>
+      <td class="mono">16</td>
+      <td class="mono">0.484</td>
+      <td class="mono">0.320</td>
+      <td class="mono">14</td>
+      <td class="mono">0.786</td>
+    </tr>
+<tr>
+      <td class="mono">0.250</td>
+      <td class="mono">34</td>
+      <td class="mono">17</td>
+      <td class="mono">17</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.341</td>
+      <td class="mono">19</td>
+      <td class="mono">0.632</td>
+    </tr>
+<tr>
+      <td class="mono">0.255</td>
+      <td class="mono">36</td>
+      <td class="mono">17</td>
+      <td class="mono">19</td>
+      <td class="mono">0.472</td>
+      <td class="mono">0.320</td>
+      <td class="mono">24</td>
+      <td class="mono">0.542</td>
+    </tr>
+<tr>
+      <td class="mono">0.260</td>
+      <td class="mono">39</td>
+      <td class="mono">20</td>
+      <td class="mono">19</td>
+      <td class="mono">0.513</td>
+      <td class="mono">0.362</td>
+      <td class="mono">37</td>
+      <td class="mono">0.459</td>
+    </tr>
+<tr>
+      <td class="mono">0.265</td>
+      <td class="mono">40</td>
+      <td class="mono">20</td>
+      <td class="mono">20</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.352</td>
+      <td class="mono">53</td>
+      <td class="mono">0.453</td>
+    </tr>
+<tr>
+      <td class="mono">0.270</td>
+      <td class="mono">41</td>
+      <td class="mono">20</td>
+      <td class="mono">21</td>
+      <td class="mono">0.488</td>
+      <td class="mono">0.343</td>
+      <td class="mono">55</td>
+      <td class="mono">0.455</td>
+    </tr>
+<tr>
+      <td class="mono">0.275</td>
+      <td class="mono">41</td>
+      <td class="mono">20</td>
+      <td class="mono">21</td>
+      <td class="mono">0.488</td>
+      <td class="mono">0.343</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.280</td>
+      <td class="mono">42</td>
+      <td class="mono">21</td>
+      <td class="mono">21</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.355</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.285</td>
+      <td class="mono">46</td>
+      <td class="mono">23</td>
+      <td class="mono">23</td>
+      <td class="mono">0.500</td>
+      <td class="mono">0.361</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.290</td>
+      <td class="mono">51</td>
+      <td class="mono">23</td>
+      <td class="mono">28</td>
+      <td class="mono">0.451</td>
+      <td class="mono">0.323</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.295</td>
+      <td class="mono">52</td>
+      <td class="mono">23</td>
+      <td class="mono">29</td>
+      <td class="mono">0.442</td>
+      <td class="mono">0.316</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.300</td>
+      <td class="mono">52</td>
+      <td class="mono">23</td>
+      <td class="mono">29</td>
+      <td class="mono">0.442</td>
+      <td class="mono">0.316</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.305</td>
+      <td class="mono">52</td>
+      <td class="mono">23</td>
+      <td class="mono">29</td>
+      <td class="mono">0.442</td>
+      <td class="mono">0.316</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.310</td>
+      <td class="mono">52</td>
+      <td class="mono">23</td>
+      <td class="mono">29</td>
+      <td class="mono">0.442</td>
+      <td class="mono">0.316</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.315</td>
+      <td class="mono">52</td>
+      <td class="mono">23</td>
+      <td class="mono">29</td>
+      <td class="mono">0.442</td>
+      <td class="mono">0.316</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.320</td>
+      <td class="mono">53</td>
+      <td class="mono">24</td>
+      <td class="mono">29</td>
+      <td class="mono">0.453</td>
+      <td class="mono">0.327</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.325</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.330</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.335</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.340</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.345</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.350</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.355</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.360</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.365</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.370</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.375</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.380</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.385</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.390</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.395</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.400</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.405</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.410</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.415</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.420</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.425</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.430</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.435</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.440</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.445</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.450</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.455</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.460</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.465</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.470</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.475</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.480</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.485</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.490</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.495</td>
+      <td class="mono">54</td>
+      <td class="mono">24</td>
+      <td class="mono">30</td>
+      <td class="mono">0.444</td>
+      <td class="mono">0.320</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+<tr>
+      <td class="mono">0.500</td>
+      <td class="mono">55</td>
+      <td class="mono">25</td>
+      <td class="mono">30</td>
+      <td class="mono">0.455</td>
+      <td class="mono">0.330</td>
+      <td class="mono">56</td>
+      <td class="mono">0.464</td>
+    </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="vs92">5. v9.3 vs v9.2 — same-window comparison</h2>
+    <p>
+      Crosstab of fire-direction (LIVE thresholds, UP 0.72 / DOWN 0.20) across all 56 resolved windows.
+      "NO" = neither side fired; "UP"/"DOWN" = the model crossed the corresponding threshold somewhere in the window.
+    </p>
+    <table>
+      <thead><tr>
+        <th>v9.2 says</th><th>v9.3 says</th><th>n windows</th><th>UP outcomes</th><th>DOWN outcomes</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+      <td class="mono">DOWN</td>
+      <td class="mono">NO</td>
+      <td class="mono">3</td>
+      <td class="mono">0</td>
+      <td class="mono">3</td>
+    </tr>
+<tr>
+      <td class="mono">NO</td>
+      <td class="mono">DOWN</td>
+      <td class="mono">1</td>
+      <td class="mono">1</td>
+      <td class="mono">0</td>
+    </tr>
+<tr>
+      <td class="mono">NO</td>
+      <td class="mono">NO</td>
+      <td class="mono">32</td>
+      <td class="mono">14</td>
+      <td class="mono">18</td>
+    </tr>
+<tr>
+      <td class="mono">NO</td>
+      <td class="mono">UP</td>
+      <td class="mono">4</td>
+      <td class="mono">1</td>
+      <td class="mono">3</td>
+    </tr>
+<tr>
+      <td class="mono">UP</td>
+      <td class="mono">DOWN</td>
+      <td class="mono">1</td>
+      <td class="mono">1</td>
+      <td class="mono">0</td>
+    </tr>
+<tr>
+      <td class="mono">UP</td>
+      <td class="mono">NO</td>
+      <td class="mono">9</td>
+      <td class="mono">7</td>
+      <td class="mono">2</td>
+    </tr>
+<tr>
+      <td class="mono">UP</td>
+      <td class="mono">UP</td>
+      <td class="mono">6</td>
+      <td class="mono">6</td>
+      <td class="mono">0</td>
+    </tr>
+
+      </tbody>
+    </table>
+    <p>
+      The crosstab shows that v9.2 and v9.3 mostly <em>silent together</em> (NO/NO = 32 windows). When v9.2 fires UP,
+      v9.3 mostly stays silent (9 cases out of 16 v9.2 UP fires — and 7 of those 9 still go UP, so v9.3's silence is a
+      false negative most of the time).
+    </p>
+    <div class="chart">
+      <div id="scatter-chart" style="height: 440px;"></div>
+    </div>
+
+    <h2 id="filter">6. Can v9.3 work as a filter on v9.2?</h2>
+    <p>
+      v9.2 BTC alone at p≥0.72 hits <strong>14/16 = 87.5% UP WR</strong>
+      in this 5h window. If we require BOTH models to fire (v9.2 ≥ 0.72 AND v9.3 ≥ 0.72), we get
+      <strong>6/6 = 100% UP WR</strong> — a clean filter, but n=6 fires in 5 hours is a low-throughput signal.
+      No v9.2 UP fire had v9.3 max below 0.5 (i.e. v9.3 never strongly disagrees with v9.2 UP), so v9.3 cannot be a
+      strong-veto filter at all — it can only be a same-direction confirm filter.
+    </p>
+    <div class="callout green">
+      <div class="callout-title">Filter mode: v9.3 as confirm signal on v9.2 UP @ 0.72</div>
+      <p style="margin:0;">
+        <strong>Confirm (both ≥ 0.72): 6 fires / 6 wins / 100% WR.</strong><br/>
+        <strong>v9.2-only (v9.3 disagrees by going below 0.72): 10 fires / 8 wins / 80% WR.</strong><br/>
+        Filtering loses 10 of 16 fires (62% throughput reduction) but the gained precision is genuine — 6/6 is not yet
+        statistically meaningful (Wilson LB 0.61) but if it holds over 24-48h more data it would be a candidate filter
+        signal. <em>That is the only honest "win" we can find for v9.3 BTC.</em>
+      </p>
+    </div>
+
+    <h2 id="headline">7. The headline question</h2>
+    <p>
+      <strong>Is there ANY winning operating point we missed?</strong> No — not as a standalone model. The 0.005-step
+      sweep across UP [0.50, 0.80] and DOWN [0.20, 0.50] covers every plausible cutpoint. At every cutpoint where v9.3 BTC
+      fires with n ≥ 10 windows, v9.2 BTC at the same threshold on the same hours produces a higher WR. The model is
+      <em>structurally dominated</em> by the LIVE baseline.
+    </p>
+    <p>
+      <strong>The only candidate "win" is filter mode</strong> — v9.3 confirming v9.2 UP fires lifts WR from 87.5% (14/16)
+      to 100% (6/6). This is potentially actionable but requires more data (n=6 is small). It will not be visible at the
+      planned tight thresholds (0.935/0.065) because v9.3 BTC's compressed output never reaches them.
+    </p>
+
+    <h2 id="recommendation">8. Recommendation</h2>
+    <div class="callout">
+      <div class="callout-title">What to do</div>
+      <p style="margin: 0 0 0.6rem 0;">
+        <strong>1.</strong> Keep <code>v9_3_btc_raw_lgb</code> and <code>v9_3_btc_tight</code> in GHOST. Do not promote.
+        The tight variant never fires; the raw variant is dominated by LIVE v9.2 BTC.
+      </p>
+      <p style="margin: 0 0 0.6rem 0;">
+        <strong>2.</strong> Do NOT spend more cycles retuning v9.3 BTC's threshold. The 0.005-step sweep is exhaustive
+        and the answer is "no cutpoint works as a standalone signal".
+      </p>
+      <p style="margin: 0 0 0.6rem 0;">
+        <strong>3.</strong> Track the filter-mode hypothesis. Add a derived signal <code>v9_2_AND_v9_3_btc_confirm</code>
+        in GHOST and let it accumulate fires for 24-48h. If it holds ≥90% WR with n ≥ 20, it becomes a candidate stack.
+      </p>
+      <p style="margin: 0 0 0.6rem 0;">
+        <strong>4.</strong> Address the upstream cause of v9.3's compressed output range — 15 features are NaN-filled at
+        training and serve time (binance_depth_*, clob_pre_*, vpin_60s_*, nested_5m_oi_delta_cumulative, gamma_*). A retrain
+        without those columns (or with their NaN policy fixed) is the right next step if we still want v9.3 BTC at all.
+      </p>
+      <p style="margin: 0;">
+        <strong>5.</strong> Don't worry: v9.2 BTC is doing its job. 17/21 (81.0%) at LIVE thresholds in this 5h window.
+        The GHOST mining was useful — it told us the new model isn't ready, before it could lose any real money.
+      </p>
+    </div>
+
+    <div class="footer">
+      Generated 2026-05-23 21:11 UTC · Investigator: claude-bg-agent · Data source: novakash RDS · Sweep CSV: <code>/tmp/live_emission_sweep_v9_3_btc.csv</code>
+    </div>
+
+  </div>
+
+  <script>
+    const D = {"up_ts": [0.5, 0.505, 0.51, 0.515, 0.52, 0.525, 0.53, 0.535, 0.54, 0.545, 0.55, 0.555, 0.56, 0.565, 0.57, 0.575, 0.58, 0.585, 0.59, 0.595, 0.6, 0.605, 0.61, 0.615, 0.62, 0.625, 0.63, 0.635, 0.64, 0.645, 0.65, 0.655, 0.66, 0.665, 0.67, 0.675, 0.68, 0.685, 0.69, 0.695, 0.7, 0.705, 0.71, 0.715, 0.72, 0.725, 0.73, 0.735, 0.74, 0.745, 0.75, 0.755, 0.76, 0.765, 0.77, 0.775, 0.78, 0.785, 0.79, 0.795, 0.8], "up_wr": [0.5357142857142857, 0.5357142857142857, 0.5357142857142857, 0.5357142857142857, 0.5357142857142857, 0.5357142857142857, 0.5272727272727272, 0.5272727272727272, 0.5272727272727272, 0.5272727272727272, 0.5272727272727272, 0.5283018867924528, 0.5283018867924528, 0.5192307692307693, 0.5192307692307693, 0.5192307692307693, 0.5192307692307693, 0.5192307692307693, 0.5192307692307693, 0.5294117647058824, 0.5294117647058824, 0.5294117647058824, 0.5208333333333334, 0.5106382978723404, 0.5217391304347826, 0.5111111111111111, 0.5111111111111111, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5555555555555556, 0.5, 0.5769230769230769, 0.5769230769230769, 0.5909090909090909, 0.6666666666666666, 0.6666666666666666, 0.6428571428571429, 0.7272727272727273, 0.7272727272727273, 0.7, 0.7, 0.7, 0.7, 0.7142857142857143, 0.7142857142857143, 0.7142857142857143, 0.7142857142857143, 0.8, 0.75, 0.6666666666666666, 0.6666666666666666, 1.0, 1.0, 1.0, 1.0, null], "up_wlb": [0.4070395665724008, 0.4070395665724008, 0.4070395665724008, 0.4070395665724008, 0.4070395665724008, 0.4070395665724008, 0.39791319071629383, 0.39791319071629383, 0.39791319071629383, 0.39791319071629383, 0.39791319071629383, 0.3965985230075645, 0.3965985230075645, 0.3868545397052721, 0.3868545397052721, 0.3868545397052721, 0.3868545397052721, 0.3868545397052721, 0.3868545397052721, 0.3952307134472659, 0.3952307134472659, 0.3952307134472659, 0.3832899563598438, 0.37242217589372884, 0.38137172148151327, 0.3700422432648975, 0.3700422432648975, 0.35831521095931473, 0.35831521095931473, 0.35831521095931473, 0.35831521095931473, 0.35831521095931473, 0.35831521095931473, 0.35831521095931473, 0.3958078731600341, 0.33153851227173764, 0.3894829692111983, 0.3894829692111983, 0.38734477382893806, 0.4374906934425036, 0.41713125151212976, 0.3876400468214042, 0.4343497069897537, 0.4343497069897537, 0.39677321997956516, 0.39677321997956516, 0.39677321997956516, 0.39677321997956516, 0.35892909014821267, 0.35892909014821267, 0.35892909014821267, 0.35892909014821267, 0.3755282641185388, 0.3006360524426366, 0.2076549551264879, 0.2076549551264879, 0.34237195288961925, 0.34237195288961925, 0.34237195288961925, 0.34237195288961925, null], "up_n": [56, 56, 56, 56, 56, 56, 55, 55, 55, 55, 55, 53, 53, 52, 52, 52, 52, 52, 52, 51, 51, 51, 48, 47, 46, 45, 45, 44, 44, 44, 44, 44, 44, 44, 36, 30, 26, 26, 22, 18, 15, 14, 11, 11, 10, 10, 10, 10, 7, 7, 7, 7, 5, 4, 3, 3, 2, 2, 2, 2, 0], "up_v92_thresh_wr": [0.6153846153846154, 0.6153846153846154, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.631578947368421, 0.6486486486486487, 0.6486486486486487, 0.6486486486486487, 0.6666666666666666, 0.6666666666666666, 0.6666666666666666, 0.6875, 0.6875, 0.6875, 0.6875, 0.6875, 0.6875, 0.7096774193548387, 0.7096774193548387, 0.7333333333333333, 0.7241379310344828, 0.8076923076923077, 0.8076923076923077, 0.8076923076923077, 0.8076923076923077, 0.8076923076923077, 0.7916666666666666, 0.8260869565217391, 0.8181818181818182, 0.8181818181818182, 0.85, 0.8421052631578947, 0.8823529411764706, 0.875, 0.8571428571428571, 0.8571428571428571, 0.8181818181818182, 0.8, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, null, null, null, null, null], "up_v92_thresh_n": [39, 39, 38, 38, 38, 38, 38, 38, 38, 38, 38, 38, 38, 38, 38, 38, 37, 37, 37, 36, 33, 33, 32, 32, 32, 32, 32, 32, 31, 31, 30, 29, 26, 26, 26, 26, 26, 24, 23, 22, 22, 20, 19, 17, 16, 14, 14, 11, 10, 8, 6, 5, 3, 2, 2, 1, 0, 0, 0, 0, 0], "dn_ts": [0.2, 0.205, 0.21, 0.215, 0.22, 0.225, 0.23, 0.235, 0.24, 0.245, 0.25, 0.255, 0.26, 0.265, 0.27, 0.275, 0.28, 0.285, 0.29, 0.295, 0.3, 0.305, 0.31, 0.315, 0.32, 0.325, 0.33, 0.335, 0.34, 0.345, 0.35, 0.355, 0.36, 0.365, 0.37, 0.375, 0.38, 0.385, 0.39, 0.395, 0.4, 0.405, 0.41, 0.415, 0.42, 0.425, 0.43, 0.435, 0.44, 0.445, 0.45, 0.455, 0.46, 0.465, 0.47, 0.475, 0.48, 0.485, 0.49, 0.495, 0.5], "dn_wr": [0.0, 0.0, 0.0, 0.3333333333333333, 0.5, 0.4, 0.3333333333333333, 0.5, 0.47619047619047616, 0.4838709677419355, 0.5, 0.4722222222222222, 0.5128205128205128, 0.5, 0.4878048780487805, 0.4878048780487805, 0.5, 0.5, 0.45098039215686275, 0.4423076923076923, 0.4423076923076923, 0.4423076923076923, 0.4423076923076923, 0.4423076923076923, 0.4528301886792453, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.4444444444444444, 0.45454545454545453], "dn_wlb": [0, 0, 0, 0.0614903152761605, 0.15003570882017148, 0.1176182311592533, 0.09676933255921683, 0.23658959361548731, 0.28343712296762946, 0.3196998603127883, 0.34069062628048985, 0.31985792907209337, 0.3619910864569657, 0.35199278797099753, 0.3425418723993569, 0.3425418723993569, 0.3552574591652803, 0.3611870167007236, 0.32267305011132247, 0.31594847188588093, 0.31594847188588093, 0.31594847188588093, 0.31594847188588093, 0.31594847188588093, 0.3265736816014746, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.3200225687559781, 0.33025071746446194], "dn_n": [2, 2, 2, 3, 4, 5, 6, 10, 21, 31, 34, 36, 39, 40, 41, 41, 42, 46, 51, 52, 52, 52, 52, 52, 53, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 54, 55], "scatter_v93": [0.7608298162619274, 0.777104047665836, 0.6937313253641129, 0.6698105531226237, 0.7980560958385468, 0.691899299621582, 0.6751970436658945, 0.6776417667627335, 0.667369862128361, 0.718453851285064, 0.6920369267463684, 0.7986512524084779, 0.6898268057244088, 0.667570029426678, 0.6067978527631845, 0.6692712204943736, 0.7369159857432048, 0.671979146695137, 0.6664042519818385, 0.7398993770281475, 0.6663570451031764, 0.6249683462843603, 0.7593185050623681, 0.6720718275970446, 0.5538438354730606, 0.5546090995073318, 0.7682299248579532, 0.687856801995286, 0.6735088061756122, 0.6718056099902232, 0.7377881152766015, 0.7055454576969147, 0.6986429542303085, 0.6961991935968399, 0.6880399666431933, 0.6953416466712952, 0.6749695625391092, 0.6944141387939453, 0.701434591063508, 0.7075474901335503, 0.6719076732794445, 0.5934765245233263, 0.6153824888930028, 0.6894595708932962, 0.6752392780250537, 0.6090588724287648, 0.7588484032290246, 0.6669584559689601, 0.7076875890254974, 0.6349338917415353, 0.6750957500404345, 0.6677791076193889, 0.6097386267271128, 0.6115682509031382, 0.5251592663584146, 0.5630584155321121], "scatter_v92": [0.7512463154850327, 0.7004682880385129, 0.6831738123957772, 0.7335997023872369, 0.7789004059636913, 0.4023308060765217, 0.7486339514762415, 0.6363390970342677, 0.47199950696648046, 0.762805988706394, 0.7453958420280729, 0.7722243746048756, 0.5082391545663899, 0.6594754391785063, 0.6569279981762886, 0.6575778541209708, 0.2633964483611857, 0.7122472545375482, 0.44515575725816253, 0.7316960956047884, 0.4414052927006985, 0.755651220987039, 0.7125537625599973, 0.596519809981688, 0.48022667017857856, 0.43858846287735803, 0.7400148507879238, 0.6459765704747841, 0.6535217459146256, 0.7335044599131813, 0.7206385110379225, 0.5976511589389948, 0.2685380661781388, 0.6939283795581239, 0.6804716698714228, 0.6094430722244484, 0.722748184446157, 0.46878779922518954, 0.7385639585581518, 0.5980318619477422, 0.3052514385179453, 0.5791914553434573, 0.40045112735009486, 0.7569556836880538, 0.2692268667432486, 0.7186230605410422, 0.7039564756441596, 0.7083243189557686, 0.6854542605762701, 0.7417673882610973, 0.5935649079346804, 0.42879146467282697, 0.2706875628554182, 0.2622233247421148, 0.4290269758916808, 0.4284684770957398], "scatter_color": ["UP", "DOWN", "UP", "UP", "UP", "DOWN", "DOWN", "DOWN", "DOWN", "UP", "DOWN", "UP", "DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "UP", "DOWN", "UP", "DOWN", "UP", "DOWN", "UP", "DOWN", "UP", "UP", "DOWN", "UP", "UP", "UP", "UP", "UP", "UP", "UP", "DOWN", "UP", "DOWN", "UP", "DOWN", "DOWN", "DOWN", "DOWN", "UP", "DOWN", "UP", "UP", "UP", "DOWN", "UP", "DOWN", "DOWN", "UP", "UP", "UP", "UP"]};
+
+    // UP sweep: WR + Wilson LB vs threshold, with v9.2 overlay and n-fired bars
+    Plotly.newPlot('sweep-chart', [
+      { x: D.up_ts, y: D.up_wr, mode: 'lines+markers', name: 'v9.3 WR (per-window)', line: { color: '#22D3EE', width: 2 } },
+      { x: D.up_ts, y: D.up_wlb, mode: 'lines', name: 'v9.3 Wilson LB (95%)', line: { color: '#22D3EE', width: 1, dash: 'dot' } },
+      { x: D.up_ts, y: D.up_v92_thresh_wr, mode: 'lines+markers', name: 'v9.2 WR @ same threshold', line: { color: '#34D399', width: 2 } },
+      { x: D.up_ts, y: D.up_n, name: 'v9.3 windows fired (right axis)', yaxis: 'y2', type: 'bar', marker: { color: 'rgba(245,158,11,0.3)' } },
+    ], {
+      title: { text: 'UP-side sweep: WR vs threshold (v9.3 vs v9.2 BTC)', font: { color: '#F5F3F0', family: 'IBM Plex Sans', size: 14 } },
+      paper_bgcolor: '#161620', plot_bgcolor: '#161620',
+      font: { color: '#B8B3AB', family: 'IBM Plex Sans' },
+      xaxis: { title: 'UP threshold', gridcolor: 'rgba(255,255,255,0.04)' },
+      yaxis: { title: 'Win rate', range: [0, 1.05], gridcolor: 'rgba(255,255,255,0.04)' },
+      yaxis2: { title: 'n windows', overlaying: 'y', side: 'right', gridcolor: 'rgba(255,255,255,0.02)', range: [0, 60] },
+      legend: { x: 0.02, y: 0.98 },
+      margin: { l: 60, r: 60, t: 50, b: 50 }
+    }, { displayModeBar: false });
+
+    Plotly.newPlot('dn-sweep-chart', [
+      { x: D.dn_ts, y: D.dn_wr, mode: 'lines+markers', name: 'v9.3 DOWN WR', line: { color: '#EC4899', width: 2 } },
+      { x: D.dn_ts, y: D.dn_wlb, mode: 'lines', name: 'v9.3 Wilson LB', line: { color: '#EC4899', width: 1, dash: 'dot' } },
+      { x: D.dn_ts, y: D.dn_n, name: 'v9.3 windows fired', yaxis: 'y2', type: 'bar', marker: { color: 'rgba(245,158,11,0.25)' } },
+    ], {
+      title: { text: 'DOWN-side sweep: WR vs threshold (DOWN-fire = v9.3 min ≤ T, resolved DOWN = win)', font: { color: '#F5F3F0', family: 'IBM Plex Sans', size: 14 } },
+      paper_bgcolor: '#161620', plot_bgcolor: '#161620',
+      font: { color: '#B8B3AB', family: 'IBM Plex Sans' },
+      xaxis: { title: 'DOWN threshold', gridcolor: 'rgba(255,255,255,0.04)' },
+      yaxis: { title: 'Win rate', range: [0, 1.05], gridcolor: 'rgba(255,255,255,0.04)' },
+      yaxis2: { title: 'n windows', overlaying: 'y', side: 'right', range: [0, 60] },
+      legend: { x: 0.02, y: 0.98 },
+      margin: { l: 60, r: 60, t: 50, b: 50 }
+    }, { displayModeBar: false });
+
+    // Scatter: v9.3 max vs v9.2 max colored by outcome
+    const upPts = D.scatter_v93.map((p, i) => ({p93: p, p92: D.scatter_v92[i], color: D.scatter_color[i]}));
+    Plotly.newPlot('scatter-chart', [
+      { x: upPts.filter(p => p.color==='UP').map(p=>p.p93), y: upPts.filter(p => p.color==='UP').map(p=>p.p92), 
+         mode: 'markers', type: 'scatter', name: 'Outcome UP', marker: { color: '#34D399', size: 9, opacity: 0.75, line: {color: '#10B981', width: 1} } },
+      { x: upPts.filter(p => p.color==='DOWN').map(p=>p.p93), y: upPts.filter(p => p.color==='DOWN').map(p=>p.p92), 
+         mode: 'markers', type: 'scatter', name: 'Outcome DOWN', marker: { color: '#EF4444', size: 9, opacity: 0.75, line: {color: '#DC2626', width: 1} } },
+      { x: [0,1], y: [0,1], mode: 'lines', type: 'scatter', name: 'y=x', line: { color: 'rgba(255,255,255,0.2)', dash: 'dot' } },
+      { x: [0.72, 0.72], y: [0,1], mode: 'lines', type: 'scatter', name: 'v9.3 UP @ 0.72', line: { color: 'rgba(34,211,238,0.4)', dash: 'dash' }, showlegend: false },
+      { x: [0,1], y: [0.72, 0.72], mode: 'lines', type: 'scatter', name: 'v9.2 UP @ 0.72', line: { color: 'rgba(52,211,153,0.4)', dash: 'dash' }, showlegend: false },
+    ], {
+      title: { text: 'v9.3 max prob vs v9.2 max prob per window (colored by outcome)', font: { color: '#F5F3F0', family: 'IBM Plex Sans', size: 14 } },
+      paper_bgcolor: '#161620', plot_bgcolor: '#161620',
+      font: { color: '#B8B3AB', family: 'IBM Plex Sans' },
+      xaxis: { title: 'v9.3 BTC max prob', range: [0, 1], gridcolor: 'rgba(255,255,255,0.04)' },
+      yaxis: { title: 'v9.2 BTC max prob', range: [0, 1], gridcolor: 'rgba(255,255,255,0.04)' },
+      legend: { x: 0.02, y: 0.98 },
+      margin: { l: 60, r: 30, t: 50, b: 50 }
+    }, { displayModeBar: false });
+  </script>
+</body>
+</html>

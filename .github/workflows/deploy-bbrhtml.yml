@@ -1,0 +1,109 @@
+name: Deploy bbrhtml index to AWS
+
+# Builds the bbrhtml.billyrichards.com static index (reports + recent merged
+# PRs) and ships it to /var/www/bbrhtml on the AWS frontend host. Idempotent —
+# safe to re-run manually any time the PR list / reports change.
+#
+# Security note: this workflow consumes only `secrets.*` values (trusted) and
+# repo-controlled files. No `github.event.*` user-controlled inputs are
+# interpolated into shell — all secret values are passed via env: + "$VAR"
+# quoting (never via ${{ }} expansion inside run blocks).
+#
+# Requires GH secrets:
+#   - AWS_FRONTEND_HOST          (shared with deploy-frontend.yml)
+#   - AWS_FRONTEND_SSH_KEY       (shared with deploy-frontend.yml)
+#   - BBRHTML_BASIC_AUTH         ("user:hashed" htpasswd line)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'bbrhtml-bootstrap/**'
+      - 'frontend/nginx.conf'
+      - '.github/workflows/deploy-bbrhtml.yml'
+  schedule:
+    # Refresh the PR list every 30 minutes so the page never goes stale.
+    - cron: '*/30 * * * *'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate index.html + bundle reports
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 bbrhtml-bootstrap/scripts/generate_index.py \
+            --reports bbrhtml-bootstrap/reports \
+            --output /tmp/bbrhtml-out \
+            --repo billybrichards/novakash \
+            --pr-limit 20
+          ls -la /tmp/bbrhtml-out
+          du -sh /tmp/bbrhtml-out
+
+      - name: Package payload
+        run: tar czf /tmp/bbrhtml.tar.gz -C /tmp/bbrhtml-out .
+
+      - name: Deploy to AWS frontend host
+        env:
+          SSH_KEY: ${{ secrets.AWS_FRONTEND_SSH_KEY }}
+          HOST: ${{ secrets.AWS_FRONTEND_HOST }}
+          BASIC_AUTH: ${{ secrets.BBRHTML_BASIC_AUTH }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          scp -i ~/.ssh/deploy_key /tmp/bbrhtml.tar.gz "ubuntu@${HOST}:/tmp/bbrhtml.tar.gz"
+          scp -i ~/.ssh/deploy_key frontend/nginx.conf "ubuntu@${HOST}:/tmp/nginx-frontend.conf"
+
+          # Ship the .htpasswd line via stdin so it never lands on the
+          # runner filesystem in plaintext beyond the heredoc.
+          printf '%s\n' "$BASIC_AUTH" | ssh -i ~/.ssh/deploy_key "ubuntu@${HOST}" \
+            "sudo tee /etc/nginx/.htpasswd_bbrhtml >/dev/null && sudo chmod 640 /etc/nginx/.htpasswd_bbrhtml && sudo chown root:www-data /etc/nginx/.htpasswd_bbrhtml"
+
+          ssh -i ~/.ssh/deploy_key "ubuntu@${HOST}" bash -s <<'BBRHTML_EOF'
+          set -euo pipefail
+
+          sudo mkdir -p /var/www/bbrhtml
+          # Wipe + repopulate. Reports dir is small (~1MB) so full replace is fine.
+          sudo rm -rf /var/www/bbrhtml/*
+          sudo tar xzf /tmp/bbrhtml.tar.gz -C /var/www/bbrhtml
+          sudo chown -R www-data:www-data /var/www/bbrhtml
+
+          # Install the frontend nginx.conf (which now also contains the
+          # bbrhtml server block — see frontend/nginx.conf in repo). Mirror
+          # the safety semantics of deploy-frontend.yml: single file in
+          # sites-enabled, none in conf.d.
+          sudo rm -f /etc/nginx/sites-enabled/*
+          sudo rm -f /etc/nginx/conf.d/*.conf
+          sudo cp /tmp/nginx-frontend.conf /etc/nginx/sites-enabled/default
+
+          sudo nginx -t
+          sudo systemctl reload nginx
+
+          echo "=== sites-enabled ==="
+          sudo ls -la /etc/nginx/sites-enabled/
+          echo "=== server_names active ==="
+          sudo nginx -T 2>/dev/null | grep -E "server_name" | head
+          echo "=== /var/www/bbrhtml ==="
+          sudo ls -la /var/www/bbrhtml | head -20
+
+          rm /tmp/bbrhtml.tar.gz /tmp/nginx-frontend.conf
+          BBRHTML_EOF
+
+          echo "Deployed to host (Host header: bbrhtml.billyrichards.com)"

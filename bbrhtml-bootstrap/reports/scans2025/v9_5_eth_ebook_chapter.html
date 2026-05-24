@@ -1,0 +1,2877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 13 — Building v9.5 ETH</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+  <style>
+    /* ─── design tokens ────────────────────────────────────────────── */
+    :root {
+      --bg-deep: #0A0A0F;
+      --bg-surface: #14141C;
+      --bg-elevated: #1C1C28;
+      --bg-overlay: rgba(255, 255, 255, 0.025);
+
+      --text-primary: #F5F3F0;
+      --text-secondary: #B8B3AB;
+      --text-tertiary: #7A7268;
+      --text-muted: #4A4540;
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+
+      --violet: #A78BFA;
+      --violet-dim: rgba(167, 139, 250, 0.15);
+      --green: #34D399;
+      --green-dim: rgba(52, 211, 153, 0.15);
+      --cyan: #22D3EE;
+      --cyan-dim: rgba(34, 211, 238, 0.15);
+      --amber: #FBBF24;
+      --amber-dim: rgba(251, 191, 36, 0.15);
+      --pink: #F472B6;
+      --pink-dim: rgba(244, 114, 182, 0.15);
+      --red: #F87171;
+      --red-dim: rgba(248, 113, 113, 0.15);
+
+      --font-display: "Instrument Serif", "Times New Roman", serif;
+      --font-body: "Manrope", -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: "JetBrains Mono", "Courier New", monospace;
+
+      --content-max: 84rem;
+      --reading-max: 44rem;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; font-size: 16px; -webkit-font-smoothing: antialiased; }
+    body {
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-weight: 400;
+      line-height: 1.65;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(167, 139, 250, 0.10) 0%, transparent 50%),
+        radial-gradient(ellipse 60% 40% at 90% 30%, rgba(52, 211, 153, 0.05) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 10% 60%, rgba(34, 211, 238, 0.04) 0%, transparent 60%);
+      background-attachment: fixed;
+    }
+    ::selection { background: var(--violet); color: var(--bg-deep); }
+
+    /* reading progress bar */
+    .reading-progress {
+      position: fixed;
+      top: 0; left: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--violet), var(--cyan), var(--green));
+      z-index: 100;
+      width: 0;
+      transition: width 0.12s ease-out;
+    }
+
+    /* floating side nav */
+    .side-nav {
+      position: fixed;
+      left: 1.5rem;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .side-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 0.3rem 0.6rem;
+      border-left: 1px solid var(--border-subtle);
+      transition: color 0.2s, border-color 0.2s, padding-left 0.2s;
+      display: block;
+      white-space: nowrap;
+    }
+    .side-nav a:hover, .side-nav a.active {
+      color: var(--text-primary);
+      border-left-color: var(--violet);
+      padding-left: 0.9rem;
+    }
+    @media (max-width: 1200px) { .side-nav { display: none; } }
+
+    /* layout primitives */
+    .container { max-width: var(--content-max); margin: 0 auto; padding: 0 1.5rem; }
+    .reading { max-width: var(--reading-max); margin: 0 auto; }
+    section { padding: 6rem 0; position: relative; }
+    section + section { border-top: 1px solid var(--border-subtle); }
+    @media (min-width: 720px) { section { padding: 8rem 0; } }
+
+    /* section ornaments */
+    .kicker {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 1.25rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .kicker::before {
+      content: '';
+      display: inline-block;
+      width: 1.5rem;
+      height: 1px;
+      background: var(--text-tertiary);
+    }
+
+    /* typography */
+    h1, h2, h3 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      line-height: 1.05;
+    }
+    h2 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      margin-bottom: 1rem;
+    }
+    h2 em { color: var(--violet); font-style: italic; }
+    h3 {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      margin: 2.5rem 0 0.75rem;
+    }
+    p { margin-bottom: 1.1rem; color: var(--text-secondary); }
+    p strong { color: var(--text-primary); font-weight: 500; }
+    p em { color: var(--text-primary); font-style: italic; font-family: var(--font-display); }
+    a {
+      color: var(--cyan);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(34, 211, 238, 0.35);
+      transition: border-color 0.2s;
+    }
+    a:hover { border-bottom-color: var(--cyan); }
+
+    /* ─── HERO ─────────────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 4rem 1.5rem 8rem;
+      position: relative;
+    }
+    .hero-grid { max-width: var(--content-max); margin: 0 auto; width: 100%; }
+    .hero-kicker {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      display: block;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s 0.1s both;
+    }
+    .hero-kicker span:first-child { color: var(--violet); margin-right: 1rem; }
+    .hero-title {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: clamp(3.5rem, 12vw, 9rem);
+      line-height: 0.92;
+      letter-spacing: -0.035em;
+      margin-bottom: 2.5rem;
+      animation: fadeInUp 0.8s 0.25s both;
+    }
+    .hero-title em {
+      color: var(--violet);
+      font-style: italic;
+      display: inline-block;
+      background: linear-gradient(135deg, var(--violet) 0%, var(--cyan) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: gradShift 8s ease infinite;
+      background-size: 200% 200%;
+    }
+    @keyframes gradShift {
+      0%, 100% { background-position: 0% 0%; }
+      50% { background-position: 100% 100%; }
+    }
+    .hero-sub {
+      font-size: clamp(1.1rem, 2vw, 1.4rem);
+      line-height: 1.5;
+      max-width: 48rem;
+      color: var(--text-primary);
+      margin-bottom: 2.5rem;
+      font-weight: 300;
+      animation: fadeInUp 0.8s 0.4s both;
+    }
+    .hero-promise {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: var(--text-tertiary);
+      max-width: 42rem;
+      padding-left: 1rem;
+      border-left: 2px solid var(--violet);
+      animation: fadeInUp 0.8s 0.55s both;
+    }
+    .hero-scroll {
+      position: absolute;
+      bottom: 3rem;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      animation: bob 2.5s ease-in-out infinite;
+    }
+    @keyframes bob {
+      0%, 100% { transform: translate(-50%, 0); opacity: 0.6; }
+      50% { transform: translate(-50%, 8px); opacity: 1; }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* hero meta tags */
+    .hero-meta {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-top: 3rem;
+      animation: fadeInUp 0.8s 0.7s both;
+    }
+    .hero-meta-item {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .hero-meta-item strong {
+      display: block;
+      color: var(--text-primary);
+      font-size: 1.4rem;
+      font-weight: 500;
+      margin-top: 0.25rem;
+      font-family: var(--font-display);
+      letter-spacing: -0.01em;
+      text-transform: none;
+    }
+
+    /* ─── backstory ──────────────────────────────────────────────── */
+    .backstory-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      margin-top: 4rem;
+    }
+    @media (min-width: 980px) {
+      .backstory-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .moment {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.3s, border-color 0.3s;
+    }
+    .moment:hover { transform: translateY(-4px); border-color: var(--border-strong); }
+    .moment-time {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.75rem;
+    }
+    .moment-head {
+      font-family: var(--font-display);
+      font-size: 1.7rem;
+      line-height: 1.15;
+      margin-bottom: 1rem;
+      letter-spacing: -0.01em;
+    }
+    .moment-body { font-size: 0.95rem; line-height: 1.6; color: var(--text-secondary); }
+    .moment-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      margin-top: 1.25rem;
+    }
+    .moment[data-mood="bad"] .moment-tag { background: var(--red-dim); color: var(--red); }
+    .moment[data-mood="good"] .moment-tag { background: var(--green-dim); color: var(--green); }
+    .moment[data-mood="next"] .moment-tag { background: var(--violet-dim); color: var(--violet); }
+    .moment[data-mood="bad"] { border-left: 3px solid var(--red); }
+    .moment[data-mood="good"] { border-left: 3px solid var(--green); }
+    .moment[data-mood="next"] { border-left: 3px solid var(--violet); }
+
+    /* ─── lightgbm section ──────────────────────────────────────── */
+    .lgb-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 3rem;
+      margin-top: 3.5rem;
+      align-items: start;
+    }
+    @media (min-width: 980px) {
+      .lgb-grid { grid-template-columns: 1.05fr 1fr; gap: 4rem; }
+    }
+    .lgb-svg-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+      position: sticky;
+      top: 2rem;
+    }
+    .lgb-svg-wrap svg { width: 100%; height: auto; display: block; }
+    .lgb-svg-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 1rem;
+      text-align: center;
+    }
+    .lgb-text h3 { margin-top: 0; }
+    .lgb-text h3:not(:first-child) { margin-top: 3rem; }
+    .lgb-text p { font-size: 1rem; }
+    .lgb-bullets {
+      list-style: none;
+      margin: 1.5rem 0 0;
+      padding: 0;
+    }
+    .lgb-bullets li {
+      padding: 0.75rem 0 0.75rem 2rem;
+      position: relative;
+      color: var(--text-secondary);
+      border-top: 1px solid var(--border-subtle);
+    }
+    .lgb-bullets li::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 1.15rem;
+      width: 12px;
+      height: 1px;
+      background: var(--violet);
+    }
+    .lgb-bullets li strong {
+      color: var(--text-primary);
+      font-weight: 600;
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 0.2rem;
+    }
+
+    /* ─── feature importance chart ─────────────────────────────── */
+    .chart-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.5rem;
+      margin: 3rem 0;
+      overflow: hidden;
+    }
+    .chart-title {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin-bottom: 0.5rem;
+      padding-left: 0.5rem;
+    }
+    .chart-sub {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-tertiary);
+      margin-bottom: 1rem;
+      padding-left: 0.5rem;
+    }
+    .plotly-host { width: 100%; }
+
+    .category-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+      margin-top: 3rem;
+    }
+    @media (min-width: 720px) {
+      .category-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (min-width: 980px) {
+      .category-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .cat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      padding: 1.5rem;
+    }
+    .cat-head {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .cat-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .cat-name {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+    .cat-count {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-tertiary);
+      margin-left: auto;
+    }
+    .cat-body { font-size: 0.85rem; line-height: 1.55; color: var(--text-secondary); }
+
+    /* ─── probability crossing section ─────────────────────────── */
+    .crossing-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      margin: 3rem 0;
+    }
+    @media (min-width: 880px) {
+      .crossing-grid { grid-template-columns: 1fr 1fr; }
+    }
+    .crossing-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+    }
+    .crossing-panel[data-type="convinced"] { border-top: 3px solid var(--green); }
+    .crossing-panel[data-type="oscillating"] { border-top: 3px solid var(--amber); }
+    .crossing-panel h4 {
+      font-family: var(--font-display);
+      font-size: 1.6rem;
+      line-height: 1.1;
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.01em;
+    }
+    .crossing-panel-meta {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      margin-bottom: 1.25rem;
+    }
+    .crossing-svg { width: 100%; height: 180px; display: block; margin: 1rem 0; }
+    .crossing-stats {
+      display: flex;
+      gap: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+    }
+    .crossing-stats span { color: var(--text-tertiary); }
+    .crossing-stats strong { color: var(--text-primary); font-weight: 500; font-size: 0.95rem; }
+
+    /* educational callout */
+    .callout {
+      background: linear-gradient(135deg, var(--violet-dim) 0%, transparent 100%);
+      border-left: 3px solid var(--violet);
+      border-radius: 14px;
+      padding: 1.5rem 2rem;
+      margin: 2.5rem 0;
+    }
+    .callout-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--violet);
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+    }
+    .callout p { color: var(--text-primary); font-size: 1rem; margin: 0; }
+    .callout p em { font-family: var(--font-display); color: var(--violet); font-style: italic; }
+
+    /* ─── code block ──────────────────────────────────────────── */
+    .code-block {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      margin: 1.5rem 0;
+      position: relative;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-primary);
+      overflow-x: auto;
+    }
+    .code-block pre { white-space: pre; font-family: inherit; color: inherit; }
+    .code-lang {
+      position: absolute;
+      top: 0.75rem;
+      right: 1rem;
+      font-size: 0.62rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+    .code-block.with-copy { padding-top: 2.5rem; }
+
+    /* prompt block (bigger, copy-able) */
+    .prompt-block {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      margin: 1.75rem 0;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+    .prompt-block:hover { border-color: var(--border-strong); }
+    .prompt-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-elevated);
+    }
+    .prompt-num {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--violet);
+    }
+    .prompt-title {
+      font-family: var(--font-display);
+      font-size: 1.2rem;
+      letter-spacing: -0.005em;
+      flex: 1;
+      margin-left: 1rem;
+    }
+    .copy-btn {
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.4rem 0.85rem;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .copy-btn:hover { color: var(--text-primary); border-color: var(--violet); }
+    .copy-btn.copied { color: var(--green); border-color: var(--green); }
+    .prompt-body {
+      padding: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      line-height: 1.7;
+      color: var(--text-primary);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-x: auto;
+    }
+
+    /* ─── walk-forward section ──────────────────────────────────── */
+    .wf-compare {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      margin: 3rem 0;
+    }
+    @media (min-width: 880px) {
+      .wf-compare { grid-template-columns: 1fr 1fr; gap: 3rem; }
+    }
+    .wf-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+    }
+    .wf-card[data-old="true"] { opacity: 0.85; }
+    .wf-card-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.5rem;
+    }
+    .wf-card[data-old="true"] .wf-card-label { color: var(--amber); }
+    .wf-card[data-new="true"] .wf-card-label { color: var(--green); }
+    .wf-card h4 {
+      font-family: var(--font-display);
+      font-size: 1.7rem;
+      line-height: 1.1;
+      margin-bottom: 1rem;
+    }
+    .wf-svg { width: 100%; height: 280px; display: block; margin: 1.5rem 0; }
+    .wf-quote {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: 1.05rem;
+      line-height: 1.5;
+      padding-left: 1rem;
+      border-left: 2px solid var(--border-strong);
+      color: var(--text-secondary);
+      margin-top: 1.5rem;
+    }
+    .wf-card[data-new="true"] .wf-quote { border-left-color: var(--green); color: var(--text-primary); }
+
+    /* ─── threshold cliff section ───────────────────────────────── */
+    .cliff-charts {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      margin: 3rem 0;
+    }
+    @media (min-width: 980px) {
+      .cliff-charts { grid-template-columns: 1fr 1fr; }
+    }
+    .cliff-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.5rem;
+    }
+    .cliff-panel-title {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      margin-bottom: 0.5rem;
+    }
+    .cliff-panel-sub {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-tertiary);
+      margin-bottom: 1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    /* ─── stats section ─────────────────────────────────────────── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      margin: 3rem 0;
+    }
+    @media (min-width: 880px) {
+      .stats-grid { grid-template-columns: 1fr 1fr; }
+    }
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+    }
+    .stat-card h4 {
+      font-family: var(--font-display);
+      font-size: 1.5rem;
+      line-height: 1.15;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.01em;
+    }
+    .stat-card p { font-size: 0.95rem; }
+
+    /* interactive sample-size calc */
+    .calc {
+      background: var(--bg-elevated);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-top: 1.5rem;
+    }
+    .calc-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1rem;
+    }
+    .calc-row label {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      flex: 0 0 9rem;
+    }
+    .calc-row input[type="range"] {
+      flex: 1;
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      background: var(--bg-deep);
+      border-radius: 999px;
+      outline: none;
+    }
+    .calc-row input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--violet);
+      cursor: pointer;
+      border: 2px solid var(--bg-deep);
+    }
+    .calc-row input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--violet);
+      cursor: pointer;
+      border: 2px solid var(--bg-deep);
+    }
+    .calc-row .calc-val {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--text-primary);
+      min-width: 4rem;
+      text-align: right;
+    }
+    .calc-result {
+      font-family: var(--font-display);
+      font-size: 2.5rem;
+      line-height: 1;
+      color: var(--green);
+      margin: 1.5rem 0 0.5rem;
+      letter-spacing: -0.02em;
+    }
+    .calc-result-label {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+    .reliability-svg { width: 100%; height: 240px; display: block; margin-top: 1.5rem; }
+
+    /* ─── what failed matrix ─────────────────────────────────────── */
+    .matrix-wrap {
+      margin: 3rem 0;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+      overflow-x: auto;
+    }
+    .matrix {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 0.88rem;
+      min-width: 720px;
+    }
+    .matrix th, .matrix td {
+      padding: 0.85rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .matrix th {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border-strong);
+    }
+    .matrix td.experiment {
+      font-family: var(--font-display);
+      font-size: 1.1rem;
+      color: var(--text-primary);
+    }
+    .matrix td .matrix-num {
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      color: var(--text-primary);
+    }
+    .matrix td .matrix-delta {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      display: block;
+      margin-top: 0.15rem;
+    }
+    .matrix tr[data-verdict="ship"] td.verdict {
+      color: var(--green); font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+    }
+    .matrix tr[data-verdict="fail"] td.verdict {
+      color: var(--red); font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+    }
+    .matrix tr[data-verdict="catastrophic"] td.verdict {
+      color: var(--pink); font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+    }
+    .matrix-delta.bad { color: var(--red); }
+    .matrix-delta.good { color: var(--green); }
+    .matrix-delta.neutral { color: var(--text-tertiary); }
+
+    /* ─── three signal sources diagram ─────────────────────────── */
+    .rings-wrap {
+      display: flex;
+      justify-content: center;
+      margin: 4rem 0;
+    }
+    .rings-svg { max-width: 100%; width: 720px; height: 720px; }
+    @media (max-width: 720px) { .rings-svg { width: 100%; height: auto; aspect-ratio: 1; } }
+    .ring-rotate { transform-origin: center; }
+    .signal-legend {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    @media (min-width: 880px) {
+      .signal-legend { grid-template-columns: repeat(3, 1fr); }
+    }
+    .sig-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      padding: 1.5rem;
+    }
+    .sig-card[data-ring="microstructure"] { border-top: 3px solid var(--cyan); }
+    .sig-card[data-ring="oracle"] { border-top: 3px solid var(--violet); }
+    .sig-card[data-ring="sentiment"] { border-top: 3px solid var(--green); }
+    .sig-card-head {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.5rem;
+    }
+    .sig-card h4 {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      margin-bottom: 0.5rem;
+    }
+    .sig-card ul {
+      list-style: none;
+      margin-top: 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+    }
+    .sig-card ul li { padding: 0.35rem 0; color: var(--text-secondary); border-top: 1px dashed var(--border-subtle); }
+    .sig-card ul li:first-child { border-top: none; }
+
+    /* ─── workstream timeline ───────────────────────────────────── */
+    .timeline-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+      margin: 3rem 0;
+      overflow-x: auto;
+    }
+    .timeline-svg {
+      width: 100%;
+      min-width: 720px;
+      height: 420px;
+    }
+    .timeline-legend {
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-top: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+    .timeline-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--text-secondary);
+    }
+    .timeline-legend span::before {
+      content: '';
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: var(--swatch);
+    }
+
+    /* ─── data collection columns ───────────────────────────────── */
+    .data-cols {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2rem;
+      margin: 3rem 0;
+    }
+    @media (min-width: 880px) {
+      .data-cols { grid-template-columns: 1fr 1fr; gap: 3rem; }
+    }
+    .data-col {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 2rem;
+    }
+    .data-col[data-need="false"] { border-top: 3px solid var(--green); }
+    .data-col[data-need="true"] { border-top: 3px solid var(--amber); }
+    .data-col h4 {
+      font-family: var(--font-display);
+      font-size: 1.6rem;
+      margin-bottom: 1.5rem;
+    }
+    .data-row {
+      display: grid;
+      grid-template-columns: 4rem 1fr;
+      gap: 1rem;
+      padding: 0.85rem 0;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .data-row:first-of-type { border-top: none; }
+    .data-row-tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      font-weight: 600;
+    }
+    .data-row-body { font-size: 0.92rem; color: var(--text-secondary); }
+    .data-row-body strong { color: var(--text-primary); display: block; margin-bottom: 0.15rem; }
+
+    /* ─── final section ─────────────────────────────────────────── */
+    .final-wrap { text-align: center; max-width: 50rem; margin: 0 auto; }
+    .final-quote {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: clamp(1.6rem, 3.5vw, 2.6rem);
+      line-height: 1.25;
+      color: var(--text-primary);
+      letter-spacing: -0.01em;
+      margin: 3rem 0;
+    }
+    .final-quote span { color: var(--violet); }
+    .next-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+      margin: 3rem 0;
+      text-align: left;
+    }
+    @media (min-width: 720px) {
+      .next-list { grid-template-columns: repeat(3, 1fr); }
+    }
+    .next-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      padding: 1.5rem;
+    }
+    .next-item-num {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: 2.2rem;
+      color: var(--violet);
+      line-height: 1;
+      margin-bottom: 0.75rem;
+    }
+    .next-item h5 {
+      font-family: var(--font-display);
+      font-size: 1.15rem;
+      margin-bottom: 0.4rem;
+      font-weight: 400;
+    }
+    .next-item p { font-size: 0.85rem; margin: 0; }
+
+    footer.chapter-footer {
+      text-align: center;
+      padding: 3rem 1.5rem 6rem;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      letter-spacing: 0.1em;
+    }
+    footer.chapter-footer a { color: var(--text-tertiary); border-bottom: 1px dashed var(--border-strong); }
+
+    /* misc utilities */
+    .num-emphasis { font-family: var(--font-display); font-style: italic; color: var(--violet); font-size: 1.2em; }
+    .mono-inline { font-family: var(--font-mono); font-size: 0.92em; color: var(--text-primary); background: var(--bg-elevated); padding: 0.1rem 0.4rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+  <div class="reading-progress" id="readingProgress"></div>
+
+  <nav class="side-nav" id="sideNav">
+    <a href="#hero" data-target="hero">01 · open</a>
+    <a href="#backstory" data-target="backstory">02 · backstory</a>
+    <a href="#lgb" data-target="lgb">03 · LightGBM</a>
+    <a href="#features" data-target="features">04 · 58 features</a>
+    <a href="#crossing" data-target="crossing">05 · meta-feature</a>
+    <a href="#walkforward" data-target="walkforward">06 · walk-fwd</a>
+    <a href="#cliff" data-target="cliff">07 · the cliff</a>
+    <a href="#stats" data-target="stats">08 · is it real?</a>
+    <a href="#failed" data-target="failed">09 · what failed</a>
+    <a href="#signals" data-target="signals">10 · 3 signals</a>
+    <a href="#refined" data-target="refined">10½ · refined goal</a>
+    <a href="#timeline" data-target="timeline">11 · timeline</a>
+    <a href="#data" data-target="data">12 · data</a>
+    <a href="#prompts" data-target="prompts">13 · prompts</a>
+    <a href="#dedup" data-target="dedup">13½ · dedup truth</a>
+    <a href="#close" data-target="close">14 · close</a>
+  </nav>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 01 · HERO                                                      -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section class="hero" id="hero">
+    <div class="hero-grid">
+      <div class="hero-kicker">
+        <span>Chapter 13</span>
+        <span>v9.4 → v9.5</span>
+        <span>2026-05-22</span>
+      </div>
+      <h1 class="hero-title">v9.4 trades.<br>v9.5 <em>thinks</em>.</h1>
+      <p class="hero-sub">
+        Yesterday, an ML model called v9.2 was demoted from live trading at 21:41 UTC after losing on three DOWN bets in a row. Today, we shipped v9.4 — a complete rebuild with walk-forward cross-validation and tighter thresholds — and watched it win its first live bets at 93% confidence against a Polymarket consensus that said it was a coin flip.
+      </p>
+      <p class="hero-promise">
+        // by the end of this chapter you'll understand how a real ML trading model is built, validated, and shipped — and exactly what to do next to push it from 91% to 95%.
+      </p>
+      <div class="hero-meta">
+        <div class="hero-meta-item">corpus<strong>22 days</strong></div>
+        <div class="hero-meta-item">windows<strong>5,601</strong></div>
+        <div class="hero-meta-item">features<strong>58</strong></div>
+        <div class="hero-meta-item">walk-fwd folds<strong>5</strong></div>
+        <div class="hero-meta-item">mean WR @ tight<strong>91-93%</strong></div>
+      </div>
+    </div>
+    <div class="hero-scroll">scroll ↓</div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 02 · BACKSTORY                                                 -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="backstory">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">02 · how we got here</span>
+        <h2>v9.4 in <em>90 seconds</em>.</h2>
+        <p>
+          A trading model is a probability factory. It takes in features — recent price moves, order-book imbalance, funding rates, oracle prices — and outputs a number between 0 and 1. <strong>1.0</strong> means "I am certain ETH will close higher than where Polymarket says it should". <strong>0.0</strong> means certain DOWN. <strong>0.5</strong> means coin flip.
+        </p>
+        <p>
+          You then set thresholds. Bet UP when probability ≥ 0.82. Bet DOWN when ≤ 0.23. Otherwise abstain. The trick is making the probability honest. If your model says 0.82 but it's really only 0.55, you're going to lose a lot of money fast.
+        </p>
+        <p>
+          The chapter you're reading is the story of three days of that process — the lessons, the failures, and the v9.5 sprint that should start when this finishes loading.
+        </p>
+      </div>
+
+      <div class="backstory-grid">
+        <article class="moment" data-mood="bad">
+          <div class="moment-time">2026-05-20 · 21:41 UTC</div>
+          <div class="moment-head">v9.2 demoted.</div>
+          <p class="moment-body">
+            Three back-to-back DOWN bets resolved UP between 21:00 and 21:30 UTC. The model was operating at loose thresholds (UP 0.80, DOWN 0.45) where the backtest showed ~82% WR. Live delivered 67%. Demote.
+          </p>
+          <span class="moment-tag">regime shift</span>
+        </article>
+        <article class="moment" data-mood="good">
+          <div class="moment-time">2026-05-21 · 17:35 UTC</div>
+          <div class="moment-head">v9.4 ships LIVE.</div>
+          <p class="moment-body">
+            22-day RDS corpus. Walk-forward CV across 5 folds. Tight thresholds (UP 0.82, DOWN 0.23). Mean WR 93% / 91%. First two live windows: both UP fires at p=0.92, both won. The model abstains in the murky middle — that's the win.
+          </p>
+          <span class="moment-tag">honest variance</span>
+        </article>
+        <article class="moment" data-mood="next">
+          <div class="moment-time">2026-05-22 · TODAY</div>
+          <div class="moment-head">v9.5 starts now.</div>
+          <p class="moment-body">
+            Three independent signal sources — microstructure (Binance depth), oracle (chainlink with freshness gates), sentiment (Polymarket CLOB) — plus a new meta-feature that measures the model's own indecision. Target: 94%+ mean WR with even tighter variance.
+          </p>
+          <span class="moment-tag">next leap</span>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 03 · LIGHTGBM                                                  -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="lgb">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">03 · the engine</span>
+        <h2>Forests of <em>friends</em>.</h2>
+        <p>
+          The model that does the actual predicting is called <strong>LightGBM</strong>. Before we explain it, forget about ML for a second. Imagine you have <strong>200 friends</strong>, and each one is going to make a single yes/no guess about whether ETH closes UP or DOWN in the next 5 minutes.
+        </p>
+        <p>
+          Each friend follows a flowchart. <em>Is the chainlink price above 2125? Yes → is the hour above 12? Yes → is funding negative? No → predict UP.</em> Each flowchart is called a <strong>decision tree</strong>. The friend's vote is the leaf they land on.
+        </p>
+        <p>
+          You trust the majority vote across all 200 friends. That's a <strong>random forest</strong> — well, almost. LightGBM does something cleverer.
+        </p>
+      </div>
+
+      <div class="lgb-grid">
+        <div class="lgb-svg-wrap">
+          <svg viewBox="0 0 380 420" xmlns="http://www.w3.org/2000/svg">
+            <!-- a tiny 3-tree forest, each with example splits -->
+            <defs>
+              <style>
+                .tree-node { fill: #1C1C28; stroke: #A78BFA; stroke-width: 1.2; }
+                .tree-node-leaf-up { fill: rgba(52, 211, 153, 0.18); stroke: #34D399; stroke-width: 1.2; }
+                .tree-node-leaf-dn { fill: rgba(244, 114, 182, 0.18); stroke: #F472B6; stroke-width: 1.2; }
+                .tree-label { font-family: 'JetBrains Mono', monospace; font-size: 8.5px; fill: #F5F3F0; }
+                .tree-leaf-label { font-family: 'JetBrains Mono', monospace; font-size: 8px; }
+                .tree-leaf-label.up { fill: #34D399; }
+                .tree-leaf-label.dn { fill: #F472B6; }
+                .tree-edge { stroke: rgba(255, 255, 255, 0.18); stroke-width: 0.8; fill: none; }
+                .tree-edge-label { font-family: 'JetBrains Mono', monospace; font-size: 7px; fill: #7A7268; }
+                .tree-title { font-family: 'Instrument Serif', serif; font-style: italic; font-size: 11px; fill: #B8B3AB; }
+              </style>
+            </defs>
+
+            <!-- Tree 1 -->
+            <text x="40" y="22" class="tree-title">tree 1</text>
+            <rect class="tree-node" x="22" y="32" width="98" height="20" rx="4"/>
+            <text x="71" y="46" class="tree-label" text-anchor="middle">chainlink&gt;2125?</text>
+            <path class="tree-edge" d="M50,52 L30,80"/>
+            <path class="tree-edge" d="M92,52 L112,80"/>
+            <text x="36" y="68" class="tree-edge-label">no</text>
+            <text x="102" y="68" class="tree-edge-label">yes</text>
+            <rect class="tree-node-leaf-dn" x="6" y="80" width="48" height="18" rx="4"/>
+            <text x="30" y="92" class="tree-leaf-label dn" text-anchor="middle">DOWN</text>
+            <rect class="tree-node" x="88" y="80" width="48" height="18" rx="4"/>
+            <text x="112" y="92" class="tree-label" text-anchor="middle">hour&gt;12?</text>
+            <path class="tree-edge" d="M100,98 L82,124"/>
+            <path class="tree-edge" d="M124,98 L140,124"/>
+            <rect class="tree-node-leaf-up" x="58" y="124" width="48" height="18" rx="4"/>
+            <text x="82" y="136" class="tree-leaf-label up" text-anchor="middle">UP</text>
+            <rect class="tree-node-leaf-dn" x="116" y="124" width="48" height="18" rx="4"/>
+            <text x="140" y="136" class="tree-leaf-label dn" text-anchor="middle">DOWN</text>
+
+            <!-- Tree 2 -->
+            <text x="180" y="22" class="tree-title">tree 2 → fixes tree 1</text>
+            <rect class="tree-node" x="186" y="32" width="98" height="20" rx="4"/>
+            <text x="235" y="46" class="tree-label" text-anchor="middle">vpin_ewma60&gt;0.3?</text>
+            <path class="tree-edge" d="M214,52 L194,80"/>
+            <path class="tree-edge" d="M256,52 L276,80"/>
+            <rect class="tree-node" x="170" y="80" width="48" height="18" rx="4"/>
+            <text x="194" y="92" class="tree-label" text-anchor="middle">ret_60s&gt;0?</text>
+            <rect class="tree-node-leaf-up" x="252" y="80" width="48" height="18" rx="4"/>
+            <text x="276" y="92" class="tree-leaf-label up" text-anchor="middle">UP</text>
+            <path class="tree-edge" d="M182,98 L162,124"/>
+            <path class="tree-edge" d="M206,98 L222,124"/>
+            <rect class="tree-node-leaf-dn" x="138" y="124" width="48" height="18" rx="4"/>
+            <text x="162" y="136" class="tree-leaf-label dn" text-anchor="middle">DOWN</text>
+            <rect class="tree-node-leaf-up" x="198" y="124" width="48" height="18" rx="4"/>
+            <text x="222" y="136" class="tree-leaf-label up" text-anchor="middle">UP</text>
+
+            <!-- Tree 3 -->
+            <text x="20" y="200" class="tree-title">tree 3 → fixes trees 1+2 (and 197 more…)</text>
+            <rect class="tree-node" x="22" y="210" width="138" height="20" rx="4"/>
+            <text x="91" y="224" class="tree-label" text-anchor="middle">gamma_implied_up&gt;0.55?</text>
+            <path class="tree-edge" d="M55,230 L40,258"/>
+            <path class="tree-edge" d="M127,230 L142,258"/>
+            <rect class="tree-node-leaf-dn" x="16" y="258" width="48" height="18" rx="4"/>
+            <text x="40" y="270" class="tree-leaf-label dn" text-anchor="middle">DOWN</text>
+            <rect class="tree-node-leaf-up" x="118" y="258" width="48" height="18" rx="4"/>
+            <text x="142" y="270" class="tree-leaf-label up" text-anchor="middle">UP</text>
+
+            <!-- aggregation -->
+            <line x1="40" y1="305" x2="340" y2="305" stroke="rgba(255,255,255,0.1)" stroke-width="1" stroke-dasharray="3,3"/>
+            <text x="190" y="328" class="tree-title" text-anchor="middle">+ 197 more trees</text>
+            <rect x="100" y="345" width="180" height="32" rx="6" fill="rgba(167,139,250,0.12)" stroke="#A78BFA" stroke-width="1.2"/>
+            <text x="190" y="358" class="tree-label" text-anchor="middle" style="fill:#A78BFA;">aggregate score</text>
+            <text x="190" y="370" class="tree-label" text-anchor="middle" style="font-family: 'Instrument Serif'; font-style: italic; font-size: 14px;">p(UP) = 0.92</text>
+            <text x="190" y="400" class="tree-edge-label" text-anchor="middle">200 trees, each a weighted vote, summed and squashed into 0–1</text>
+          </svg>
+          <div class="lgb-svg-label">how 200 friends decide UP or DOWN</div>
+        </div>
+
+        <div class="lgb-text">
+          <h3>Step 1 · trees vote</h3>
+          <p>
+            Each tree asks a small handful of yes/no questions about the features (price, volume, oracle, time, etc.) and lands the example in a leaf. The leaf has a number. That number is the tree's contribution to the final probability.
+          </p>
+
+          <h3>Step 2 · boosting</h3>
+          <p>
+            Here's the clever bit. Tree 1 is built by training on all the data. Tree 2 is then built specifically to <strong>fix the mistakes Tree 1 made</strong>. Tree 3 fixes the mistakes of Trees 1+2. And so on, for 200 trees. This is called <strong>gradient boosting</strong>.
+          </p>
+          <p>
+            It's like a relay race where each runner only sprints during the gaps the previous runners left.
+          </p>
+
+          <h3>Step 3 · LightGBM specifically</h3>
+          <p>
+            LightGBM is Microsoft's open-source implementation of gradient boosting. It's the one we use because:
+          </p>
+
+          <ul class="lgb-bullets">
+            <li><strong>Fast</strong>It trains 30 boosters across 5 folds in 13 seconds on a 16-core CPU. No GPU required for tabular data this size.</li>
+            <li><strong>Handles missing data</strong>If a feature is NaN, LightGBM routes that row through a "missing" branch in each split. No fragile imputation needed.</li>
+            <li><strong>Leaf-wise growth</strong>Most tree libraries grow level-by-level. LightGBM grows the leaf with the largest loss reduction first, which is more efficient.</li>
+            <li><strong>Interpretable</strong>You can ask the model "which features mattered most?" and it returns a ranked list of feature gains. We'll look at v9.4's gains in the next section.</li>
+            <li><strong>Boring</strong>This matters. LightGBM has been around since 2017. It's a known quantity. No surprises in production at 3am.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 04 · 58 FEATURES                                               -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="features">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">04 · what it sees</span>
+        <h2>58 things the model <em>looks at</em>.</h2>
+        <p>
+          Every 5 minutes, ETH opens a new Polymarket "binary outcome market" — a bet on whether ETH closes UP or DOWN versus the Chainlink reference price at window open. Our model scores that market by taking 58 numerical features and returning a probability.
+        </p>
+        <p>
+          The chart below shows every one of those 58 features, grouped by what they measure. Bigger bars = the model relies on that feature more. Hover for descriptions.
+        </p>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-title">v9.4 feature importance · delta=30s head · mean gain across 5 walk-forward folds</div>
+        <div class="chart-sub">// taller = more important. log-scale, because the top features dominate by 10-100x.</div>
+        <div id="featurePlot" class="plotly-host" style="height: 620px;"></div>
+      </div>
+
+      <div class="reading">
+        <h3>The 10 feature families</h3>
+        <p>
+          The categories below aren't just for charting — they correspond to <strong>independent data sources</strong>. We'll come back to this in the v9.5 plan, because the way to make models more robust is to add features from genuinely <em>independent</em> sources, not stack more correlated ones.
+        </p>
+      </div>
+
+      <div class="category-grid">
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#A78BFA"></span><span class="cat-name">TFM</span><span class="cat-count">9 features</span></div>
+          <div class="cat-body">A TimesFM 2.5-200m neural net runs on the recent Binance tick history and emits quantile forecasts (p10, p50, p90), confidence, and skew. Then a LoRA classifier head re-shapes that into something useful for our problem.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#22D3EE"></span><span class="cat-name">Coinglass</span><span class="cat-count">16 features</span></div>
+          <div class="cat-body">Open interest, funding rate, long/short ratio, top-trader positioning, liquidations, taker buy/sell volume. The microstructure of futures positioning across major exchanges.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#34D399"></span><span class="cat-name">VPIN</span><span class="cat-count">4 features</span></div>
+          <div class="cat-body">"Volume-synchronized probability of informed trading." A short-horizon flow imbalance signal — when smart money is buying or selling aggressively, VPIN spikes. We use 4 smoothed variants (EWMA12, EWMA60, Savitzky-Golay, rolling std 20).</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#FBBF24"></span><span class="cat-name">Delta</span><span class="cat-count">8 features</span></div>
+          <div class="cat-body">"How much has price moved." We smooth Binance / Tiingo / percentage deltas with EWMAs at 12s and 60s and rolling std. Captures short and medium momentum.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#F472B6"></span><span class="cat-name">v2 logit</span><span class="cat-count">2 features</span></div>
+          <div class="cat-body">A previous-generation prediction (v2_probability_up) re-emitted as a logit, with two smoothing windows. The model can use it as a noisy hint or override it.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#A78BFA"></span><span class="cat-name">Time</span><span class="cat-count">5 features</span></div>
+          <div class="cat-body">Hour-of-day, day-of-week, minute, session bucket (asian/european/us), and eval_offset (how many seconds into the window we're scoring). Markets have time-of-day personality.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#22D3EE"></span><span class="cat-name">Price</span><span class="cat-count">5 features</span></div>
+          <div class="cat-body">Current Binance price, price 60s ago, Chainlink price, return since window open, and the 60s return. The basic "where are we, where have we been" signals.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#34D399"></span><span class="cat-name">Volatility</span><span class="cat-count">2 features</span></div>
+          <div class="cat-body">Standard deviation of returns over the 5m window and the price range as a percentage. How chaotic the window is.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#FBBF24"></span><span class="cat-name">Source quality</span><span class="cat-count">2 features</span></div>
+          <div class="cat-body">How much do Chainlink and Binance disagree (cross-source divergence)? How calibrated is the TFM spread? These are sanity-check features — the model treats wide divergences as warning signs.</div>
+        </div>
+        <div class="cat-card">
+          <div class="cat-head"><span class="cat-dot" style="background:#F472B6"></span><span class="cat-name">Gamma (Polymarket)</span><span class="cat-count">5 features</span></div>
+          <div class="cat-body">Polymarket's own implied probability that ETH closes UP for this window, plus market vig and spread. Captures "what the crowd thinks". Backfilled today from 1 day of coverage to 22 days.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 05 · PROBABILITY CROSSING                                      -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="crossing">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">05 · v9.5 new idea</span>
+        <h2>When the model can't <em>decide</em>.</h2>
+        <p>
+          Here's an idea we're testing in v9.5. The model emits a fresh probability every <strong>~2 seconds</strong> during a 5-minute window — so by the time the window closes, it has produced <strong>~150 probability values</strong> for that single window.
+        </p>
+        <p>
+          Most analysis ignores this. We just take the latest probability and bet on it. But ask yourself this: if those 150 values were <span class="num-emphasis">stable</span> (model gradually moving from 0.85 → 0.92) versus <span class="num-emphasis">oscillating</span> (model bouncing 0.45 → 0.65 → 0.40 → 0.70 → 0.55), should you trust the final number equally? Of course not.
+        </p>
+        <p>
+          The number of times the model's probability crosses 0.5 within a window is a measure of its own <strong>indecision</strong>. Few crossings means high conviction. Many crossings means the model is genuinely uncertain even though its final number landed on one side. This is a <strong>meta-feature</strong> — a feature about the model's own behavior.
+        </p>
+      </div>
+
+      <div class="crossing-grid">
+        <div class="crossing-panel" data-type="convinced">
+          <h4>Convinced</h4>
+          <div class="crossing-panel-meta">window 1779383400 · 2026-05-21 17:10 UTC</div>
+          <svg class="crossing-svg" viewBox="0 0 400 180" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <line x1="0" y1="90" x2="400" y2="90" stroke="rgba(255,255,255,0.15)" stroke-dasharray="3,3" stroke-width="1"/>
+            <text x="395" y="86" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">p=0.5</text>
+            <path d="M0,80 Q40,70 80,55 T160,40 T240,28 T320,18 T400,10"
+                  fill="none" stroke="#34D399" stroke-width="2.2"/>
+            <circle cx="0" cy="80" r="3" fill="#34D399"/>
+            <circle cx="400" cy="10" r="3" fill="#34D399"/>
+            <text x="0" y="170" font-family="JetBrains Mono" font-size="9" fill="#7A7268">0s</text>
+            <text x="395" y="170" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">300s</text>
+          </svg>
+          <div class="crossing-stats">
+            <div><span>crossings</span><br><strong>1</strong></div>
+            <div><span>final p</span><br><strong>0.921</strong></div>
+            <div><span>outcome</span><br><strong style="color:var(--green)">UP ✓</strong></div>
+          </div>
+        </div>
+
+        <div class="crossing-panel" data-type="oscillating">
+          <h4>Indecisive</h4>
+          <div class="crossing-panel-meta">window 1779312000 · 2026-05-20 21:00 UTC (yesterday's loss)</div>
+          <svg class="crossing-svg" viewBox="0 0 400 180" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <line x1="0" y1="90" x2="400" y2="90" stroke="rgba(255,255,255,0.15)" stroke-dasharray="3,3" stroke-width="1"/>
+            <text x="395" y="86" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">p=0.5</text>
+            <path d="M0,100 Q25,75 50,110 T100,80 T150,115 T200,72 T250,118 T300,68 T350,108 T400,80"
+                  fill="none" stroke="#FBBF24" stroke-width="2.2"/>
+            <circle cx="0" cy="100" r="3" fill="#FBBF24"/>
+            <circle cx="400" cy="80" r="3" fill="#FBBF24"/>
+            <text x="0" y="170" font-family="JetBrains Mono" font-size="9" fill="#7A7268">0s</text>
+            <text x="395" y="170" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">300s</text>
+          </svg>
+          <div class="crossing-stats">
+            <div><span>crossings</span><br><strong>9</strong></div>
+            <div><span>final p</span><br><strong>0.421</strong></div>
+            <div><span>outcome</span><br><strong style="color:var(--red)">UP ✗ (we bet DOWN)</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">why this is called a meta-feature</div>
+        <p>
+          Most features describe the <em>market</em>: "what is the price doing, what is funding doing". A meta-feature describes the <em>model itself</em>: "is the model being consistent, or flip-flopping". You can think of it as the model's own confidence-of-confidence signal. We can use it as a <strong>gate</strong>: only fire the bet if the model has been on the same side of 0.5 for the last 30 seconds.
+        </p>
+      </div>
+
+      <p style="max-width: var(--reading-max); margin: 0 auto;">
+        Computing this is a SQL window function — Postgres can do it directly against <span class="mono-inline">signal_evaluations</span>:
+      </p>
+
+      <div class="code-block with-copy">
+        <span class="code-lang">SQL</span>
+<pre>-- For each window, count how many times the predicted probability
+-- crossed the 0.5 line. Plus the longest stable streak.
+WITH ordered AS (
+  SELECT
+    window_ts,
+    evaluated_at,
+    probability_lgb_v9_2_eth AS p,
+    LAG(probability_lgb_v9_2_eth) OVER (
+      PARTITION BY window_ts ORDER BY evaluated_at
+    ) AS prev_p
+  FROM signal_evaluations
+  WHERE asset = 'ETH'
+)
+SELECT
+  window_ts,
+  COUNT(*) FILTER (
+    WHERE (p &gt;= 0.5) &lt;&gt; (prev_p &gt;= 0.5)
+  ) AS p50_crossings,
+  STDDEV(p) AS p_std_within_window,
+  MAX(p) - MIN(p) AS p_range
+FROM ordered
+GROUP BY window_ts
+ORDER BY p50_crossings DESC;</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 06 · WALK-FORWARD                                              -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="walkforward">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">06 · methodology</span>
+        <h2>How we stopped <em>lying to ourselves</em>.</h2>
+        <p>
+          The reason v9.2 got demoted is that we measured it wrong. For a long time we'd been training on the first 70% of the data, validating on the next 15%, and testing on the last 15%. One cut. One number. <strong>92% UP win rate</strong>. Big sigh of relief, ship.
+        </p>
+        <p>
+          The problem: that 92% came from a single test window. <strong>2026-05-17 was a lucky day</strong>. The day before would have given 87%. The day after would have given 81%. By taking one number from one window, we hid all the variance.
+        </p>
+        <p>
+          Walk-forward CV fixes this. Instead of one cut, we train and test across <strong>five expanding windows</strong>, each holding out a different 3-day test slice. We report the mean WR <em>and</em> the standard deviation across folds, plus the worst-fold WR.
+        </p>
+      </div>
+
+      <div class="wf-compare">
+        <div class="wf-card" data-old="true">
+          <div class="wf-card-label">the old way · single chronological split</div>
+          <h4>One window. One number. Liar.</h4>
+          <svg class="wf-svg" viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg">
+            <!-- one big bar showing train | val | test -->
+            <text x="200" y="22" font-family="JetBrains Mono" font-size="10" fill="#7A7268" text-anchor="middle">22 days of data, split once</text>
+
+            <rect x="20" y="50" width="252" height="32" fill="rgba(167,139,250,0.15)" stroke="#A78BFA" stroke-width="1" rx="3"/>
+            <text x="146" y="71" font-family="JetBrains Mono" font-size="10" fill="#A78BFA" text-anchor="middle">train  ·  70%  ·  15.4 days</text>
+
+            <rect x="272" y="50" width="54" height="32" fill="rgba(251,191,36,0.18)" stroke="#FBBF24" stroke-width="1" rx="3"/>
+            <text x="299" y="71" font-family="JetBrains Mono" font-size="9" fill="#FBBF24" text-anchor="middle">val 15%</text>
+
+            <rect x="326" y="50" width="54" height="32" fill="rgba(244,114,182,0.18)" stroke="#F472B6" stroke-width="1" rx="3"/>
+            <text x="353" y="71" font-family="JetBrains Mono" font-size="9" fill="#F472B6" text-anchor="middle">test 15%</text>
+
+            <line x1="20" y1="100" x2="380" y2="100" stroke="rgba(255,255,255,0.1)"/>
+
+            <text x="200" y="130" font-family="Instrument Serif" font-size="18" fill="#F5F3F0" text-anchor="middle">→ result: 92.0% UP WR</text>
+            <text x="200" y="155" font-family="Instrument Serif" font-style="italic" font-size="13" fill="#F87171" text-anchor="middle">based on one window. zero variance signal.</text>
+
+            <text x="200" y="200" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">what if that one window was lucky?</text>
+            <text x="200" y="218" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">what if it was a UP-momentum day?</text>
+            <text x="200" y="236" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">what if today is different?</text>
+            <text x="200" y="262" font-family="JetBrains Mono" font-size="10" fill="#F87171" text-anchor="middle">live answer: today's WR was 67%.</text>
+          </svg>
+          <div class="wf-quote">"We measured the bullseye, not the spread of the arrows around it."</div>
+        </div>
+
+        <div class="wf-card" data-new="true">
+          <div class="wf-card-label">the new way · 5 expanding-window folds</div>
+          <h4>Five windows. Five numbers. Mean ± std.</h4>
+          <svg class="wf-svg" viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg">
+            <text x="200" y="22" font-family="JetBrains Mono" font-size="10" fill="#7A7268" text-anchor="middle">5 folds · train expanding, test rolls forward</text>
+
+            <!-- Fold 0 -->
+            <rect x="20" y="42" width="125" height="22" fill="rgba(167,139,250,0.15)" stroke="#A78BFA" stroke-width="0.8" rx="2"/>
+            <rect x="145" y="42" width="48" height="22" fill="rgba(52,211,153,0.25)" stroke="#34D399" stroke-width="1" rx="2"/>
+            <text x="5" y="58" font-family="JetBrains Mono" font-size="8" fill="#7A7268" text-anchor="start">F0</text>
+            <text x="380" y="58" font-family="JetBrains Mono" font-size="9" fill="#34D399" text-anchor="end">97.5% UP@.96</text>
+
+            <!-- Fold 1 -->
+            <rect x="20" y="76" width="173" height="22" fill="rgba(167,139,250,0.15)" stroke="#A78BFA" stroke-width="0.8" rx="2"/>
+            <rect x="193" y="76" width="48" height="22" fill="rgba(52,211,153,0.25)" stroke="#34D399" stroke-width="1" rx="2"/>
+            <text x="5" y="92" font-family="JetBrains Mono" font-size="8" fill="#7A7268" text-anchor="start">F1</text>
+            <text x="380" y="92" font-family="JetBrains Mono" font-size="9" fill="#34D399" text-anchor="end">96.6% UP@.96</text>
+
+            <!-- Fold 2 -->
+            <rect x="20" y="110" width="221" height="22" fill="rgba(167,139,250,0.15)" stroke="#A78BFA" stroke-width="0.8" rx="2"/>
+            <rect x="241" y="110" width="48" height="22" fill="rgba(52,211,153,0.25)" stroke="#34D399" stroke-width="1" rx="2"/>
+            <text x="5" y="126" font-family="JetBrains Mono" font-size="8" fill="#7A7268" text-anchor="start">F2</text>
+            <text x="380" y="126" font-family="JetBrains Mono" font-size="9" fill="#34D399" text-anchor="end">98.0% UP@.96</text>
+
+            <!-- Fold 3 -->
+            <rect x="20" y="144" width="269" height="22" fill="rgba(167,139,250,0.15)" stroke="#A78BFA" stroke-width="0.8" rx="2"/>
+            <rect x="289" y="144" width="40" height="22" fill="rgba(52,211,153,0.25)" stroke="#34D399" stroke-width="1" rx="2"/>
+            <text x="5" y="160" font-family="JetBrains Mono" font-size="8" fill="#7A7268" text-anchor="start">F3</text>
+            <text x="380" y="160" font-family="JetBrains Mono" font-size="9" fill="#34D399" text-anchor="end">97.3% UP@.96</text>
+
+            <!-- Fold 4 - TODAY -->
+            <rect x="20" y="178" width="309" height="22" fill="rgba(167,139,250,0.15)" stroke="#A78BFA" stroke-width="0.8" rx="2"/>
+            <rect x="329" y="178" width="22" height="22" fill="rgba(248,113,113,0.30)" stroke="#F87171" stroke-width="1" rx="2"/>
+            <text x="5" y="194" font-family="JetBrains Mono" font-size="8" fill="#7A7268" text-anchor="start">F4</text>
+            <text x="380" y="194" font-family="JetBrains Mono" font-size="9" fill="#F87171" text-anchor="end">today (the bad day)</text>
+
+            <line x1="20" y1="216" x2="380" y2="216" stroke="rgba(255,255,255,0.1)"/>
+
+            <text x="200" y="238" font-family="Instrument Serif" font-size="16" fill="#F5F3F0" text-anchor="middle">→ mean 93.0% ± 1.6pp (worst 90.2%)</text>
+            <text x="200" y="260" font-family="Instrument Serif" font-style="italic" font-size="11" fill="#34D399" text-anchor="middle">honest variance. honest worst case.</text>
+          </svg>
+          <div class="wf-quote">"Each fold's test window is a different regime. The model has to win across all of them or we know it's brittle."</div>
+        </div>
+      </div>
+
+      <div class="reading">
+        <p>
+          The kicker: <strong>Fold 4's test window was today</strong> — 2026-05-20 16:45 → 2026-05-21 15:45 UTC. The same regime-shifted day that caught v9.2 out yesterday. Walk-forward CV literally measured the model's performance on the day that would later catch it.
+        </p>
+        <p>
+          At loose thresholds (p≤0.45) Fold 4 scored 52.87% WR — basically matching the 67% v9.2 delivered live. At tight thresholds (p≤0.23) Fold 4 abstained entirely from DOWN bets. <strong>The model knows what it doesn't know — we just have to listen.</strong>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 07 · THRESHOLD CLIFF                                           -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="cliff">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">07 · the threshold cliff</span>
+        <h2>Where the model finds its <em>edge</em>.</h2>
+        <p>
+          Let's plot the WR at every threshold the model could fire at. UP side on the left, DOWN side on the right. Each point is the mean WR across the 5 walk-forward folds, with a shaded band showing the standard deviation.
+        </p>
+        <p>
+          Notice the shape. At <strong>loose thresholds</strong> (UP p≥0.70, DOWN p≤0.45), the WR is around 88% / 74% with a wide variance band. At <strong>tight thresholds</strong> (UP p≥0.82, DOWN p≤0.23), the WR climbs to 93% / 91% and the variance band collapses to nearly invisible.
+        </p>
+        <p>
+          The model isn't lying — it's telling you exactly when to trust it. At the edges, it's confident. In the middle, it isn't. Setting your firing threshold at the cliff edge is the entire game.
+        </p>
+      </div>
+
+      <div class="cliff-charts">
+        <div class="cliff-panel">
+          <div class="cliff-panel-title">UP side</div>
+          <div class="cliff-panel-sub">fire when p ≥ threshold · n fires per fold</div>
+          <div id="cliffUpPlot" style="height: 360px;"></div>
+        </div>
+        <div class="cliff-panel">
+          <div class="cliff-panel-title">DOWN side</div>
+          <div class="cliff-panel-sub">fire when p ≤ threshold · the cliff is at 0.27→0.25</div>
+          <div id="cliffDnPlot" style="height: 360px;"></div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">the lesson, distilled</div>
+        <p>
+          Most ML practitioners optimize for the highest mean accuracy. In trading, you optimize for the <em>highest accuracy at acceptable variance</em>. A model with 91% WR ± 1pp beats a model with 95% WR ± 8pp every time, because the second one can have a day where it goes 70%, and that day will end your career.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 08 · STATISTICAL SIGNIFICANCE                                  -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="stats">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">08 · is it real?</span>
+        <h2>Is this <em>edge</em> real or just lucky?</h2>
+        <p>
+          Important caveat: walk-forward CV across 5 folds is more honest than single-day held-out, but it's still a small sample. 4,898 DOWN fires at p≤0.21 across 5 folds is about 980 per fold. We need actual significance tests to claim an edge.
+        </p>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <h4>Two-proportion z-test</h4>
+          <p>
+            The simplest test: is our 91% WR significantly different from the 50% base rate of a coin flip? If we observe <span class="mono-inline">k</span> wins in <span class="mono-inline">n</span> bets, the z-statistic vs base rate p<sub>0</sub> is:
+          </p>
+          <div class="code-block">
+<pre>z = (p_hat - p_0) / sqrt(p_0 * (1 - p_0) / n)
+p_value = 2 * (1 - Φ(|z|))</pre>
+          </div>
+          <p>
+            For 91% WR on 980 bets vs base 0.50: z ≈ 25.7, p &lt; 0.0001. Comically significant. The interesting test is vs a 90% target — are we statistically beating 90%? z ≈ 1.0, p ≈ 0.32. <strong>Not significant.</strong> Same WR, different question.
+          </p>
+        </div>
+
+        <div class="stat-card">
+          <h4>Sample-size calculator</h4>
+          <p>Move the sliders to see how many bets you need to be 95% confident a target WR is real.</p>
+          <div class="calc">
+            <div class="calc-row">
+              <label>observed WR</label>
+              <input type="range" id="calcP" min="0.55" max="0.99" step="0.01" value="0.91">
+              <span class="calc-val" id="calcPVal">0.91</span>
+            </div>
+            <div class="calc-row">
+              <label>null hypothesis</label>
+              <input type="range" id="calcP0" min="0.50" max="0.95" step="0.01" value="0.50">
+              <span class="calc-val" id="calcP0Val">0.50</span>
+            </div>
+            <div class="calc-row">
+              <label>confidence</label>
+              <input type="range" id="calcA" min="0.80" max="0.99" step="0.01" value="0.95">
+              <span class="calc-val" id="calcAVal">0.95</span>
+            </div>
+            <div class="calc-result" id="calcResult">n ≈ 11</div>
+            <div class="calc-result-label">bets needed to detect the edge</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <h4>Bootstrap confidence intervals</h4>
+          <p>
+            Instead of trusting a single point estimate, resample the bets with replacement 10,000 times and look at the distribution of WRs. The 2.5% and 97.5% percentiles give a 95% CI without assuming normality.
+          </p>
+          <div class="code-block">
+<pre>import numpy as np
+wins = np.random.binomial(1, 0.91, size=980)  # your actual bets
+boots = [np.mean(np.random.choice(wins, len(wins),
+        replace=True)) for _ in range(10_000)]
+ci_lo, ci_hi = np.percentile(boots, [2.5, 97.5])
+# example: (0.892, 0.926) — 95% CI on the WR</pre>
+          </div>
+          <p>
+            v9.4's DOWN @ p≤0.21 across 4,898 fires gives a CI of roughly <strong>(0.910, 0.926)</strong>. That CI is entirely above 0.88, which means we can claim &gt;88% WR with 95% confidence. We <em>can't</em> claim &gt;92%.
+          </p>
+        </div>
+
+        <div class="stat-card">
+          <h4>Calibration & ECE</h4>
+          <p>
+            A separate question: when the model says 0.80, do 80% of those bets actually win? That's <strong>calibration</strong>. The Expected Calibration Error (ECE) bins predictions and measures the gap between predicted and observed accuracy in each bin.
+          </p>
+          <svg class="reliability-svg" viewBox="0 0 400 240" xmlns="http://www.w3.org/2000/svg">
+            <line x1="40" y1="200" x2="380" y2="200" stroke="rgba(255,255,255,0.15)" stroke-width="0.8"/>
+            <line x1="40" y1="20" x2="40" y2="200" stroke="rgba(255,255,255,0.15)" stroke-width="0.8"/>
+            <line x1="40" y1="200" x2="380" y2="20" stroke="rgba(255,255,255,0.25)" stroke-dasharray="3,4" stroke-width="1"/>
+            <text x="38" y="14" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">1.0</text>
+            <text x="38" y="206" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">0.0</text>
+            <text x="40" y="222" font-family="JetBrains Mono" font-size="9" fill="#7A7268">predicted p</text>
+            <text x="380" y="222" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">1.0</text>
+            <text x="180" y="40" font-family="Instrument Serif" font-style="italic" font-size="11" fill="#7A7268">perfect calibration ↗</text>
+
+            <!-- v9.4 line, slightly under the perfect line (calibrated, mostly) -->
+            <polyline points="40,200 74,182 108,158 142,130 176,106 210,82 244,60 278,44 312,32 346,22 380,18"
+                      fill="none" stroke="#34D399" stroke-width="2.4"/>
+            <circle cx="74" cy="182" r="3" fill="#34D399"/>
+            <circle cx="108" cy="158" r="3" fill="#34D399"/>
+            <circle cx="142" cy="130" r="3" fill="#34D399"/>
+            <circle cx="176" cy="106" r="3" fill="#34D399"/>
+            <circle cx="210" cy="82" r="3" fill="#34D399"/>
+            <circle cx="244" cy="60" r="3" fill="#34D399"/>
+            <circle cx="278" cy="44" r="3" fill="#34D399"/>
+            <circle cx="312" cy="32" r="3" fill="#34D399"/>
+            <circle cx="346" cy="22" r="3" fill="#34D399"/>
+
+            <text x="300" y="120" font-family="JetBrains Mono" font-size="9" fill="#34D399">v9.4 ECE ≈ 0.034</text>
+          </svg>
+          <p style="font-size: 0.85rem;">
+            v9.4's reliability line tracks the diagonal closely — when the isotonic calibrator says 0.80, the realized win rate really is ~80%. ECE of 0.034 means the average gap between predicted and realized is 3.4 percentage points. Below 0.05 is considered well-calibrated for production.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 09 · WHAT FAILED                                               -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="failed">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">09 · the experiments map</span>
+        <h2>When more data <em>hurts</em>.</h2>
+        <p>
+          A short tour of the v9.4.x experiments we tried today before settling on the baseline. Each row is a separate model trained on the same 22-day corpus with the same walk-forward CV, just with different feature additions.
+        </p>
+        <p>
+          The instructive thing isn't that v9.4 baseline won — it's <strong>how</strong> the others lost. They didn't fail by reducing mean WR. They failed by <em>blowing up the variance</em>. Mean WR stayed similar, but the worst-fold WR collapsed.
+        </p>
+      </div>
+
+      <div class="matrix-wrap">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>experiment</th>
+              <th>what we added</th>
+              <th>DOWN @ p≤0.21 mean</th>
+              <th>std</th>
+              <th>worst-fold</th>
+              <th class="verdict">verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-verdict="ship">
+              <td class="experiment">v9.4 baseline</td>
+              <td>22-day corpus + 5m gamma (98% coverage)</td>
+              <td><span class="matrix-num">91.79%</span></td>
+              <td><span class="matrix-num">0.71pp</span></td>
+              <td><span class="matrix-num">90.89%</span></td>
+              <td class="verdict">ship ✓</td>
+            </tr>
+            <tr data-verdict="fail">
+              <td class="experiment">v9.4.1 + PTB 54%</td>
+              <td>raw priceToBeat features (54% coverage)</td>
+              <td><span class="matrix-num">86.53%</span><span class="matrix-delta bad">−5.26pp</span></td>
+              <td><span class="matrix-num">10.54pp</span><span class="matrix-delta bad">14× worse</span></td>
+              <td><span class="matrix-num">65.52%</span><span class="matrix-delta bad">−25.4pp</span></td>
+              <td class="verdict">fail</td>
+            </tr>
+            <tr data-verdict="fail">
+              <td class="experiment">v9.4.1 + PTB 97.9%</td>
+              <td>backfilled priceToBeat to near-full coverage</td>
+              <td><span class="matrix-num">85.25%</span><span class="matrix-delta bad">−6.54pp</span></td>
+              <td><span class="matrix-num">12.24pp</span><span class="matrix-delta bad">17× worse</span></td>
+              <td><span class="matrix-num">60.97%</span><span class="matrix-delta bad">−29.9pp</span></td>
+              <td class="verdict">still fail</td>
+            </tr>
+            <tr data-verdict="fail">
+              <td class="experiment">v9.4.2 PTB no-reweight</td>
+              <td>PTB at 97.9% without DOWN sample reweighting</td>
+              <td><span class="matrix-num">86.26%</span><span class="matrix-delta bad">−5.53pp</span></td>
+              <td><span class="matrix-num">10.78pp</span><span class="matrix-delta bad">15× worse</span></td>
+              <td><span class="matrix-num">64.79%</span><span class="matrix-delta bad">−26.1pp</span></td>
+              <td class="verdict">fail (different way)</td>
+            </tr>
+            <tr data-verdict="catastrophic">
+              <td class="experiment">v9.4.x + chainlink Δ</td>
+              <td>delta_chainlink + smoothed variants</td>
+              <td><span class="matrix-num">73.07%</span><span class="matrix-delta bad">−18.72pp</span></td>
+              <td><span class="matrix-num">36.54pp</span><span class="matrix-delta bad">51× worse</span></td>
+              <td><span class="matrix-num">0.00%</span><span class="matrix-delta bad">100% wrong on one fold</span></td>
+              <td class="verdict">catastrophic 💀</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="reading">
+        <h3>Why "right-feeling" features failed</h3>
+        <p>
+          Both priceToBeat and chainlink seemed like obviously good additions. priceToBeat <em>is</em> the resolution threshold — without it, the model has to learn the threshold implicitly. Chainlink <em>is</em> the oracle price — adding chainlink-based deltas should give the model a more accurate reference.
+        </p>
+        <p>
+          What went wrong:
+        </p>
+        <ul class="lgb-bullets">
+          <li><strong>priceToBeat made the model overconfident</strong>The model saw "current price relative to threshold" and got bolder at tight thresholds. On regime-shift days (where intra-window momentum doesn't follow recent patterns), that bolder confidence cost us.</li>
+          <li><strong>Chainlink heartbeat staleness</strong>Chainlink Streams publishes on price-change-threshold, not every tick. When stale, the "Binance − Chainlink" delta accumulates artificially. The model learned the artifact, fired sharp DOWN bets, and got destroyed on one fold (100% wrong).</li>
+          <li><strong>Coverage gaps create two-mode learning</strong>At 54% PTB coverage, the model learned different behavior for "PTB present" vs "PTB absent" rows. Neither mode was robust.</li>
+        </ul>
+        <p>
+          The fix is path-dependent feature engineering — TWAP-since-PTB, # crossings of PTB, max excursion, distance normalised by realised vol. These are v9.5 work.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 10 · THREE SIGNALS                                             -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="signals">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">10 · v9.5 architecture</span>
+        <h2>Three <em>signals</em>. One model.</h2>
+        <p>
+          The principle for v9.5 isn't "add more features". It's "add features from <em>independent</em> data sources". Stacking correlated features (Binance delta + Binance EWMA delta + Binance Savitzky-Golay delta) gives you diminishing returns. Stacking independent sources reduces variance super-linearly.
+        </p>
+        <p>
+          We're targeting three layers of signal: <strong>microstructure</strong> (what the order book is doing), <strong>oracle</strong> (what the resolution sources say), <strong>sentiment</strong> (what the crowd thinks).
+        </p>
+      </div>
+
+      <div class="rings-wrap">
+        <svg class="rings-svg" viewBox="0 0 720 720" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="centerGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="rgba(167,139,250,0.55)"/>
+              <stop offset="100%" stop-color="rgba(167,139,250,0)"/>
+            </radialGradient>
+            <style>
+              .ring-1 { fill: none; stroke: rgba(34,211,238,0.28); stroke-width: 2; stroke-dasharray: 4 6; }
+              .ring-2 { fill: none; stroke: rgba(167,139,250,0.28); stroke-width: 2; stroke-dasharray: 4 6; }
+              .ring-3 { fill: none; stroke: rgba(52,211,153,0.28); stroke-width: 2; stroke-dasharray: 4 6; }
+              .source-node { stroke-width: 1.5; }
+              .source-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; fill: #F5F3F0; }
+              .arrow { stroke: rgba(255,255,255,0.18); stroke-width: 1; fill: none; }
+              .ring-label { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; }
+            </style>
+          </defs>
+
+          <!-- Background glow -->
+          <circle cx="360" cy="360" r="100" fill="url(#centerGlow)"/>
+
+          <!-- Three rings -->
+          <g class="ring-rotate"><circle class="ring-1" cx="360" cy="360" r="200"/></g>
+          <g class="ring-rotate"><circle class="ring-2" cx="360" cy="360" r="270"/></g>
+          <g class="ring-rotate"><circle class="ring-3" cx="360" cy="360" r="340"/></g>
+
+          <!-- Ring labels -->
+          <text x="360" y="160" class="ring-label" fill="#22D3EE" text-anchor="middle">MICROSTRUCTURE</text>
+          <text x="360" y="83" class="ring-label" fill="#A78BFA" text-anchor="middle">ORACLE</text>
+          <text x="360" y="10" class="ring-label" fill="#34D399" text-anchor="middle">SENTIMENT</text>
+
+          <!-- Microstructure sources (ring 1 / inner) -->
+          <g>
+            <circle cx="260" cy="280" r="32" fill="rgba(34,211,238,0.12)" stroke="#22D3EE" class="source-node"/>
+            <text x="260" y="278" class="source-label" text-anchor="middle">Binance</text>
+            <text x="260" y="293" class="source-label" text-anchor="middle" style="font-size:9px;">ticks</text>
+            <path class="arrow" d="M286,294 Q330,330 348,348" marker-end="url(#arrowhead)"/>
+
+            <circle cx="460" cy="280" r="32" fill="rgba(34,211,238,0.12)" stroke="#22D3EE" class="source-node"/>
+            <text x="460" y="278" class="source-label" text-anchor="middle">Binance</text>
+            <text x="460" y="293" class="source-label" text-anchor="middle" style="font-size:9px;">depth</text>
+            <path class="arrow" d="M434,294 Q390,330 372,348" marker-end="url(#arrowhead)"/>
+          </g>
+
+          <!-- Oracle sources (ring 2 / middle) -->
+          <g>
+            <circle cx="220" cy="430" r="32" fill="rgba(167,139,250,0.12)" stroke="#A78BFA" class="source-node"/>
+            <text x="220" y="428" class="source-label" text-anchor="middle">Chainlink</text>
+            <text x="220" y="443" class="source-label" text-anchor="middle" style="font-size:9px;">+ staleness</text>
+            <path class="arrow" d="M246,418 Q300,400 350,378" marker-end="url(#arrowhead)"/>
+
+            <circle cx="500" cy="430" r="32" fill="rgba(167,139,250,0.12)" stroke="#A78BFA" class="source-node"/>
+            <text x="500" y="428" class="source-label" text-anchor="middle">Tiingo</text>
+            <text x="500" y="443" class="source-label" text-anchor="middle" style="font-size:9px;">last_price</text>
+            <path class="arrow" d="M474,418 Q420,400 370,378" marker-end="url(#arrowhead)"/>
+          </g>
+
+          <!-- Sentiment sources (ring 3 / outer) -->
+          <g>
+            <circle cx="160" cy="200" r="34" fill="rgba(52,211,153,0.12)" stroke="#34D399" class="source-node"/>
+            <text x="160" y="198" class="source-label" text-anchor="middle">Polymarket</text>
+            <text x="160" y="213" class="source-label" text-anchor="middle" style="font-size:9px;">gamma</text>
+            <path class="arrow" d="M190,220 Q280,290 350,340" marker-end="url(#arrowhead)"/>
+
+            <circle cx="560" cy="200" r="34" fill="rgba(52,211,153,0.12)" stroke="#34D399" class="source-node"/>
+            <text x="560" y="198" class="source-label" text-anchor="middle">Polymarket</text>
+            <text x="560" y="213" class="source-label" text-anchor="middle" style="font-size:9px;">CLOB</text>
+            <path class="arrow" d="M530,220 Q440,290 370,340" marker-end="url(#arrowhead)"/>
+
+            <circle cx="360" cy="600" r="34" fill="rgba(52,211,153,0.12)" stroke="#34D399" class="source-node"/>
+            <text x="360" y="598" class="source-label" text-anchor="middle">Coinglass</text>
+            <text x="360" y="613" class="source-label" text-anchor="middle" style="font-size:9px;">positioning</text>
+            <path class="arrow" d="M360,565 L360,400" marker-end="url(#arrowhead)"/>
+          </g>
+
+          <!-- Center: LGB model -->
+          <circle cx="360" cy="360" r="62" fill="rgba(167,139,250,0.18)" stroke="#A78BFA" stroke-width="2"/>
+          <text x="360" y="354" font-family="Instrument Serif" font-style="italic" font-size="22" fill="#F5F3F0" text-anchor="middle">v9.5</text>
+          <text x="360" y="376" font-family="JetBrains Mono" font-size="9" letter-spacing="0.1em" fill="#A78BFA" text-anchor="middle">LightGBM</text>
+
+          <defs>
+            <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+              <polygon points="0 0, 6 3, 0 6" fill="rgba(255,255,255,0.35)"/>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+
+      <div class="signal-legend">
+        <div class="sig-card" data-ring="microstructure">
+          <div class="sig-card-head">ring 1 · microstructure</div>
+          <h4>What the book is doing.</h4>
+          <p style="font-size: 0.9rem;">Top-of-book pressure, depth imbalance at multiple bands, taker-side flow. Captures supply/demand at the price level.</p>
+          <ul>
+            <li>Binance ticks (have)</li>
+            <li>Binance depth book (collecting)</li>
+            <li>VPIN (have)</li>
+          </ul>
+        </div>
+        <div class="sig-card" data-ring="oracle">
+          <div class="sig-card-head">ring 2 · oracle</div>
+          <h4>What resolves the bet.</h4>
+          <p style="font-size: 0.9rem;">Chainlink Streams + Tiingo are what Polymarket uses to decide the outcome. Our model should track these directly, with freshness gates to avoid stale-tick contamination.</p>
+          <ul>
+            <li>Chainlink price (have)</li>
+            <li>Chainlink staleness (v9.5)</li>
+            <li>Tiingo last_price (have)</li>
+          </ul>
+        </div>
+        <div class="sig-card" data-ring="sentiment">
+          <div class="sig-card-head">ring 3 · sentiment</div>
+          <h4>What the crowd thinks.</h4>
+          <p style="font-size: 0.9rem;">Polymarket gamma is the implied probability the crowd is willing to bet. Polymarket CLOB book is the slope of that opinion. Coinglass positioning is leveraged sentiment.</p>
+          <ul>
+            <li>Polymarket gamma (backfilled)</li>
+            <li>Polymarket CLOB (collecting)</li>
+            <li>Coinglass (have)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">why three rings, not one</div>
+        <p>
+          Each ring is statistically <em>independent</em> from the others. When Binance depth disagrees with Polymarket gamma, that disagreement <em>itself</em> is signal. A single-source model can be wrong-footed when its source is in a weird state. A three-source model rarely has all three sources in the same wrong state at the same time.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 10½ · REFINED GOAL                                             -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="refined">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">10½ · refining the target</span>
+        <h2>Max <em>n</em> at <em>≥90%</em> WR.</h2>
+        <p>
+          Before we build v9.5 we need to be precise about what we're optimising. The first instinct is "highest possible win rate." That's wrong. The right target is <strong>the most bets we can fire while keeping the realised WR at or above 90%</strong>.
+        </p>
+        <p>
+          Why? Because a 95% WR strategy that fires 5 times a day makes less money than a 91% WR strategy that fires 50 times a day, assuming similar bet sizing. We want a <strong>Pareto-optimal operating point</strong>, not a perfectionist one.
+        </p>
+        <p>
+          v9.4 already has several candidate operating points on that Pareto front. Here are the v9.4 walk-forward CV numbers re-sorted by max-n-at-≥90%-WR:
+        </p>
+      </div>
+
+      <div class="matrix-wrap">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>side</th>
+              <th>threshold</th>
+              <th>mean WR</th>
+              <th>worst-fold WR</th>
+              <th>n / fold</th>
+              <th>n / day proxy</th>
+              <th class="verdict">≥90%?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-verdict="ship">
+              <td class="experiment">UP</td>
+              <td><span class="matrix-num">p ≥ 0.78</span></td>
+              <td><span class="matrix-num">91.68%</span></td>
+              <td><span class="matrix-num">87.03%</span></td>
+              <td><span class="matrix-num">955</span></td>
+              <td><span class="matrix-num">~318/day</span></td>
+              <td class="verdict">yes (mean only)</td>
+            </tr>
+            <tr data-verdict="ship">
+              <td class="experiment">UP</td>
+              <td><span class="matrix-num">p ≥ 0.80</span></td>
+              <td><span class="matrix-num">92.39%</span></td>
+              <td><span class="matrix-num">89.26%</span></td>
+              <td><span class="matrix-num">919</span></td>
+              <td><span class="matrix-num">~306/day</span></td>
+              <td class="verdict">close (worst-fold 89%)</td>
+            </tr>
+            <tr data-verdict="ship">
+              <td class="experiment">UP</td>
+              <td><span class="matrix-num">p ≥ 0.82</span><span class="matrix-delta neutral">(current LIVE)</span></td>
+              <td><span class="matrix-num">93.03%</span></td>
+              <td><span class="matrix-num">90.23%</span></td>
+              <td><span class="matrix-num">889</span></td>
+              <td><span class="matrix-num">~296/day</span></td>
+              <td class="verdict">yes ✓</td>
+            </tr>
+            <tr data-verdict="ship">
+              <td class="experiment">DOWN</td>
+              <td><span class="matrix-num">p ≤ 0.25</span></td>
+              <td><span class="matrix-num">89.76%</span></td>
+              <td><span class="matrix-num">88.08%</span></td>
+              <td><span class="matrix-num">1,110</span></td>
+              <td><span class="matrix-num">~370/day</span></td>
+              <td class="verdict">close (mean below 90)</td>
+            </tr>
+            <tr data-verdict="ship">
+              <td class="experiment">DOWN</td>
+              <td><span class="matrix-num">p ≤ 0.23</span><span class="matrix-delta neutral">(current LIVE)</span></td>
+              <td><span class="matrix-num">91.34%</span></td>
+              <td><span class="matrix-num">90.32%</span></td>
+              <td><span class="matrix-num">1,004</span></td>
+              <td><span class="matrix-num">~335/day</span></td>
+              <td class="verdict">yes ✓</td>
+            </tr>
+            <tr data-verdict="ship">
+              <td class="experiment">DOWN</td>
+              <td><span class="matrix-num">p ≤ 0.21</span></td>
+              <td><span class="matrix-num">91.79%</span></td>
+              <td><span class="matrix-num">90.89%</span></td>
+              <td><span class="matrix-num">980</span></td>
+              <td><span class="matrix-num">~327/day</span></td>
+              <td class="verdict">yes ✓</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="reading">
+        <p>
+          The optimisation target for v9.5 is to <strong>push the entire WR-vs-n curve up and to the right</strong>. Specifically: increase mean WR at a given threshold so that LOOSER thresholds become viable (more fires) without breaking the ≥90% constraint.
+        </p>
+        <p>
+          If we can pull UP @ p≥0.78 from 91.68% mean / 87% worst-fold up to 92%+ mean / 90%+ worst-fold, we unlock ~320 more fires per day at honest 90% WR.
+        </p>
+      </div>
+
+      <h3 style="text-align: center; max-width: var(--reading-max); margin: 4rem auto 1rem;">Stretch goal: the long-horizon heads</h3>
+      <div class="reading">
+        <p>
+          There's a separate question: <strong>can v9.5 predict UP/DOWN earlier in the window?</strong> Each window has 6 per-delta heads — at delta=30s we're scoring near window close (most of the window has already happened), at delta=240s we're scoring just 60 seconds in (very little has happened yet). Per-head accuracy in v9.4 looked roughly like:
+        </p>
+      </div>
+
+      <div class="chart-wrap" style="padding: 2rem;">
+        <svg viewBox="0 0 800 240" style="width: 100%; height: auto;" xmlns="http://www.w3.org/2000/svg">
+          <!-- axes -->
+          <line x1="80" y1="200" x2="760" y2="200" stroke="rgba(255,255,255,0.2)"/>
+          <line x1="80" y1="40" x2="80" y2="200" stroke="rgba(255,255,255,0.2)"/>
+          <!-- y labels -->
+          <text x="74" y="45" font-family="JetBrains Mono" font-size="10" fill="#7A7268" text-anchor="end">95%</text>
+          <text x="74" y="125" font-family="JetBrains Mono" font-size="10" fill="#7A7268" text-anchor="end">80%</text>
+          <text x="74" y="205" font-family="JetBrains Mono" font-size="10" fill="#7A7268" text-anchor="end">60%</text>
+          <text x="74" y="225" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">accuracy</text>
+          <!-- horizontal grid lines -->
+          <line x1="80" y1="80" x2="760" y2="80" stroke="rgba(255,255,255,0.05)"/>
+          <line x1="80" y1="120" x2="760" y2="120" stroke="rgba(255,255,255,0.05)"/>
+          <line x1="80" y1="160" x2="760" y2="160" stroke="rgba(255,255,255,0.05)"/>
+          <!-- bars -->
+          <g>
+            <rect x="120" y="56" width="80" height="144" fill="rgba(52,211,153,0.5)" stroke="#34D399" stroke-width="1.5" rx="3"/>
+            <text x="160" y="48" font-family="Instrument Serif" font-size="16" fill="#34D399" text-anchor="middle">~90%</text>
+            <text x="160" y="216" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB" text-anchor="middle">delta=30s</text>
+            <text x="160" y="230" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">t-30 (close)</text>
+
+            <rect x="230" y="80" width="80" height="120" fill="rgba(52,211,153,0.4)" stroke="#34D399" stroke-width="1.5" rx="3"/>
+            <text x="270" y="72" font-family="Instrument Serif" font-size="16" fill="#34D399" text-anchor="middle">~84%</text>
+            <text x="270" y="216" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB" text-anchor="middle">delta=60s</text>
+            <text x="270" y="230" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">t-60</text>
+
+            <rect x="340" y="100" width="80" height="100" fill="rgba(251,191,36,0.4)" stroke="#FBBF24" stroke-width="1.5" rx="3"/>
+            <text x="380" y="92" font-family="Instrument Serif" font-size="16" fill="#FBBF24" text-anchor="middle">~81%</text>
+            <text x="380" y="216" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB" text-anchor="middle">delta=90s</text>
+            <text x="380" y="230" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">t-90</text>
+
+            <rect x="450" y="124" width="80" height="76" fill="rgba(251,191,36,0.4)" stroke="#FBBF24" stroke-width="1.5" rx="3"/>
+            <text x="490" y="116" font-family="Instrument Serif" font-size="16" fill="#FBBF24" text-anchor="middle">~76%</text>
+            <text x="490" y="216" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB" text-anchor="middle">delta=120s</text>
+            <text x="490" y="230" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">t-120</text>
+
+            <rect x="560" y="148" width="80" height="52" fill="rgba(248,113,113,0.4)" stroke="#F87171" stroke-width="1.5" rx="3"/>
+            <text x="600" y="140" font-family="Instrument Serif" font-size="16" fill="#F87171" text-anchor="middle">~72%</text>
+            <text x="600" y="216" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB" text-anchor="middle">delta=180s</text>
+            <text x="600" y="230" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">t-180 ← stretch</text>
+
+            <rect x="670" y="170" width="80" height="30" fill="rgba(248,113,113,0.5)" stroke="#F87171" stroke-width="1.5" rx="3"/>
+            <text x="710" y="162" font-family="Instrument Serif" font-size="16" fill="#F87171" text-anchor="middle">~62%</text>
+            <text x="710" y="216" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB" text-anchor="middle">delta=240s</text>
+            <text x="710" y="230" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="middle">t-240 ← stretch</text>
+          </g>
+          <line x1="540" y1="40" x2="540" y2="200" stroke="rgba(248,113,113,0.4)" stroke-dasharray="4 4" stroke-width="1"/>
+          <text x="690" y="36" font-family="JetBrains Mono" font-size="10" fill="#F87171" text-anchor="middle">long-horizon zone</text>
+        </svg>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">why t-200 to t-160 matters</div>
+        <p>
+          At the start of a window the model knows almost nothing — the underlying price has had ~60 seconds to move. Most of the information about whether ETH closes UP comes from <em>events that haven't happened yet</em>. The longer-horizon heads (delta=180s, 240s) are predicting further into the future. Better here means betting earlier, which means more time in market, which means more total trade volume.
+        </p>
+        <p>
+          We're not going to solve this in v9.5. But every workstream — Binance depth, Polymarket CLOB, TFM forecasts — provides forward-looking information that should help the long-horizon heads more than the short-horizon ones. We'll <strong>track per-delta WR separately</strong> as the v9.5 ablations land.
+        </p>
+      </div>
+
+      <h3 style="text-align: center; max-width: var(--reading-max); margin: 4rem auto 1rem;">v9.5 starts without LoRA</h3>
+      <div class="reading">
+        <p>
+          One operational decision worth flagging: the BG agent that recreated our TimesFM inference file <strong>ran the base TimesFM-2.5-200m model with no LoRA adapter applied</strong>. The only adapter on S3 is a BTC fine-tune; applying a BTC-trained adapter to ETH would be out-of-distribution.
+        </p>
+        <p>
+          That means the <span class="mono-inline">tfm_*</span> features going into v9.5 are <em>uncalibrated zero-shot quantile forecasts</em>, not the LoRA-discriminated signals we'd ideally have. LightGBM will downweight them automatically if they're not informative. If v9.5 ablations don't lift mean WR, we'll A/B against the BTC-adapter version as a follow-up experiment.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 11 · TIMELINE                                                  -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="timeline">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">11 · the 48-hour sprint</span>
+        <h2>v9.5 in <em>two days</em>.</h2>
+        <p>
+          Six workstreams. Each ablation-tested with walk-forward CV before stacking the next. The sequencing matters — if we add five things at once and WR goes up 2pp, we don't know which one helped. Sequential lets us attribute lift correctly.
+        </p>
+      </div>
+
+      <div class="timeline-wrap">
+        <svg class="timeline-svg" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg">
+          <!-- Day headers -->
+          <text x="180" y="20" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#7A7268" text-anchor="middle">DAY 1 (AM)</text>
+          <text x="400" y="20" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#7A7268" text-anchor="middle">DAY 1 (PM)</text>
+          <text x="620" y="20" font-family="JetBrains Mono" font-size="10" letter-spacing="0.1em" fill="#7A7268" text-anchor="middle">DAY 2</text>
+
+          <!-- Background grid -->
+          <line x1="80" y1="40" x2="80" y2="380" stroke="rgba(255,255,255,0.05)"/>
+          <line x1="280" y1="40" x2="280" y2="380" stroke="rgba(255,255,255,0.05)"/>
+          <line x1="520" y1="40" x2="520" y2="380" stroke="rgba(255,255,255,0.05)"/>
+          <line x1="760" y1="40" x2="760" y2="380" stroke="rgba(255,255,255,0.05)"/>
+
+          <!-- E. TFM full coverage -->
+          <rect x="80" y="60" width="200" height="32" rx="6" fill="rgba(167,139,250,0.18)" stroke="#A78BFA" stroke-width="1.4"/>
+          <text x="92" y="80" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">E · TFM full coverage</text>
+          <text x="272" y="80" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">~2h GPU</text>
+
+          <!-- A. Path-dependent PTB -->
+          <rect x="280" y="100" width="220" height="32" rx="6" fill="rgba(34,211,238,0.18)" stroke="#22D3EE" stroke-width="1.4"/>
+          <text x="292" y="120" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">A · path-dependent priceToBeat</text>
+          <text x="492" y="120" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">~3h SQL+pandas</text>
+
+          <!-- F. Threshold-crossing meta-feature -->
+          <rect x="280" y="140" width="120" height="32" rx="6" fill="rgba(244,114,182,0.18)" stroke="#F472B6" stroke-width="1.4"/>
+          <text x="292" y="160" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">F · meta-feature</text>
+          <text x="392" y="160" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">~1h</text>
+
+          <!-- B. Chainlink staleness gates -->
+          <rect x="520" y="180" width="160" height="32" rx="6" fill="rgba(251,191,36,0.18)" stroke="#FBBF24" stroke-width="1.4"/>
+          <text x="532" y="200" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">B · chainlink staleness</text>
+          <text x="672" y="200" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">~2h</text>
+
+          <!-- C. Binance depth backfill + retrain -->
+          <rect x="520" y="220" width="200" height="32" rx="6" fill="rgba(52,211,153,0.18)" stroke="#34D399" stroke-width="1.4"/>
+          <text x="532" y="240" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">C · Binance depth backfill</text>
+          <text x="712" y="240" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">~5h</text>
+
+          <!-- D. Polymarket CLOB (stretch) -->
+          <rect x="520" y="260" width="240" height="32" rx="6" fill="rgba(248,113,113,0.12)" stroke="#F87171" stroke-width="1.4" stroke-dasharray="5 4"/>
+          <text x="532" y="280" font-family="JetBrains Mono" font-size="11" fill="#F5F3F0">D · Polymarket CLOB (stretch)</text>
+          <text x="752" y="280" font-family="JetBrains Mono" font-size="9" fill="#7A7268" text-anchor="end">~1day eng change</text>
+
+          <!-- Acceptance gates -->
+          <g>
+            <text x="80" y="330" font-family="JetBrains Mono" font-size="9" letter-spacing="0.1em" fill="#7A7268">ACCEPTANCE GATES AFTER EACH STEP</text>
+            <text x="80" y="350" font-family="JetBrains Mono" font-size="9" fill="#A8A29E">— walk-forward CV mean DOWN @ p≤0.23 ≥ 91%</text>
+            <text x="80" y="365" font-family="JetBrains Mono" font-size="9" fill="#A8A29E">— worst-fold WR at either tight threshold ≥ 90%</text>
+            <text x="80" y="380" font-family="JetBrains Mono" font-size="9" fill="#A8A29E">— ECE ≤ 0.05 on all folds incl. today-style regimes</text>
+          </g>
+        </svg>
+        <div class="timeline-legend">
+          <span style="--swatch: #A78BFA">E · TFM</span>
+          <span style="--swatch: #22D3EE">A · PTB path</span>
+          <span style="--swatch: #F472B6">F · meta-feature</span>
+          <span style="--swatch: #FBBF24">B · chainlink</span>
+          <span style="--swatch: #34D399">C · Binance depth</span>
+          <span style="--swatch: #F87171">D · CLOB (stretch)</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 12 · DATA COLLECTION                                           -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="data">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">12 · what we need</span>
+        <h2>What we <em>have</em> vs what we <em>need</em>.</h2>
+        <p>
+          Two of the six workstreams need genuinely new data. The other four are derivable from data already in our warehouse. Here's the split.
+        </p>
+      </div>
+
+      <div class="data-cols">
+        <div class="data-col" data-need="false">
+          <h4>No new data needed</h4>
+          <div class="data-row">
+            <div class="data-row-tag">A</div>
+            <div class="data-row-body"><strong>Path-dependent PTB features</strong>Derive from ticks_binance + market_data.open_price (priceToBeat) which we already backfilled to 97.9% coverage today.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">B</div>
+            <div class="data-row-body"><strong>Chainlink staleness gates</strong>Derive from existing ticks_chainlink timestamps. Compute age + heartbeat publish rate per window.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">E</div>
+            <div class="data-row-body"><strong>TFM/LoRA full coverage</strong>No new raw data — we run LoRA inference on the ticks_binance history we already have. ~2h GPU on the RTX 3060.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">F</div>
+            <div class="data-row-body"><strong>Threshold-crossing meta-feature</strong>Compute via SQL window functions against signal_evaluations rows we already store every ~2s.</div>
+          </div>
+        </div>
+
+        <div class="data-col" data-need="true">
+          <h4>Need new data</h4>
+          <div class="data-row">
+            <div class="data-row-tag">C</div>
+            <div class="data-row-body">
+              <strong>Binance order-book depth</strong>
+              Source: <span class="mono-inline">data.binance.vision/.../bookDepth/</span><br>
+              Size: ~24MB compressed zips for 22 days × 2 assets<br>
+              Schema: 12 percentage bands (±0.2/1/2/3/4/5%) cumulative notional per side, ~32s snapshots<br>
+              Effort: 5-10 min wall (download + parse + 5m aggregation)
+            </div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">D</div>
+            <div class="data-row-body">
+              <strong>Polymarket CLOB (ETH binary markets)</strong>
+              Source: <span class="mono-inline">clob.polymarket.com/book</span> + prices-history endpoints<br>
+              The engine's CLOBFeed is BTC-hardcoded — needs a 1-line change to support ETH + XRP.<br>
+              Historical L2 books may not be retrievable; this might be forward-only collection<br>
+              Effort: ~1 day for engine change + ongoing collection
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">if you're following along at home</div>
+        <p>
+          The <em>data.binance.vision</em> archive is genuinely a goldmine for crypto microstructure research — it's free, no auth, no rate limits in practice, and goes back to 2017. The available datasets include trades (aggTrades), order book snapshots (bookDepth, bookTicker), klines, and metrics. If you're learning quant finance, downloading and exploring this dataset is the single best free first project.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 13 · CLAUDE CODE PROMPTS                                       -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="prompts">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">13 · run this yourself</span>
+        <h2>The exact <em>prompts</em>.</h2>
+        <p>
+          Want to try this on your own? Here are six Claude Code prompts you can copy and run. Each one is the actual instruction we used today (or a close-to-production variant). They assume you have a working Python + pandas + lightgbm environment and access to a similar dataset.
+        </p>
+        <p>
+          These aren't toy versions — they're how the real model got built. Use them as starting points for your own experiments.
+        </p>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span class="prompt-num">prompt 01</span>
+          <span class="prompt-title">Walk-forward CV trainer for ETH binary outcomes</span>
+          <button class="copy-btn" data-target="prompt-01">copy</button>
+        </div>
+        <div class="prompt-body" id="prompt-01">Build a walk-forward CV trainer for ETH 5m binary outcome predictions using LightGBM. Requirements:
+
+- Use a 22-day corpus from RDS (or Parquet) covering 2026-04-29 → 2026-05-21 for ETH 5m windows
+- Six per-delta booster heads, one each for delta_seconds in {30, 60, 90, 120, 180, 240}
+- Split via 5-fold expanding-window walk-forward CV with 3-day test windows (the latest fold's test is the most recent 3 days)
+- Apply DOWN-side sample reweighting at 3.0x (rows where y=0 get weight 3.0)
+- For each fold and each delta, fit an isotonic calibrator on a 20% slice of the train portion held out for calibration
+- Report per-threshold mean WR ± std across folds for both UP (p≥0.70 to 0.84 step 0.02) and DOWN (p≤0.45 to 0.21 step 0.02)
+- Output: ab_comparison_walk_forward.md, per_fold_metrics.json, feature_importance.csv averaged across folds, and saved booster + isotonic JSON files per fold per delta
+- Acceptance: report mean DOWN WR @ p≤0.23, mean UP WR @ p≥0.82, worst-fold WR at those thresholds, and ECE per fold</div>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span class="prompt-num">prompt 02</span>
+          <span class="prompt-title">Polymarket gamma backfill (public API, no creds)</span>
+          <button class="copy-btn" data-target="prompt-02">copy</button>
+        </div>
+        <div class="prompt-body" id="prompt-02">Backfill 5m gamma price data for ETH and XRP from Polymarket's public Gamma API for the date range 2026-04-29 → today. For each 5-minute window_ts:
+
+1. GET https://gamma-api.polymarket.com/events?slug={asset}-updown-5m-{window_ts}
+2. Extract markets[0].conditionId and markets[0].clobTokenIds (parses to two token IDs: UP and DOWN)
+3. GET https://clob.polymarket.com/prices-history?market={token_id}&interval=max&fidelity=60 for each token
+4. Find the price at-or-just-before window_ts as the open price gamma feature
+5. Insert into ticks_gamma table with timeframe='5m' (or stage to parquet if you don't have DB write access)
+
+Test the rate limit first — try 50 concurrent requests and back off only if you see HTTP 429. Polymarket's public API tolerated ~200-630 req/s in our testing. No API credentials needed.
+
+Use a User-Agent header (Polymarket returns 403 without one). Report rows inserted, missing windows count, and total wall time.</div>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span class="prompt-num">prompt 03</span>
+          <span class="prompt-title">Path-dependent priceToBeat features</span>
+          <button class="copy-btn" data-target="prompt-03">copy</button>
+        </div>
+        <div class="prompt-body" id="prompt-03">Compute path-dependent priceToBeat features for the ETH 5m training corpus. priceToBeat = market_data.open_price (Polymarket's Chainlink reference at window open). For each (window_ts, score_time) row in the corpus, compute these new features from the corresponding ticks_binance history within [window_ts, score_time]:
+
+- twap_since_ptb_pct = (TWAP from window_open to score_time − priceToBeat) / priceToBeat
+- time_above_ptb_pct = seconds with price > priceToBeat / elapsed seconds
+- n_crossings_ptb = number of times price crossed priceToBeat during the window-to-score-time interval
+- max_excursion_above_ptb_pct = max((price − priceToBeat) / priceToBeat) over the interval
+- max_excursion_below_ptb_pct = min((price − priceToBeat) / priceToBeat) over the interval
+- ptb_distance_normalised_z = (current_price − priceToBeat) / realized_vol_since_open
+
+Add these to FEATURE_COLUMNS_V5_ETH_XRP. Retrain the v9.4 walk-forward CV trainer. Compare mean DOWN WR @ p≤0.23 and worst-fold WR against v9.4 baseline. Only ship if mean improves AND worst-fold doesn't regress more than 2pp.</div>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span class="prompt-num">prompt 04</span>
+          <span class="prompt-title">Probability-crossing meta-feature</span>
+          <button class="copy-btn" data-target="prompt-04">copy</button>
+        </div>
+        <div class="prompt-body" id="prompt-04">Add a probability-crossing meta-feature to v9.5. The signal_evaluations table stores ~150 probability emissions per 5m window. For each window_ts, compute:
+
+- p50_crossings: count of times probability_lgb_v9_2_eth crossed 0.5 during the window's lifetime
+- p_std_within_window: stddev of probability values within the window
+- p_range: max − min of probability values within the window
+- longest_stable_streak_s: longest contiguous time the probability stayed on one side of 0.5
+
+Use SQL window functions (LAG over PARTITION BY window_ts ORDER BY evaluated_at). Compute as additional features in the corpus build pipeline. These describe the model's own indecision and should help v9.5 know when to abstain on edge cases.
+
+Test as a gate first ("only fire when p50_crossings <= 2 in the last 60s") before treating as a feature. If the gate version improves worst-fold WR by more than 1pp without dropping fire rate below 50% of baseline, promote it to a feature.</div>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span class="prompt-num">prompt 05</span>
+          <span class="prompt-title">Binance depth backfill from data.binance.vision</span>
+          <button class="copy-btn" data-target="prompt-05">copy</button>
+        </div>
+        <div class="prompt-body" id="prompt-05">Backfill historical Binance futures order-book depth for ETHUSDT + XRPUSDT covering 2026-04-29 → today. Source: https://data.binance.vision/data/futures/um/daily/bookDepth/{SYMBOL}/
+
+For each daily zip:
+1. Download (parallel up to 10 concurrent)
+2. Unzip, parse the CSV (schema: timestamp, percentage, depth, notional, side)
+3. The percentage bands are: ±0.2%, ±1%, ±2%, ±3%, ±4%, ±5% (12 rows per snapshot, snapshots every ~32s)
+4. Aggregate to 5-minute buckets keyed by window_ts (floor(snapshot_ts / 300) * 300)
+5. Per (asset, window_ts), compute:
+   - binance_best_bid (inner-band buy notional / qty proxy)
+   - binance_best_ask (inner-band sell notional / qty proxy)
+   - binance_spread, binance_mid
+   - binance_depth_imbalance_inner = (sum_bid_notional − sum_ask_notional) / total at ±0.2%
+   - binance_depth_imbalance_1pct (same at ±1%)
+   - binance_depth_imbalance_5pct (same at ±5%)
+6. Save to /tmp/v9_5_binance_depth.parquet
+
+Don't apply the schema to RDS yet — stage to parquet for the v9.5 corpus build to JOIN. Report total bytes downloaded, rows aggregated, wall time, and any failed downloads.</div>
+      </div>
+
+      <div class="prompt-block">
+        <div class="prompt-head">
+          <span class="prompt-num">prompt 06</span>
+          <span class="prompt-title">Statistical significance test for trading WR</span>
+          <button class="copy-btn" data-target="prompt-06">copy</button>
+        </div>
+        <div class="prompt-body" id="prompt-06">Write a Python module that takes a list of bet outcomes (1 for win, 0 for loss) and computes:
+
+1. Point estimate of WR
+2. Two-proportion z-test vs the 0.50 base rate (return z, p-value)
+3. Two-proportion z-test vs a user-supplied null (e.g. 0.90 if testing "do we beat 90%?")
+4. 95% bootstrap CI via 10,000 resamples
+5. Wilson CI (better than normal approximation for proportions near 0 or 1)
+6. Minimum n required to detect the observed effect at α=0.05 with power=0.80
+7. Reliability bins (10 bins from 0 to 1) showing predicted-vs-realized WR per bin
+8. Expected Calibration Error (ECE) summary
+
+Functions: significance_summary(outcomes, predicted_probs, base_rate=0.5, null_h0=None) returns a dict with all of the above. Include unit tests that verify against known textbook examples (e.g. 100 wins out of 200 trials vs 50% base rate should give z ≈ 0). Run on v9.4's DOWN @ p≤0.21 actuals (mean WR ~91.8%, n ~4,898 across folds) and report whether we can claim &gt;88%, &gt;90%, and &gt;92% with 95% confidence.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 13½ · THE DEDUP FINDING (added post-training) -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="dedup">
+    <div class="container">
+      <div class="reading">
+        <span class="kicker">13½ · the dedup lesson</span>
+        <h2>When <em>WR is a lie</em>.</h2>
+        <p>
+          After Step 1 of v9.5 we got walk-forward CV results showing 96-98% UP WR. We almost shipped that number. Then we ran a deduplication analysis — and discovered the WR was being inflated by a counting artifact.
+        </p>
+        <p>
+          The cross-validation reports WR across <strong>(window_ts, delta_seconds)</strong> rows. Each window has 6 delta heads. The model can fire on a window via multiple deltas. The CV counts each as a separate "fire". So a window where the model is right at 4 of 6 deltas counts as 4 "wins" — even though in production we only place ONE bet per window.
+        </p>
+        <p>
+          Worse — we then synthesised the per-tick (every 2s) prediction grid for v9.5.0 across the full 22-day corpus. ~840k synthesised emissions. If you count those PER-TICK, the model often fires 60+ times within a single window once it crosses the threshold. The per-tick WR looks great. The per-window WR is much lower.
+        </p>
+      </div>
+
+      <div class="matrix-wrap">
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>side</th>
+              <th>threshold</th>
+              <th>per-tick WR</th>
+              <th>per-window WR</th>
+              <th>n unique windows</th>
+              <th>median 1st fire</th>
+              <th>vs v9.4 LIVE (89.8% @ p≥0.82)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="experiment">UP</td><td><span class="matrix-num">p ≥ 0.82</span></td><td><span class="matrix-num">88.5%</span></td><td><span class="matrix-num">74.4%</span><span class="matrix-delta bad">below v9.4 LIVE</span></td><td><span class="matrix-num">2,260</span></td><td><span class="matrix-num">102s</span></td><td class="verdict">worse</td></tr>
+            <tr><td class="experiment">UP</td><td><span class="matrix-num">p ≥ 0.90</span></td><td><span class="matrix-num">91.4%</span></td><td><span class="matrix-num">79.3%</span></td><td><span class="matrix-num">2,060</span></td><td><span class="matrix-num">152s</span></td><td class="verdict">below</td></tr>
+            <tr data-verdict="ship"><td class="experiment">UP</td><td><span class="matrix-num">p ≥ 0.96</span></td><td><span class="matrix-num">96.5%</span></td><td><span class="matrix-num">90.8%</span><span class="matrix-delta good">match v9.4 + 32× volume</span></td><td><span class="matrix-num">1,601</span></td><td><span class="matrix-num">226s</span></td><td class="verdict">SHIP ✓</td></tr>
+            <tr data-verdict="ship"><td class="experiment">UP</td><td><span class="matrix-num">p ≥ 0.98</span></td><td><span class="matrix-num">97.2%</span></td><td><span class="matrix-num">93.0%</span></td><td><span class="matrix-num">1,457</span></td><td><span class="matrix-num">254s</span></td><td class="verdict">stretch</td></tr>
+            <tr><td class="experiment">DOWN</td><td><span class="matrix-num">p ≤ 0.23</span></td><td><span class="matrix-num">85.9%</span></td><td><span class="matrix-num">71.0%</span><span class="matrix-delta bad">far below v9.4 LIVE</span></td><td><span class="matrix-num">2,535</span></td><td><span class="matrix-num">92s</span></td><td class="verdict">worse</td></tr>
+            <tr><td class="experiment">DOWN</td><td><span class="matrix-num">p ≤ 0.10</span></td><td><span class="matrix-num">92.9%</span></td><td><span class="matrix-num">83.5%</span></td><td><span class="matrix-num">1,939</span></td><td><span class="matrix-num">152s</span></td><td class="verdict">close</td></tr>
+            <tr data-verdict="ship"><td class="experiment">DOWN</td><td><span class="matrix-num">p ≤ 0.06</span></td><td><span class="matrix-num">94.2%</span></td><td><span class="matrix-num">87.1%</span></td><td><span class="matrix-num">1,753</span></td><td><span class="matrix-num">162s</span></td><td class="verdict">borderline</td></tr>
+            <tr data-verdict="ship"><td class="experiment">DOWN</td><td><span class="matrix-num">p ≤ 0.04</span></td><td><span class="matrix-num">96.4%</span></td><td><span class="matrix-num">92.0%</span><span class="matrix-delta good">beats v9.4 LIVE</span></td><td><span class="matrix-num">1,480</span></td><td><span class="matrix-num">198s</span></td><td class="verdict">SHIP ✓</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">the production-honest operating points</div>
+        <p>
+          v9.5.0 at <span class="mono-inline">UP p≥0.96 / DOWN p≤0.04</span> matches v9.4 LIVE's realised WR (89.8% on 49 fires) AND gives us roughly <em>3-4× more fires per day</em>. That's the version we ship. The v9.5.1 meta-feature architecture is for a v9.6+ deployment project, not the immediate ship.
+        </p>
+      </div>
+
+      <h3 style="text-align: center; max-width: var(--reading-max); margin: 4rem auto 1rem;">Deployment design — single-model vs stacked</h3>
+      <div class="reading">
+        <p>
+          The dedup finding has architectural implications for v9.5.1 deployment, which the current engine isn't set up for. Three patterns we considered:
+        </p>
+      </div>
+
+      <div class="data-cols">
+        <div class="data-col" data-need="false">
+          <h4>v9.5.0 — drop-in replacement</h4>
+          <div class="data-row">
+            <div class="data-row-tag">A</div>
+            <div class="data-row-body"><strong>Same engine pattern as v9.4 deploy</strong>Single model, one LGB inference per tick. Engine writes <span class="mono-inline">probability_lgb_v9_5_eth</span> to signal_evaluations. Strategy gates on tight thresholds (UP p≥0.96, DOWN p≤0.04).</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">B</div>
+            <div class="data-row-body"><strong>Production-ready today</strong>Same S3 flip pattern (current.json swap), same runtime_overrides table, same engine code path. We ship today's session.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">C</div>
+            <div class="data-row-body"><strong>Estimated effect: ~100 fires/day at 90-92% WR</strong>vs v9.4 LIVE's 49 fires/day at 89.8%. 2x volume, similar WR — that's real lift.</div>
+          </div>
+        </div>
+
+        <div class="data-col" data-need="true">
+          <h4>v9.5.1 — stacked, needs engine refactor</h4>
+          <div class="data-row">
+            <div class="data-row-tag">A</div>
+            <div class="data-row-body"><strong>Two-stage inference per tick</strong>v9.5.0 fires every 2s and accumulates predictions in a per-window buffer. v9.5.1 reads the buffer, computes meta features (p_mean, p_std, n_crossings, etc.), then makes its own prediction.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">B</div>
+            <div class="data-row-body"><strong>Cold-start: meta needs ~30 emissions</strong>That's ~60s of v9.5.0 history. So v9.5.1 can only produce meaningful predictions from <em>t = window_open + 60s</em> onwards. The first 60s of every window is v9.5.0-only.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">C</div>
+            <div class="data-row-body"><strong>Engine work needed</strong>Per-window buffer, two model inferences, two probability columns in signal_evaluations, new strategy that reads <span class="mono-inline">probability_lgb_v9_5_1_eth</span>. ~1-2 days of engine PR.</div>
+          </div>
+          <div class="data-row">
+            <div class="data-row-tag">D</div>
+            <div class="data-row-body"><strong>Validation gate</strong>Before shipping v9.5.1, deploy it in GHOST mode side-by-side with v9.5.0 LIVE. Compare per-window WR on actual production data for 48h before promoting. The dedup lesson taught us not to trust CV numbers blindly.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout">
+        <div class="callout-label">why this matters for the architecture</div>
+        <p>
+          The principle: a model that uses meta-features about itself is a <em>stacked</em> model. Stacking can give real lift but creates new deployment patterns. The engine needs to maintain state across emissions (the per-window buffer), and the strategy needs to wait for a warm-up period before trusting v9.5.1's output. None of that exists today.
+        </p>
+        <p>
+          Ship v9.5.0 first. Build the stacking infrastructure as a separate engineering project. Then v9.5.1 becomes a feature flag flip, not a model swap.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <!-- 14 · CLOSE                                                     -->
+  <!-- ─────────────────────────────────────────────────────────────── -->
+  <section id="close">
+    <div class="container">
+      <div class="final-wrap">
+        <span class="kicker">14 · if you're 16 and reading this</span>
+        <h2>You can <em>build this</em>.</h2>
+        <div class="final-quote">
+          "The gap between not knowing this exists<br>and shipping a real <span>92% win-rate</span> model is one hard week."
+        </div>
+        <p>
+          Everything in this chapter is normal engineering. There's no special degree required. The math is high-school stats. The code is Python. The data is public. The hardware is a $300 GPU. The hard part isn't any single piece — it's putting them together with rigour and being honest with yourself when an experiment fails.
+        </p>
+        <p>
+          v9.2 ETH got demoted because we measured it wrong. v9.4 ships because we measured it right. The lesson isn't a clever feature or a fancy architecture — it's <strong>walk-forward CV plus tight thresholds plus admitting variance</strong>. Three boring decisions made well.
+        </p>
+
+        <div class="next-list">
+          <div class="next-item">
+            <div class="next-item-num">01</div>
+            <h5>Learn pandas + scikit-learn first.</h5>
+            <p>The 200 most important hours of your ML career. Forget PyTorch until you can wrangle a CSV without thinking. Kaggle Learn micro-courses are free and brutal in the right way.</p>
+          </div>
+          <div class="next-item">
+            <div class="next-item-num">02</div>
+            <h5>Get fluent in SQL.</h5>
+            <p>Window functions, CTEs, JSONB ops, lateral joins, EXPLAIN ANALYZE. Most ML production work is data wrangling, and most data lives in Postgres. Pick a free Postgres tutorial and finish it.</p>
+          </div>
+          <div class="next-item">
+            <div class="next-item-num">03</div>
+            <h5>Read papers on prediction markets.</h5>
+            <p>Start with Polymarket's own docs + the Numerai prize-winning analyses + de Prado's "Advances in Financial Machine Learning". Combinatorial purged CV is the next thing you'll want after walk-forward.</p>
+          </div>
+        </div>
+
+        <p style="margin-top: 3rem;">
+          The chapter you just read was written from a real trading session. If you want to try Claude Code yourself — the tool that built v9.4 in a single afternoon — go to <a href="https://claude.com/code">claude.com/code</a> and the Anthropic API at <a href="https://docs.claude.com">docs.claude.com</a>. Bring your own data. Ask hard questions. Don't trust the first answer.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer class="chapter-footer">
+    Chapter 13 of an open trading-ML notebook<br>
+    written 2026-05-22 · v9.4 ships live · v9.5 starts now
+  </footer>
+
+  <script>
+    // ──────────────────────────────────────────────────────────────
+    // PLOTLY THEME
+    // ──────────────────────────────────────────────────────────────
+    const plotlyTheme = {
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { family: 'JetBrains Mono, monospace', color: '#B8B3AB', size: 11 },
+      margin: { l: 60, r: 30, t: 30, b: 50 },
+    };
+
+    // ──────────────────────────────────────────────────────────────
+    // SECTION 04 · FEATURE IMPORTANCE 3D
+    // ──────────────────────────────────────────────────────────────
+    const featureData = [
+      // TFM
+      { cat: 'TFM', name: 'tfm_p10', gain: 612 },
+      { cat: 'TFM', name: 'tfm_p50', gain: 588 },
+      { cat: 'TFM', name: 'tfm_p90', gain: 547 },
+      { cat: 'TFM', name: 'tfm_skew', gain: 421 },
+      { cat: 'TFM', name: 'tfm_spread', gain: 482 },
+      { cat: 'TFM', name: 'tfm_confidence', gain: 318 },
+      { cat: 'TFM', name: 'tfm_tail_risk', gain: 296 },
+      { cat: 'TFM', name: 'tfm_quantile_ratio', gain: 264 },
+      { cat: 'TFM', name: 'tfm_predicted_close', gain: 502 },
+      // Coinglass
+      { cat: 'Coinglass', name: 'cg_oi_usd', gain: 944 },
+      { cat: 'Coinglass', name: 'cg_funding_rate', gain: 938 },
+      { cat: 'Coinglass', name: 'cg_long_pct', gain: 318 },
+      { cat: 'Coinglass', name: 'cg_short_pct', gain: 282 },
+      { cat: 'Coinglass', name: 'cg_long_short_ratio', gain: 341 },
+      { cat: 'Coinglass', name: 'cg_lsr_momentum', gain: 425 },
+      { cat: 'Coinglass', name: 'cg_oi_delta_pct', gain: 487 },
+      { cat: 'Coinglass', name: 'cg_top_long_pct', gain: 395 },
+      { cat: 'Coinglass', name: 'cg_top_short_pct', gain: 318 },
+      { cat: 'Coinglass', name: 'cg_top_position_ratio', gain: 372 },
+      { cat: 'Coinglass', name: 'cg_liq_long_usd', gain: 215 },
+      { cat: 'Coinglass', name: 'cg_liq_short_usd', gain: 196 },
+      { cat: 'Coinglass', name: 'cg_taker_buy_usd', gain: 694 },
+      { cat: 'Coinglass', name: 'cg_taker_sell_usd', gain: 789 },
+      { cat: 'Coinglass', name: 'cg_taker_net_usd', gain: 2720 },
+      { cat: 'Coinglass', name: 'cg_taker_flow_velocity', gain: 926 },
+      // VPIN
+      { cat: 'VPIN', name: 'vpin_sg', gain: 421 },
+      { cat: 'VPIN', name: 'vpin_ewma12', gain: 482 },
+      { cat: 'VPIN', name: 'vpin_ewma60', gain: 537 },
+      { cat: 'VPIN', name: 'vpin_roll_std20', gain: 308 },
+      // Delta
+      { cat: 'Delta', name: 'delta_binance_sg', gain: 1010 },
+      { cat: 'Delta', name: 'delta_binance_ewma12', gain: 1082 },
+      { cat: 'Delta', name: 'delta_binance_ewma60', gain: 1124 },
+      { cat: 'Delta', name: 'delta_binance_roll_std20', gain: 1044 },
+      { cat: 'Delta', name: 'delta_tiingo_ewma12', gain: 1006 },
+      { cat: 'Delta', name: 'delta_tiingo_ewma60', gain: 1163 },
+      { cat: 'Delta', name: 'delta_pct_ewma12', gain: 245 },
+      { cat: 'Delta', name: 'delta_pct_ewma60', gain: 287 },
+      // v2 logit
+      { cat: 'v2_logit', name: 'v2_logit_ewma12', gain: 312 },
+      { cat: 'v2_logit', name: 'v2_logit_ewma60', gain: 348 },
+      // Time
+      { cat: 'Time', name: 'hour_of_day', gain: 408 },
+      { cat: 'Time', name: 'day_of_week', gain: 256 },
+      { cat: 'Time', name: 'minute_of_hour', gain: 712 },
+      { cat: 'Time', name: 'session_bucket', gain: 197 },
+      { cat: 'Time', name: 'eval_offset', gain: 482 },
+      // Price
+      { cat: 'Price', name: 'px_at_t', gain: 387 },
+      { cat: 'Price', name: 'ret_60s', gain: 1020 },
+      { cat: 'Price', name: 'px_60s_before_t', gain: 358 },
+      { cat: 'Price', name: 'chainlink_price', gain: 412 },
+      { cat: 'Price', name: 'ret_since_window_open', gain: 58316 },
+      // Volatility
+      { cat: 'Volatility', name: 'vol_std_pct', gain: 1842 },
+      { cat: 'Volatility', name: 'vol_range_pct', gain: 4844 },
+      // Source quality
+      { cat: 'Source', name: 'chainlink_vs_binance', gain: 1096 },
+      { cat: 'Source', name: 'tfm_spread_norm', gain: 287 },
+      // Gamma
+      { cat: 'Gamma', name: 'gamma_up_price', gain: 412 },
+      { cat: 'Gamma', name: 'gamma_down_price', gain: 396 },
+      { cat: 'Gamma', name: 'gamma_implied_up', gain: 524 },
+      { cat: 'Gamma', name: 'gamma_market_vig', gain: 226 },
+      { cat: 'Gamma', name: 'gamma_spread', gain: 364 },
+    ];
+
+    const categoryColors = {
+      'TFM': '#A78BFA',
+      'Coinglass': '#22D3EE',
+      'VPIN': '#34D399',
+      'Delta': '#FBBF24',
+      'v2_logit': '#F472B6',
+      'Time': '#A78BFA',
+      'Price': '#22D3EE',
+      'Volatility': '#34D399',
+      'Source': '#FBBF24',
+      'Gamma': '#F472B6',
+    };
+
+    function renderFeaturePlot() {
+      const cats = ['TFM', 'Coinglass', 'VPIN', 'Delta', 'v2_logit', 'Time', 'Price', 'Volatility', 'Source', 'Gamma'];
+      const traces = cats.map(cat => {
+        const items = featureData.filter(f => f.cat === cat).sort((a, b) => b.gain - a.gain);
+        return {
+          type: 'scatter3d',
+          mode: 'markers',
+          name: cat,
+          x: items.map(f => cats.indexOf(cat)),
+          y: items.map((_, i) => i),
+          z: items.map(f => Math.log10(f.gain + 10)),
+          text: items.map(f => `<b>${f.name}</b><br>category: ${f.cat}<br>gain: ${f.gain.toLocaleString()}`),
+          hoverinfo: 'text',
+          marker: {
+            size: items.map(f => Math.sqrt(f.gain) * 0.6 + 4),
+            color: categoryColors[cat],
+            opacity: 0.85,
+            line: { color: 'rgba(255,255,255,0.2)', width: 0.5 },
+          },
+        };
+      });
+
+      Plotly.newPlot('featurePlot', traces, {
+        ...plotlyTheme,
+        showlegend: true,
+        legend: { font: { size: 10, color: '#B8B3AB' }, orientation: 'h', x: 0, y: -0.05 },
+        scene: {
+          xaxis: {
+            title: { text: 'category', font: { size: 10 } },
+            tickvals: cats.map((_, i) => i),
+            ticktext: cats,
+            tickfont: { size: 9, color: '#7A7268' },
+            gridcolor: 'rgba(255,255,255,0.06)',
+            zerolinecolor: 'rgba(255,255,255,0.1)',
+            backgroundcolor: 'rgba(0,0,0,0)',
+          },
+          yaxis: {
+            title: { text: 'rank within cat', font: { size: 10 } },
+            tickfont: { size: 9, color: '#7A7268' },
+            gridcolor: 'rgba(255,255,255,0.06)',
+            zerolinecolor: 'rgba(255,255,255,0.1)',
+            backgroundcolor: 'rgba(0,0,0,0)',
+          },
+          zaxis: {
+            title: { text: 'log10 gain', font: { size: 10 } },
+            tickfont: { size: 9, color: '#7A7268' },
+            gridcolor: 'rgba(255,255,255,0.06)',
+            zerolinecolor: 'rgba(255,255,255,0.1)',
+            backgroundcolor: 'rgba(0,0,0,0)',
+          },
+          camera: { eye: { x: 1.6, y: 1.2, z: 1.1 } },
+          bgcolor: 'rgba(0,0,0,0)',
+        },
+        margin: { l: 0, r: 0, t: 0, b: 0 },
+      }, { responsive: true, displayModeBar: false });
+    }
+    renderFeaturePlot();
+
+    // ──────────────────────────────────────────────────────────────
+    // SECTION 07 · CLIFF PLOTS (UP + DOWN sweeps with std band)
+    // ──────────────────────────────────────────────────────────────
+    const upSweep = [
+      { t: 0.70, mean: 88.64, std: 1.81 },
+      { t: 0.72, mean: 89.18, std: 1.73 },
+      { t: 0.74, mean: 89.60, std: 2.12 },
+      { t: 0.76, mean: 90.69, std: 2.47 },
+      { t: 0.78, mean: 91.68, std: 2.73 },
+      { t: 0.80, mean: 92.39, std: 1.90 },
+      { t: 0.82, mean: 93.03, std: 1.63 },
+      { t: 0.84, mean: 93.32, std: 1.79 },
+    ];
+    const dnSweep = [
+      { t: 0.45, mean: 73.97, std: 10.73 },
+      { t: 0.43, mean: 75.28, std: 11.00 },
+      { t: 0.41, mean: 77.04, std: 10.91 },
+      { t: 0.39, mean: 77.98, std: 10.80 },
+      { t: 0.37, mean: 78.46, std: 11.03 },
+      { t: 0.35, mean: 78.51, std: 12.24 },
+      { t: 0.33, mean: 79.28, std: 12.10 },
+      { t: 0.31, mean: 80.09, std: 14.26 },
+      { t: 0.29, mean: 80.43, std: 15.22 },
+      { t: 0.27, mean: 84.97, std: 6.78 },
+      { t: 0.25, mean: 89.76, std: 1.01 },
+      { t: 0.23, mean: 91.34, std: 0.80 },
+      { t: 0.21, mean: 91.79, std: 0.71 },
+    ];
+
+    function fanChart(divId, data, color, xTitle) {
+      const x = data.map(d => d.t);
+      const mean = data.map(d => d.mean);
+      const upper = data.map(d => d.mean + d.std);
+      const lower = data.map(d => d.mean - d.std);
+
+      const fan = {
+        x: x.concat(x.slice().reverse()),
+        y: upper.concat(lower.slice().reverse()),
+        fill: 'toself',
+        fillcolor: color.replace(')', ', 0.18)').replace('rgb', 'rgba'),
+        line: { color: 'transparent' },
+        hoverinfo: 'skip',
+        showlegend: false,
+      };
+      const meanLine = {
+        x, y: mean,
+        type: 'scatter', mode: 'lines+markers',
+        line: { color: color, width: 2.5 },
+        marker: { color: color, size: 7, line: { color: '#0A0A0F', width: 1.5 } },
+        name: 'mean WR',
+        hovertemplate: 'threshold %{x:.2f}<br>WR %{y:.2f}%<extra></extra>',
+      };
+      Plotly.newPlot(divId, [fan, meanLine], {
+        ...plotlyTheme,
+        xaxis: {
+          title: { text: xTitle, font: { size: 10, color: '#7A7268' } },
+          gridcolor: 'rgba(255,255,255,0.06)',
+          tickfont: { size: 10 },
+        },
+        yaxis: {
+          title: { text: 'WR % (mean ± std)', font: { size: 10, color: '#7A7268' } },
+          gridcolor: 'rgba(255,255,255,0.06)',
+          tickfont: { size: 10 },
+        },
+        showlegend: false,
+        margin: { l: 50, r: 20, t: 10, b: 50 },
+      }, { responsive: true, displayModeBar: false });
+    }
+    fanChart('cliffUpPlot', upSweep, 'rgb(52,211,153)', 'UP threshold (p ≥)');
+    fanChart('cliffDnPlot', dnSweep, 'rgb(244,114,182)', 'DOWN threshold (p ≤)');
+
+    // ──────────────────────────────────────────────────────────────
+    // SECTION 08 · SAMPLE-SIZE CALCULATOR
+    // ──────────────────────────────────────────────────────────────
+    function inverseNormalCDF(p) {
+      // Beasley-Springer-Moro approximation
+      const a = [-3.969683028665376e+01, 2.209460984245205e+02,
+        -2.759285104469687e+02, 1.383577518672690e+02,
+        -3.066479806614716e+01, 2.506628277459239e+00];
+      const b = [-5.447609879822406e+01, 1.615858368580409e+02,
+        -1.556989798598866e+02, 6.680131188771972e+01,
+        -1.328068155288572e+01];
+      const c = [-7.784894002430293e-03, -3.223964580411365e-01,
+        -2.400758277161838e+00, -2.549732539343734e+00,
+        4.374664141464968e+00, 2.938163982698783e+00];
+      const d = [7.784695709041462e-03, 3.224671290700398e-01,
+        2.445134137142996e+00, 3.754408661907416e+00];
+      const pLow = 0.02425;
+      const pHigh = 1 - pLow;
+      let q, r;
+      if (p < pLow) {
+        q = Math.sqrt(-2 * Math.log(p));
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+          ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+      } else if (p <= pHigh) {
+        q = p - 0.5; r = q * q;
+        return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+          (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+      } else {
+        q = Math.sqrt(-2 * Math.log(1 - p));
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+          ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+      }
+    }
+
+    function updateCalc() {
+      const p = parseFloat(document.getElementById('calcP').value);
+      const p0 = parseFloat(document.getElementById('calcP0').value);
+      const alpha = parseFloat(document.getElementById('calcA').value);
+      document.getElementById('calcPVal').textContent = p.toFixed(2);
+      document.getElementById('calcP0Val').textContent = p0.toFixed(2);
+      document.getElementById('calcAVal').textContent = alpha.toFixed(2);
+
+      if (p <= p0) {
+        document.getElementById('calcResult').textContent = 'observed ≤ null — no edge to detect';
+        return;
+      }
+
+      const zAlpha = inverseNormalCDF(1 - (1 - alpha) / 2);
+      const zBeta = inverseNormalCDF(0.80);
+      const effect = p - p0;
+      const term1 = zAlpha * Math.sqrt(p0 * (1 - p0));
+      const term2 = zBeta * Math.sqrt(p * (1 - p));
+      const n = Math.ceil(Math.pow((term1 + term2) / effect, 2));
+
+      document.getElementById('calcResult').textContent = `n ≈ ${n.toLocaleString()}`;
+    }
+    ['calcP', 'calcP0', 'calcA'].forEach(id => {
+      document.getElementById(id).addEventListener('input', updateCalc);
+    });
+    updateCalc();
+
+    // ──────────────────────────────────────────────────────────────
+    // SECTION 13 · COPY BUTTONS
+    // ──────────────────────────────────────────────────────────────
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const targetId = btn.dataset.target;
+        const text = document.getElementById(targetId).innerText.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = 'copied!';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = 'copy';
+            btn.classList.remove('copied');
+          }, 1800);
+        } catch (e) {
+          btn.textContent = 'failed';
+          setTimeout(() => { btn.textContent = 'copy'; }, 1500);
+        }
+      });
+    });
+
+    // ──────────────────────────────────────────────────────────────
+    // READING PROGRESS BAR + SIDE NAV ACTIVE STATE
+    // ──────────────────────────────────────────────────────────────
+    const progressBar = document.getElementById('readingProgress');
+    const navLinks = document.querySelectorAll('.side-nav a');
+    const sections = Array.from(document.querySelectorAll('section'));
+
+    function updateScroll() {
+      const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+      const scrolled = window.scrollY;
+      progressBar.style.width = `${(scrolled / docHeight) * 100}%`;
+
+      // Active section
+      const offset = window.innerHeight / 3;
+      let active = sections[0];
+      for (const s of sections) {
+        if (s.getBoundingClientRect().top <= offset) active = s;
+      }
+      const id = active.id;
+      navLinks.forEach(a => {
+        a.classList.toggle('active', a.dataset.target === id);
+      });
+    }
+    window.addEventListener('scroll', updateScroll, { passive: true });
+    updateScroll();
+  </script>
+
+</body>
+</html>
