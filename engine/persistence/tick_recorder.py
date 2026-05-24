@@ -217,6 +217,37 @@ class TickRecorder:
                         ON ticks_v2_probability (ts DESC);
                 """)
 
+                # ── ticks_binance_book ────────────────────────────────────
+                # Binance depth20 snapshots. Source data for the 4
+                # binance_depth_imbalance_* + binance_spread_pct features
+                # PR #582 added as schema stubs. Idempotent CREATE here
+                # mirrors `migrations/add_ticks_binance_book.sql`.
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS ticks_binance_book (
+                        id              BIGSERIAL PRIMARY KEY,
+                        ts              TIMESTAMPTZ  NOT NULL,
+                        asset           VARCHAR(10)  NOT NULL,
+                        last_update_id  BIGINT,
+                        best_bid        FLOAT8,
+                        best_ask        FLOAT8,
+                        best_bid_qty    FLOAT8,
+                        best_ask_qty    FLOAT8,
+                        mid             FLOAT8,
+                        spread_pct      FLOAT8,
+                        bid_depth_1pct  FLOAT8,
+                        ask_depth_1pct  FLOAT8,
+                        bid_depth_5pct  FLOAT8,
+                        ask_depth_5pct  FLOAT8,
+                        bids_top20      JSONB,
+                        asks_top20      JSONB,
+                        created_at      TIMESTAMPTZ DEFAULT NOW()
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_ticks_binance_book_ts
+                        ON ticks_binance_book (ts DESC);
+                    CREATE INDEX IF NOT EXISTS idx_ticks_binance_book_asset_ts
+                        ON ticks_binance_book (asset, ts DESC);
+                """)
+
             log.info("tick_recorder.tables_ensured")
         except Exception as exc:
             log.error("tick_recorder.ensure_tables_failed", error=str(exc))

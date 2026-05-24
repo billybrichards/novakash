@@ -127,6 +127,9 @@ class EngineRuntime:
         self._rtds_feed = getattr(root, "_rtds_feed", None)
         self._tiingo_feed = root._tiingo_feed
         self._clob_feed = root._clob_feed
+        # PR follow-up to #582: opt-in binance depth feed. None until
+        # start() instantiates it when BINANCE_DEPTH_ENABLED=1.
+        self._binance_depth_feed = getattr(root, "_binance_depth_feed", None)
         self._polymarket_feed = root._polymarket_feed
         self._tick_recorder = root._tick_recorder
 
@@ -900,6 +903,40 @@ class EngineRuntime:
                 asyncio.create_task(self._clob_feed.start(), name="feed:clob")
             )
             log.info("orchestrator.clob_feed_started")
+
+        # ── Binance Depth Feed (PR follow-up to #582) ───────────────────
+        # Opt-in via BINANCE_DEPTH_ENABLED=1. Feeds the 4
+        # binance_depth_imbalance_* + binance_spread_pct features
+        # to v9.3/v9.5 boosters. Multi-asset via FIVE_MIN_ASSETS.
+        if os.environ.get("BINANCE_DEPTH_ENABLED", "0") == "1":
+            try:
+                from data.feeds.binance_depth import BinanceDepthMultiFeed
+
+                _pool = self._db._pool if (self._db and getattr(self._db, "_pool", None)) else None
+                self._binance_depth_feed = BinanceDepthMultiFeed(db_pool=_pool)
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._binance_depth_feed.start(),
+                        name="feed:binance_depth",
+                    )
+                )
+                # Inject into the 5m strategy so the feature emitter
+                # uses the in-memory snapshot (zero DB latency on the
+                # scoring critical path).
+                if self._five_min_strategy and hasattr(self._five_min_strategy, "set_depth_feed"):
+                    self._five_min_strategy.set_depth_feed(self._binance_depth_feed)
+                log.info(
+                    "orchestrator.binance_depth_started",
+                    assets=self._binance_depth_feed.assets,
+                )
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.binance_depth_failed",
+                    error=str(exc)[:120],
+                )
+        else:
+            log.info("orchestrator.binance_depth_disabled", reason="env BINANCE_DEPTH_ENABLED!=1")
+
         self._tasks.append(
             asyncio.create_task(self._polymarket_feed.start(), name="feed:polymarket")
         )
@@ -1583,6 +1620,11 @@ class EngineRuntime:
             await self._chainlink_multi_feed.stop()
         if self._tiingo_feed:
             await self._tiingo_feed.stop()
+        if getattr(self, "_binance_depth_feed", None):
+            try:
+                await self._binance_depth_feed.stop()
+            except Exception:
+                pass
         await self._polymarket_feed.stop()
 
         # Cancel all tasks
