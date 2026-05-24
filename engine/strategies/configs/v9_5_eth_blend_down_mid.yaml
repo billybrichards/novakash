@@ -1,0 +1,55 @@
+name: v9_5_eth_blend_down_mid
+strategy_id: v9_5_eth_blend_down_mid
+version: "1.0.0"
+# v9_5_eth_blend_down_mid — 2026-05-24 — DOWN-MID conviction tier of the
+# v9.5 ETH BLEND ladder. See v9_5_eth_blend_up_low.yaml for ladder
+# overview.
+#
+# BAND SEMANTICS: fire DOWN if 0.12 < probability_lgb_v9_5_eth <= 0.18.
+# Reads the EXISTING probability_lgb_v9_5_eth column.
+#
+# BAND PROVENANCE (v9.5 ETH BLEND walk-forward OOF band sweep):
+#   Band (0.12, 0.18]: n=196 (82+68+46), mean WR ~89.7%, Wilson LB ~85%.
+#
+# eval_offset [60, 240], single-tick fire, ETH-only defensive guard.
+# Defaults GHOST. $5 max_position_usd.
+#
+# References: RDS notes #631 / #632; sibling PR
+# `feat/v9_5_eth_pure_lgb_strategy` (orthogonal data path).
+#
+status: GHOST
+description: |
+  DOWN-MID conviction tier of the v9.5 ETH BLEND ladder. Fires DOWN when
+  0.12 < probability_lgb_v9_5_eth <= 0.18, within eval_offset [60, 240],
+  on any single qualifying tick. ETH-only (defensive asset guard).
+  Band: n=196 OOF, mean WR ~89.7%, Wilson LB ~85%.
+  GHOST mode, $5 max_position_usd.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_5_eth_blend_down_mid.py
+pre_gate_hook: evaluate_v9_5_eth_blend_down_mid
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  down_threshold: 0.18
+  down_threshold_min: 0.12     # routes to down_high
+  eval_offset_min: 60
+  eval_offset_max: 240
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20

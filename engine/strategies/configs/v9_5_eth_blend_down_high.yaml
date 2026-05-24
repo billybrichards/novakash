@@ -1,0 +1,63 @@
+name: v9_5_eth_blend_down_high
+strategy_id: v9_5_eth_blend_down_high
+version: "1.0.0"
+# v9_5_eth_blend_down_high — 2026-05-24 — DOWN-HIGH (floor) tier of the
+# v9.5 ETH BLEND ladder. See v9_5_eth_blend_up_low.yaml for ladder
+# overview.
+#
+# BAND SEMANTICS: fire DOWN if probability_lgb_v9_5_eth <= 0.12 (NO
+# lower bound — this is the floor tier of the DOWN ladder). The
+# strongest-conviction DOWN region of the v9.5 ETH BLEND output. Reads
+# the EXISTING probability_lgb_v9_5_eth column.
+#
+# BAND PROVENANCE (v9.5 ETH BLEND walk-forward OOF band sweep):
+#   Band [0, 0.12]: n=53 (35+18), mean WR ~96%, Wilson LB ~88%.
+#
+# Implementation note: floor tier uses down_threshold_min=-1.0
+# (impossible lower — calibrated p never reaches negative values) so the
+# band check effectively becomes a one-sided p <= 0.12. The same
+# band-check codepath is shared with down_low / down_mid for uniformity.
+#
+# eval_offset [60, 240], single-tick fire, ETH-only defensive guard.
+# Defaults GHOST. $5 max_position_usd.
+#
+# References: RDS notes #631 / #632; sibling PR
+# `feat/v9_5_eth_pure_lgb_strategy` (orthogonal data path).
+#
+status: GHOST
+description: |
+  DOWN-HIGH floor tier of the v9.5 ETH BLEND ladder. Fires DOWN when
+  probability_lgb_v9_5_eth <= 0.12 (no lower bound — strongest DOWN
+  conviction region), within eval_offset [60, 240], on any single
+  qualifying tick. ETH-only (defensive asset guard).
+  Band: n=53 OOF, mean WR ~96%, Wilson LB ~88%.
+  GHOST mode, $5 max_position_usd.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_5_eth_blend_down_high.py
+pre_gate_hook: evaluate_v9_5_eth_blend_down_high
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  down_threshold: 0.12
+  down_threshold_min: -1.0     # impossible lower — floor tier (calibrated p >= 0.0)
+  eval_offset_min: 60
+  eval_offset_max: 240
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
