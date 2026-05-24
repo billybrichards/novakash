@@ -5,11 +5,18 @@
  * frontend redeploys. Polls /api/notes every 30s so notes added from other
  * sessions show up automatically. Cmd+Enter in the compose textarea submits.
  *
+ * Body rendering: react-markdown + remark-gfm (GitHub-flavoured markdown:
+ * tables, strikethrough, task lists, autolinks). Edit mode still uses a raw
+ * textarea so authors see the source. HTML is sanitized by default (no
+ * rehype-raw), so untrusted note bodies can't inject script tags.
+ *
  * Backend: hub/api/notes.py (GET/POST/PATCH/DELETE /api/notes)
  * Route:   /notes (registered in App.jsx, nav entry at top of POLYMARKET section)
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useApi } from '../hooks/useApi.js';
 
 // ─── Theme ────────────────────────────────────────────────────────────────
@@ -226,6 +233,205 @@ function TextArea({ value, onChange, placeholder, onKeyDown, inputRef, minHeight
         boxSizing: 'border-box',
       }}
     />
+  );
+}
+
+// ─── Markdown renderer ───────────────────────────────────────────────────
+//
+// react-markdown component overrides so rendered notes inherit the dark theme
+// + JetBrains Mono look without pulling in @tailwindcss/typography (Tailwind
+// v4 here, plugin setup is non-trivial and this page uses inline styles
+// everywhere else). GFM (tables, task-lists, strikethrough, autolinks) is
+// enabled via remarkPlugins. HTML is *not* rendered (no rehype-raw) so
+// untrusted note bodies cannot inject <script>.
+
+const MD_COMPONENTS = {
+  h1: ({ node, ...p }) => (
+    <h1
+      style={{
+        fontSize: 16,
+        fontWeight: 800,
+        color: T.white,
+        margin: '14px 0 6px',
+        borderBottom: `1px solid ${T.cardBorder}`,
+        paddingBottom: 4,
+      }}
+      {...p}
+    />
+  ),
+  h2: ({ node, ...p }) => (
+    <h2 style={{ fontSize: 14, fontWeight: 800, color: T.white, margin: '12px 0 6px' }} {...p} />
+  ),
+  h3: ({ node, ...p }) => (
+    <h3 style={{ fontSize: 12, fontWeight: 700, color: T.text, margin: '10px 0 4px' }} {...p} />
+  ),
+  h4: ({ node, ...p }) => (
+    <h4 style={{ fontSize: 11, fontWeight: 700, color: T.text, margin: '8px 0 4px' }} {...p} />
+  ),
+  p: ({ node, ...p }) => (
+    <p style={{ margin: '6px 0', lineHeight: 1.6, color: T.text, fontSize: 12 }} {...p} />
+  ),
+  a: ({ node, ...p }) => (
+    <a
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ color: T.cyan, textDecoration: 'underline' }}
+      {...p}
+    />
+  ),
+  ul: ({ node, ...p }) => (
+    <ul style={{ margin: '6px 0', paddingLeft: 22, color: T.text, fontSize: 12, lineHeight: 1.6 }} {...p} />
+  ),
+  ol: ({ node, ...p }) => (
+    <ol style={{ margin: '6px 0', paddingLeft: 22, color: T.text, fontSize: 12, lineHeight: 1.6 }} {...p} />
+  ),
+  li: ({ node, ...p }) => <li style={{ margin: '2px 0' }} {...p} />,
+  blockquote: ({ node, ...p }) => (
+    <blockquote
+      style={{
+        margin: '8px 0',
+        padding: '6px 10px',
+        borderLeft: `3px solid ${T.purple}`,
+        background: 'rgba(168,85,247,0.06)',
+        color: T.textMuted,
+        fontStyle: 'italic',
+        fontSize: 12,
+      }}
+      {...p}
+    />
+  ),
+  code: ({ node, inline, className, children, ...p }) => {
+    // react-markdown v9+ no longer passes `inline`; detect by absence of
+    // language-* className (block code always has one, inline never does).
+    const isInline = inline ?? !/^language-/.test(className || '');
+    if (isInline) {
+      return (
+        <code
+          style={{
+            background: 'rgba(15,23,42,0.7)',
+            border: `1px solid ${T.cardBorder}`,
+            borderRadius: 3,
+            padding: '1px 5px',
+            fontFamily: T.mono,
+            fontSize: 11,
+            color: T.cyan,
+          }}
+          {...p}
+        >
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code
+        style={{
+          fontFamily: T.mono,
+          fontSize: 11,
+          color: T.text,
+          display: 'block',
+          whiteSpace: 'pre',
+        }}
+        className={className}
+        {...p}
+      >
+        {children}
+      </code>
+    );
+  },
+  pre: ({ node, ...p }) => (
+    <pre
+      style={{
+        margin: '8px 0',
+        padding: '10px 12px',
+        background: 'rgba(15,23,42,0.7)',
+        border: `1px solid ${T.cardBorder}`,
+        borderRadius: 4,
+        overflowX: 'auto',
+        fontFamily: T.mono,
+        fontSize: 11,
+        lineHeight: 1.55,
+        color: T.text,
+      }}
+      {...p}
+    />
+  ),
+  table: ({ node, ...p }) => (
+    <div style={{ overflowX: 'auto', margin: '8px 0' }}>
+      <table
+        style={{
+          borderCollapse: 'collapse',
+          fontFamily: T.mono,
+          fontSize: 11,
+          color: T.text,
+          width: '100%',
+        }}
+        {...p}
+      />
+    </div>
+  ),
+  thead: ({ node, ...p }) => <thead style={{ background: T.headerBg }} {...p} />,
+  th: ({ node, ...p }) => (
+    <th
+      style={{
+        textAlign: 'left',
+        padding: '6px 10px',
+        border: `1px solid ${T.cardBorder}`,
+        color: T.white,
+        fontWeight: 700,
+      }}
+      {...p}
+    />
+  ),
+  td: ({ node, ...p }) => (
+    <td
+      style={{
+        padding: '6px 10px',
+        border: `1px solid ${T.cardBorder}`,
+        verticalAlign: 'top',
+      }}
+      {...p}
+    />
+  ),
+  hr: ({ node, ...p }) => (
+    <hr style={{ border: 0, borderTop: `1px solid ${T.cardBorder}`, margin: '12px 0' }} {...p} />
+  ),
+  img: ({ node, ...p }) => (
+    <img
+      style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${T.cardBorder}` }}
+      {...p}
+    />
+  ),
+  input: ({ node, ...p }) =>
+    // GFM task-list checkboxes — keep disabled (view-only)
+    p.type === 'checkbox' ? (
+      <input {...p} disabled style={{ marginRight: 6, verticalAlign: 'middle' }} />
+    ) : (
+      <input {...p} />
+    ),
+};
+
+function MarkdownBody({ children }) {
+  return (
+    <div
+      style={{
+        margin: '6px 0 8px',
+        padding: '10px 12px',
+        background: 'rgba(15,23,42,0.5)',
+        border: `1px solid ${T.cardBorder}`,
+        borderRadius: 4,
+        color: T.text,
+        fontFamily: T.mono,
+        fontSize: 12,
+        lineHeight: 1.6,
+        wordBreak: 'break-word',
+        maxHeight: 400,
+        overflowY: 'auto',
+      }}
+    >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+        {children || ''}
+      </ReactMarkdown>
+    </div>
   );
 }
 
@@ -584,25 +790,7 @@ function NoteCard({ note, onUpdate, onDelete }) {
         </div>
       </div>
 
-      <pre
-        style={{
-          margin: '6px 0 8px',
-          padding: '10px 12px',
-          background: 'rgba(15,23,42,0.5)',
-          border: `1px solid ${T.cardBorder}`,
-          borderRadius: 4,
-          color: T.text,
-          fontFamily: T.mono,
-          fontSize: 11,
-          lineHeight: 1.6,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          maxHeight: 400,
-          overflowY: 'auto',
-        }}
-      >
-        {note.body}
-      </pre>
+      <MarkdownBody>{note.body}</MarkdownBody>
 
       {tags.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
