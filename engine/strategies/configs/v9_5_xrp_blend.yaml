@@ -1,7 +1,14 @@
-name: v9_5_xrp_raw_lgb
-strategy_id: v9_5_xrp_raw_lgb
+name: v9_5_xrp_blend
+strategy_id: v9_5_xrp_blend
 version: "1.0.0"
-# v9_5_xrp_raw_lgb — 2026-05-23 (Billy approved)
+# v9_5_xrp_blend — 2026-05-23 (Billy approved)
+#
+# RENAMED 2026-05-24 from v9_5_xrp_raw_lgb. The "raw_lgb" name was misleading
+# because this strategy reads `probability_lgb_v9_5_xrp` which is the
+# app/v2_scorer.py:blend_ensemble output — a 50/50 blend of the LGB head and
+# the TimesFM HF classifier (RDS notes #631, #632). The new `_blend` suffix
+# makes that explicit. Future PURE-LGB sibling (if/when XRP gets a PURE
+# emission flag): v9_5_xrp_pure_lgb (not yet built).
 #
 # Drop-in XRP 5m strategy reading the NEW probability_lgb_v9_5_xrp signal that
 # the v9.5 XRP LGB head emits (companion timesfm PR #160, merged 2026-05-23).
@@ -53,8 +60,8 @@ mode: GHOST
 asset: XRP
 timescale: 5m
 
-hooks_file: v9_5_xrp_raw_lgb.py
-pre_gate_hook: evaluate_v9_5_xrp_raw_lgb
+hooks_file: v9_5_xrp_blend.py
+pre_gate_hook: evaluate_v9_5_xrp_blend
 
 sizing:
   type: kelly

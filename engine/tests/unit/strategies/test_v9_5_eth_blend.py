@@ -1,4 +1,4 @@
-"""Unit tests for v9_5_eth_raw_lgb GHOST strategy.
+"""Unit tests for v9_5_eth_blend GHOST strategy.
 
 Coverage:
 - model-not-loaded SKIP (v9_5_eth_model_not_loaded) — forward-compat path
@@ -28,7 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from strategies.configs.v9_5_eth_raw_lgb import evaluate_v9_5_eth_raw_lgb
+from strategies.configs.v9_5_eth_blend import evaluate_v9_5_eth_blend
 from strategies import gate_params as _gp
 from strategies.data_surface import FullDataSurface
 
@@ -123,10 +123,10 @@ def _params(**extra):
 @pytest.fixture(autouse=True)
 def _clear_consec_state():
     """Reset consecutive-tick state and gate_params before/after each test."""
-    from strategies.configs import v9_5_eth_raw_lgb
-    v9_5_eth_raw_lgb._consec_state.clear()
+    from strategies.configs import v9_5_eth_blend
+    v9_5_eth_blend._consec_state.clear()
     yield
-    v9_5_eth_raw_lgb._consec_state.clear()
+    v9_5_eth_blend._consec_state.clear()
 
 
 # ── Forward-compat: timesfm side not emitting yet ──────────────────────────
@@ -137,11 +137,11 @@ class TestForwardCompat:
         SKIPs with a clear reason — no crash."""
         surface = _make_surface(probability_lgb_v9_5_eth=None)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "v9_5_eth_model_not_loaded"
         # Decision still includes the strategy id even on SKIP.
-        assert d.strategy_id == "v9_5_eth_raw_lgb"
+        assert d.strategy_id == "v9_5_eth_blend"
 
     def test_strategy_does_NOT_read_v9_2_eth_field(self):
         """v9.5 strategy must read probability_lgb_v9_5_eth, NOT the
@@ -153,7 +153,7 @@ class TestForwardCompat:
             probability_lgb_v9_2_eth=0.99,  # v9.2 high but v9.5 missing
         )
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "v9_5_eth_model_not_loaded"
 
@@ -166,14 +166,14 @@ class TestAssetGuard:
         conviction — defensive guard since the model is ETH-only."""
         surface = _make_surface(asset="BTC", probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
     def test_xrp_surface_skips(self):
         surface = _make_surface(asset="XRP", probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
@@ -185,7 +185,7 @@ class TestEvalOffsetBand:
         """eval_offset=50 is below the band min of 60."""
         surface = _make_surface(eval_offset=50)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -193,28 +193,28 @@ class TestEvalOffsetBand:
         """eval_offset=250 is above the band max of 240."""
         surface = _make_surface(eval_offset=250)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
     def test_at_min_60_fires(self):
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_at_max_240_fires(self):
         surface = _make_surface(eval_offset=240, probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_none_eval_offset_skips(self):
         surface = _make_surface(eval_offset=None)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -226,16 +226,16 @@ class TestThresholds:
         """UP threshold is 0.96 per RDS notes #584 dedup analysis."""
         surface = _make_surface(probability_lgb_v9_5_eth=0.96)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
-        assert d.strategy_id == "v9_5_eth_raw_lgb"
-        assert d.entry_reason == "v9_5_eth_raw_lgb_pass"
+        assert d.strategy_id == "v9_5_eth_blend"
+        assert d.entry_reason == "v9_5_eth_blend_pass"
 
     def test_up_fires_above_0_96(self):
         surface = _make_surface(probability_lgb_v9_5_eth=0.99)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -243,14 +243,14 @@ class TestThresholds:
         """DOWN threshold is 0.04 per RDS notes #584 dedup analysis."""
         surface = _make_surface(probability_lgb_v9_5_eth=0.04)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
     def test_down_fires_below_0_04(self):
         surface = _make_surface(probability_lgb_v9_5_eth=0.02)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "DOWN"
 
@@ -258,7 +258,7 @@ class TestThresholds:
         # 0.50 is neither >= 0.96 nor <= 0.04
         surface = _make_surface(probability_lgb_v9_5_eth=0.50)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -266,7 +266,7 @@ class TestThresholds:
         # 0.95 < 0.96 — below UP threshold
         surface = _make_surface(probability_lgb_v9_5_eth=0.95)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -274,7 +274,7 @@ class TestThresholds:
         # 0.05 > 0.04 — above DOWN threshold
         surface = _make_surface(probability_lgb_v9_5_eth=0.05)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -293,12 +293,12 @@ class TestConsecTicks:
                   if k != "min_consecutive_pass_ticks"}
         token = _gp.set_active(params)
         try:
-            d1 = evaluate_v9_5_eth_raw_lgb(surface)
+            d1 = evaluate_v9_5_eth_blend(surface)
             assert d1.action == "SKIP"
             assert d1.skip_reason == "awaiting_consec_ticks"
             assert d1.metadata["consec_tick_count"] == 1
             assert d1.metadata["min_consecutive_pass_ticks"] == 2
-            d2 = evaluate_v9_5_eth_raw_lgb(surface)
+            d2 = evaluate_v9_5_eth_blend(surface)
             assert d2.action == "TRADE"
             assert d2.direction == "UP"
             assert d2.metadata["consec_tick_count"] == 2
@@ -314,11 +314,11 @@ class TestRuntimeOverride:
         surface = _make_surface(probability_lgb_v9_5_eth=0.90)
         # with default 0.96 threshold: SKIP
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         # with overridden 0.85 threshold: TRADE
         with _params(up_threshold=0.85):
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -326,11 +326,11 @@ class TestRuntimeOverride:
         # surface at eval_offset=80 fires under default [60, 240]
         surface = _make_surface(eval_offset=80, probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         # narrow to [120, 240] — 80 now out of band
         with _params(eval_offset_min=120):
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -341,7 +341,7 @@ class TestMetadata:
     def test_metadata_contains_probability_on_trade(self):
         surface = _make_surface(probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert "probability_lgb_v9_5_eth" in d.metadata
         assert d.metadata["probability_lgb_v9_5_eth"] == pytest.approx(0.97)
@@ -356,7 +356,7 @@ class TestMetadata:
     def test_metadata_contains_sizing_on_trade(self):
         surface = _make_surface(probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["entry_cap"] == pytest.approx(0.96)
         assert d.metadata["collateral_pct"] == pytest.approx(0.025)
@@ -366,7 +366,7 @@ class TestMetadata:
         # |0.97 - 0.5| * 2 = 0.94 >= 0.40 -> HIGH
         surface = _make_surface(probability_lgb_v9_5_eth=0.97)
         with _params():
-            d = evaluate_v9_5_eth_raw_lgb(surface)
+            d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "TRADE"
         assert d.confidence == "HIGH"
         assert d.confidence_score == pytest.approx(0.94)
@@ -379,7 +379,7 @@ class TestCoexistenceWithV9_2:
         """The v9.5 strategy's _consec_state dict is module-local, so it must
         not collide with v9_2_eth_raw_lgb's state. Verified by importing
         both modules and asserting their _consec_state objects are distinct."""
-        from strategies.configs import v9_5_eth_raw_lgb as v95
+        from strategies.configs import v9_5_eth_blend as v95
         from strategies.configs import v9_2_eth_raw_lgb as v92
         # Different module-level dict objects (id check).
         assert v95._consec_state is not v92._consec_state
@@ -393,7 +393,7 @@ class TestCoexistenceWithV9_2:
             Path(__file__).resolve().parents[3]
             / "strategies"
             / "configs"
-            / "v9_5_eth_raw_lgb.yaml"
+            / "v9_5_eth_blend.yaml"
         )
         cfg = yaml.safe_load(yaml_path.read_text())
         assert cfg["status"] == "GHOST"

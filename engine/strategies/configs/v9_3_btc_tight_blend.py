@@ -1,4 +1,4 @@
-"""v9_3_btc_tight — high-precision BTC 5m strategy reading v9.3 BTC LGB (GHOST).
+"""v9_3_btc_tight_blend — high-precision BTC 5m strategy reading v9.3 BTC LGB (GHOST).
 
 Sibling of v9_3_btc_raw_lgb. Reads the SAME probability_lgb_v9_3_btc signal
 but at the tight-corner operating point (UP p>=0.935 / DOWN p<=0.065) and
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_3_btc_tight"
+_STRATEGY_ID = "v9_3_btc_tight_blend"
 _VERSION = "1.0.0"
 
 # Walk-forward CV tight-corner operating point.
@@ -103,7 +103,7 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
+def evaluate_v9_3_btc_tight_blend(surface: "FullDataSurface") -> StrategyDecision:
     p_btc = getattr(surface, "probability_lgb_v9_3_btc", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
@@ -178,7 +178,7 @@ def evaluate_v9_3_btc_tight(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_3_btc_tight_pass",
+        entry_reason="v9_3_btc_tight_blend_pass",
         skip_reason=None,
         metadata=meta,
     )

@@ -391,17 +391,18 @@ class TestConsecutiveTicks:
 class TestCrossStrategyIndependence:
     """Module-local _consec_state must NOT leak to sibling strategies."""
 
-    def test_consec_state_isolated_from_v9_5_xrp_raw_lgb(self):
+    def test_consec_state_isolated_from_v9_5_xrp_blend(self):
         """Mutating v9_5_xrp_late_band_AB_blend._consec_state must NOT affect
-        v9_5_xrp_raw_lgb._consec_state (they're separate module-locals).
+        v9_5_xrp_blend (née v9_5_xrp_raw_lgb)._consec_state (separate
+        module-locals).
         """
         from strategies.configs import v9_5_xrp_late_band_AB_blend as late_band
-        from strategies.configs import v9_5_xrp_raw_lgb as raw_lgb
+        from strategies.configs import v9_5_xrp_blend as blend
 
         # Sanity: clear both.
         late_band._consec_state.clear()
-        raw_lgb._consec_state.clear()
-        assert late_band._consec_state is not raw_lgb._consec_state
+        blend._consec_state.clear()
+        assert late_band._consec_state is not blend._consec_state
 
         # Fire this strategy — populates ITS state only.
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
@@ -409,5 +410,5 @@ class TestCrossStrategyIndependence:
             d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert len(late_band._consec_state) >= 1
-        # raw_lgb's state remains untouched.
-        assert len(raw_lgb._consec_state) == 0
+        # blend's state remains untouched.
+        assert len(blend._consec_state) == 0

@@ -251,18 +251,18 @@ def _ensemble_surface_fields(surface) -> dict:
         # Sourced from /v4/snapshot.timescales.5m.probability_lgb_v9_5_eth.
         # Emitted when timesfm V9_5_ETH_ENABLED=true (companion sibling-agent
         # PR feat/v9_5_eth_emission). Default None when absent. Read by
-        # v9_5_eth_raw_lgb GHOST strategy (asset=ETH, 5m). RDS notes #579/#584.
+        # v9_5_eth_blend GHOST strategy (asset=ETH, 5m). RDS notes #579/#584.
         "probability_lgb_v9_5_eth": getattr(surface, "probability_lgb_v9_5_eth", None),
         # 2026-05-22: v9.3-style BTC 5m LGB head — sourced from
         # /v4/snapshot.timescales.5m.probability_lgb_v9_3_btc. Emitted when
         # timesfm V9_3_BTC_ENABLED=true (companion PR not yet opened). Default
-        # None when absent. Read by v9_3_btc_raw_lgb + v9_3_btc_tight GHOST
+        # None when absent. Read by v9_3_btc_blend + v9_3_btc_tight_blend GHOST
         # strategies (asset=BTC, 5m). Timesfm-repo notes #585/#587/#589/#590.
         "probability_lgb_v9_3_btc": getattr(surface, "probability_lgb_v9_3_btc", None),
         # 2026-05-23: v9.5-style XRP 5m LGB head — sourced from
         # /v4/snapshot.timescales.5m.probability_lgb_v9_5_xrp. Emitted when
         # timesfm V9_5_XRP_ENABLED=true (timesfm PR #160, merged 2026-05-23).
-        # Default None when absent. Read by v9_5_xrp_raw_lgb + v9_5_xrp_tight
+        # Default None when absent. Read by v9_5_xrp_blend + v9_5_xrp_tight_blend
         # GHOST strategies (asset=XRP, 5m). Timesfm-repo PR #160 + RDS note #593.
         "probability_lgb_v9_5_xrp": getattr(surface, "probability_lgb_v9_5_xrp", None),
         # 2026-05-12: meta gate scores — emitted by timesfm-service on

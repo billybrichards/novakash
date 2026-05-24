@@ -1,31 +1,44 @@
-"""v9_3_btc_raw_lgb — drop-in replacement for v9_2_raw_lgb (BTC 5m, GHOST).
+"""v9_5_eth_pure_lgb — PURE LGB+iso v9.5 ETH 5m strategy (GHOST).
 
-Mirrors v9_2_raw_lgb but fires on the NEW probability_lgb_v9_3_btc signal
-(companion timesfm PR not yet opened; Billy approves before that's created).
-No v9_ensemble base-gate delegation. No cohort gates, no sister-pair veto,
-no cell pauses, no blocked hours. Co-exists with v9_2_raw_lgb — both read
-different probability fields and have independent consecutive-tick state.
+Reads the NEW `probability_lgb_v9_5_eth_pure` field — the un-blended
+LGB → isotonic output emitted directly by the v9.5 ETH booster (sibling to
+the LIVE-served blend column `probability_lgb_v9_5_eth` which mixes in the
+TimesFM HF classifier and is capped at ~0.92 by the classifier's
+saturation at ~0.84 — see RDS notes #631, #632, the "blend bug" discovery).
 
-Asset: BTC only. Strategy will SKIP on any non-BTC surface (defensive guard
-— the v9.3 BTC model is calibrated for BTC only; firing on ETH/XRP would
+Asset: ETH only. Strategy will SKIP on any non-ETH surface (defensive guard
+— the v9.5 ETH model is calibrated for ETH only; firing on BTC/XRP would
 be undefined behaviour).
 
-Criteria (timesfm notes #585 / #587 / #589 / #590 walk-forward CV):
-  - UP   when probability_lgb_v9_3_btc >= 0.72  -> 79.9% WR on 2419 windows
-  - DOWN when probability_lgb_v9_3_btc <= 0.20  -> 82.8% WR on 2320 windows
-  - eval_offset in [60, 210] (matches v9_2_raw_lgb band)
-  - min_consecutive_pass_ticks=1 (matches v9_2_raw_lgb so shadow-vs-LIVE is
-    a like-for-like comparison)
+Criteria (walk-forward CV, 5×4d, 16d OOF — see
+/tmp/v9_5_eth_walkforward_results.md):
+  - UP   when probability_lgb_v9_5_eth_pure >= 0.915
+            -> 90.3% WR on n=1330 (Wilson LB 88.6%), ~83.1 fires/day
+  - DOWN when probability_lgb_v9_5_eth_pure <= 0.095
+            -> 90.4% WR on n=1416 (Wilson LB 88.7%), ~88.5 fires/day
+  - eval_offset in [60, 210]  (drops the weaker Δ=240s tail — see Δ-table
+    in the walk-forward note; the Δ=30-180s band sits at 92-98% WR while
+    Δ=240s sags to ~82-85%)
+  - min_consecutive_pass_ticks=1  (single qualifying tick is enough; CV
+    already de-duplicated to one outcome per window)
 
 Sized by Kelly (collateral_pct) capped at max_position_usd via YAML.
 GHOST mode by default — Billy promotes manually
 (per feedback_no_auto_promote.md). $5 max_position_usd for the initial
-shadow window; raise once shadow data validates the thresholds.
+shadow window; raise once GHOST soak confirms the CV numbers.
 
-Timesfm-repo notes #585 / #587 / #589 / #590 — walk-forward CV results.
-BTC ebook chapter: /home/billyrichards/scans2025/v9_3_btc_ebook_chapter.html
-Engine precedent: feat/v9_5_eth_strategy (PR pending).
-Sibling strategy in this PR: v9_3_btc_tight (high-precision corner).
+Companion blend strategy (renamed in the same PR):
+  v9_5_eth_blend (née v9_5_eth_raw_lgb — reads the blended column at the
+                  tighter 0.96/0.04 operating point). The two strategies
+                  read DIFFERENT probability fields and have INDEPENDENT
+                  consecutive-tick state (module-local _consec_state).
+
+References:
+  - RDS notes #631, #632 — blend bug discovery.
+  - Walk-forward CV results: /tmp/v9_5_eth_walkforward_results.md.
+  - Sibling timesfm PR: feat/v9_5_eth_pure_emission (forthcoming).
+  - Engine precedent: configs/v9_5_eth_raw_lgb.py (the blend variant, now
+    being renamed to v9_5_eth_blend in this same PR).
 """
 
 from __future__ import annotations
@@ -39,29 +52,28 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_3_btc_raw_lgb"
+_STRATEGY_ID = "v9_5_eth_pure_lgb"
 _VERSION = "1.0.0"
 
-# Walk-forward CV operating point per timesfm notes #585/#587/#589/#590.
-_DEFAULT_UP_THRESHOLD = 0.72
-_DEFAULT_DOWN_THRESHOLD = 0.20
+# Walk-forward CV operating point per /tmp/v9_5_eth_walkforward_results.md.
+_DEFAULT_UP_THRESHOLD = 0.915
+_DEFAULT_DOWN_THRESHOLD = 0.095
 
-# Matches v9_2_raw_lgb band so the shadow-vs-LIVE comparison is like-for-like.
+# eval_offset [60, 210] drops the weak Δ=240s tail (Δ=240s WR 82-85% vs
+# Δ=30-180s WR 92-98%). Keeps ~94% of fires at materially higher WR.
 _DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 210
 
-_DEFAULT_ENTRY_CAP = 0.85
+_DEFAULT_ENTRY_CAP = 0.93
 _DEFAULT_COLLATERAL_PCT = 0.025
-_DEFAULT_GTC_CAP = 0.90
-# 1-tick consecutive gate matches v9_2_raw_lgb — keep selectivity profile
-# identical so the shadow-vs-LIVE delta is purely the model swap.
+_DEFAULT_GTC_CAP = 0.96
 _DEFAULT_MIN_CONSEC_TICKS = 1
-_DEFAULT_ASSET = "BTC"
+_DEFAULT_ASSET = "ETH"
 
 # Consecutive-tick state. Maps (window_ts, direction) -> (count, last_seen_ts).
-# Resets when direction changes or the gap between evals exceeds _MAX_GAP_S.
 # Module-local so this strategy's consecutive-tick state cannot collide with
-# the sibling v9_3_btc_tight strategy or with v9_2_raw_lgb.
+# sibling strategies (v9_5_eth_blend née v9_5_eth_raw_lgb, v9_2_eth_raw_lgb,
+# v9_2_eth_late_band_AB_blend, v9_2_eth_down_late).
 _consec_state: dict[tuple[int, str], tuple[int, float]] = {}
 _MAX_GAP_S = 5.0
 
@@ -106,14 +118,14 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
-    p_btc = getattr(surface, "probability_lgb_v9_3_btc", None)
+def evaluate_v9_5_eth_pure_lgb(surface: "FullDataSurface") -> StrategyDecision:
+    p_eth_pure = getattr(surface, "probability_lgb_v9_5_eth_pure", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
 
-    # Defensive asset guard. The strategy is registered with asset=BTC but
-    # belt-and-braces — refuse to fire if the registry ever wires a non-BTC
-    # surface in. The v9.3 BTC model is not calibrated for other assets.
+    # Defensive asset guard. The strategy is registered with asset=ETH but
+    # belt-and-braces — refuse to fire if the registry ever wires a non-ETH
+    # surface in. The v9.5 ETH model is not calibrated for other assets.
     expected_asset = _gp.get_str("expected_asset", None, _DEFAULT_ASSET)
     if asset != expected_asset:
         return _skip(
@@ -121,13 +133,13 @@ def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
             {"asset": asset, "expected_asset": expected_asset},
         )
 
-    if p_btc is None:
+    if p_eth_pure is None:
         return _skip(
-            "v9_3_btc_model_not_loaded",
-            {"probability_lgb_v9_3_btc": None},
+            "v9_5_eth_pure_model_not_loaded",
+            {"probability_lgb_v9_5_eth_pure": None},
         )
 
-    p_btc = float(p_btc)
+    p_eth_pure = float(p_eth_pure)
 
     up_threshold = _gp.get_float("up_threshold", None, _DEFAULT_UP_THRESHOLD)
     down_threshold = _gp.get_float("down_threshold", None, _DEFAULT_DOWN_THRESHOLD)
@@ -135,7 +147,7 @@ def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
     eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
 
     meta = {
-        "probability_lgb_v9_3_btc": p_btc,
+        "probability_lgb_v9_5_eth_pure": p_eth_pure,
         "eval_offset": eval_offset,
         "up_threshold": up_threshold,
         "down_threshold": down_threshold,
@@ -147,15 +159,15 @@ def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
     if eval_offset is None or eval_offset < eval_min or eval_offset > eval_max:
         return _skip("outside_eval_band", meta)
 
-    if p_btc >= up_threshold:
+    if p_eth_pure >= up_threshold:
         direction = "UP"
-    elif p_btc <= down_threshold:
+    elif p_eth_pure <= down_threshold:
         direction = "DOWN"
     else:
         return _skip("conviction_below_threshold", meta)
 
     # N-consecutive-tick confirmation gate (runtime-tunable via
-    # gate_params.min_consecutive_pass_ticks). Mirrors v9_2_raw_lgb.
+    # gate_params.min_consecutive_pass_ticks).
     window_ts = getattr(surface, "window_ts", None)
     min_consec = _gp.get_int(
         "min_consecutive_pass_ticks", None, _DEFAULT_MIN_CONSEC_TICKS
@@ -164,9 +176,12 @@ def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
     meta["consec_tick_count"] = consec_count
     meta["min_consecutive_pass_ticks"] = min_consec
     if consec_count < min_consec:
-        return _skip("awaiting_consec_ticks", meta)
+        return _skip(
+            f"awaiting_consec_ticks ({consec_count}/{min_consec})",
+            meta,
+        )
 
-    confidence_score = float(abs(p_btc - 0.5) * 2.0)
+    confidence_score = float(abs(p_eth_pure - 0.5) * 2.0)
     confidence = "HIGH" if confidence_score >= 0.40 else "MODERATE"
 
     entry_cap = _gp.get_float("entry_cap", None, _DEFAULT_ENTRY_CAP)
@@ -175,6 +190,8 @@ def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
     meta["entry_cap"] = entry_cap
     meta["collateral_pct"] = collateral_pct
     meta["gtc_cap"] = gtc_cap
+    meta["strategy_id"] = _STRATEGY_ID
+    meta["strategy_version"] = _VERSION
 
     return StrategyDecision(
         action="TRADE",
@@ -186,7 +203,7 @@ def evaluate_v9_3_btc_raw_lgb(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_3_btc_raw_lgb_pass",
+        entry_reason="v9_5_eth_pure_lgb_pass",
         skip_reason=None,
         metadata=meta,
     )

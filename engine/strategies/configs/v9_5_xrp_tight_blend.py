@@ -1,4 +1,4 @@
-"""v9_5_xrp_tight — high-precision XRP 5m strategy reading v9.5 XRP LGB (GHOST).
+"""v9_5_xrp_tight_blend — high-precision XRP 5m strategy reading v9.5 XRP LGB (GHOST).
 
 Sibling of v9_5_xrp_raw_lgb. Reads the SAME probability_lgb_v9_5_xrp signal
 but at the tight-corner operating point (UP p>=0.95 / DOWN p<=0.05) and
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_5_xrp_tight"
+_STRATEGY_ID = "v9_5_xrp_tight_blend"
 _VERSION = "1.0.0"
 
 # Walk-forward CV tight-corner operating point.
@@ -109,7 +109,7 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_5_xrp_tight(surface: "FullDataSurface") -> StrategyDecision:
+def evaluate_v9_5_xrp_tight_blend(surface: "FullDataSurface") -> StrategyDecision:
     p_xrp = getattr(surface, "probability_lgb_v9_5_xrp", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
@@ -184,7 +184,7 @@ def evaluate_v9_5_xrp_tight(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_5_xrp_tight_pass",
+        entry_reason="v9_5_xrp_tight_blend_pass",
         skip_reason=None,
         metadata=meta,
     )

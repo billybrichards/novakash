@@ -2076,7 +2076,7 @@ class DBClient:
 
         The probability is emitted by timesfm-service when V9_5_ETH_ENABLED=true
         (companion sibling-agent PR feat/v9_5_eth_emission). Read by the
-        v9_5_eth_raw_lgb GHOST strategy.
+        v9_5_eth_blend GHOST strategy.
 
         Idempotent: COALESCE preserves any existing value on conflict
         (first-write-wins, mirrors the v12 / v9_1 / post_iso / v9_2_eth
@@ -2134,6 +2134,80 @@ class DBClient:
             )
             return 0
 
+    async def update_signal_evaluations_lgb_v9_5_eth_pure(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_5_eth_pure: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_5_eth_pure`` onto signal_evaluations row.
+
+        Sibling of update_signal_evaluations_lgb_v9_5_eth — the PURE variant
+        persists the un-blended LGB+iso output (the LIVE blend caps at ~0.92
+        because the TimesFM HF classifier saturates at ~0.84, RDS notes
+        #631/#632). Column added by
+        migrations/add_probability_lgb_v9_5_eth_pure.sql (2026-05-24).
+
+        Read by the v9_5_eth_pure_lgb GHOST strategy.
+
+        Idempotent: COALESCE preserves any existing value on conflict
+        (first-write-wins, mirrors the sibling writers). Returns row count
+        affected (1 = upsert ok, 0 = no-op).
+
+        Walk-forward CV: /tmp/v9_5_eth_walkforward_results.md.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_5_eth_pure is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_5_eth_pure, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        -- First-write-wins (mirrors sibling writers). The v9.5
+                        -- PURE probability is computed once per tick by the
+                        -- timesfm scorer and is stable for (window, eval_offset).
+                        probability_lgb_v9_5_eth_pure = COALESCE(
+                            signal_evaluations.probability_lgb_v9_5_eth_pure,
+                            EXCLUDED.probability_lgb_v9_5_eth_pure
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_5_eth_pure),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_5_eth_pure_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_5_eth_pure_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
     async def update_signal_evaluations_lgb_v9_3_btc(
         self,
         window_ts,
@@ -2150,7 +2224,7 @@ class DBClient:
 
         The probability is emitted by timesfm-service when V9_3_BTC_ENABLED=true
         (companion PR not yet opened — Billy approves before that's created).
-        Read by BOTH v9_3_btc_raw_lgb (drop-in replacement) AND v9_3_btc_tight
+        Read by BOTH v9_3_btc_blend (drop-in replacement) AND v9_3_btc_tight_blend
         (high-precision corner) GHOST strategies.
 
         Idempotent: COALESCE preserves any existing value on conflict
@@ -2225,8 +2299,8 @@ class DBClient:
         migrations/add_probability_lgb_v9_5_xrp_column.sql (2026-05-23).
 
         The probability is emitted by timesfm-service when V9_5_XRP_ENABLED=true
-        (timesfm PR #160, merged 2026-05-23). Read by BOTH v9_5_xrp_raw_lgb
-        (drop-in moderate) AND v9_5_xrp_tight (high-precision corner) GHOST
+        (timesfm PR #160, merged 2026-05-23). Read by BOTH v9_5_xrp_blend
+        (drop-in moderate) AND v9_5_xrp_tight_blend (high-precision corner) GHOST
         strategies.
 
         Idempotent: COALESCE preserves any existing value on conflict

@@ -1,9 +1,16 @@
-name: v9_5_xrp_tight
-strategy_id: v9_5_xrp_tight
+name: v9_5_xrp_tight_blend
+strategy_id: v9_5_xrp_tight_blend
 version: "1.0.0"
-# v9_5_xrp_tight — 2026-05-23 (Billy approved)
+# v9_5_xrp_tight_blend — 2026-05-23 (Billy approved)
 #
-# High-precision sibling of v9_5_xrp_raw_lgb. Reads the SAME
+# RENAMED 2026-05-24 from v9_5_xrp_tight. The "tight" name didn't
+# distinguish blend-vs-pure; this strategy reads `probability_lgb_v9_5_xrp`
+# which is the app/v2_scorer.py:blend_ensemble output (50/50 LGB+classifier
+# blend, capped at ~0.92 by classifier saturation — RDS notes #631, #632).
+# The new `_blend` suffix makes that explicit. Sibling: v9_5_xrp_blend
+# (formerly v9_5_xrp_raw_lgb).
+#
+# High-precision sibling of v9_5_xrp_blend (née v9_5_xrp_raw_lgb). Reads the SAME
 # probability_lgb_v9_5_xrp signal but at the tight-corner operating point:
 # UP p>=0.95 / DOWN p<=0.05. Walk-forward CV results (8.62d corpus,
 # 1505 windows, 928 OOF):
@@ -19,7 +26,7 @@ version: "1.0.0"
 #
 # Co-exists with v9_5_xrp_raw_lgb in this PR. The two strategies read the
 # SAME probability column but at DIFFERENT operating points. Both default
-# GHOST. v9_5_xrp_tight is the "high-precision LIVE-candidate" once shadow
+# GHOST. v9_5_xrp_tight_blend is the "high-precision LIVE-candidate" once shadow
 # data validates the tight thresholds.
 #
 # Tradeable fire band: median first-fire stc=104-105s (eval_offset~195s)
@@ -61,8 +68,8 @@ mode: GHOST
 asset: XRP
 timescale: 5m
 
-hooks_file: v9_5_xrp_tight.py
-pre_gate_hook: evaluate_v9_5_xrp_tight
+hooks_file: v9_5_xrp_tight_blend.py
+pre_gate_hook: evaluate_v9_5_xrp_tight_blend
 
 sizing:
   type: kelly
