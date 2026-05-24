@@ -1,0 +1,87 @@
+name: v9_5_eth_blend_up_low
+strategy_id: v9_5_eth_blend_up_low
+version: "1.0.0"
+# v9_5_eth_blend_up_low — 2026-05-24 — UP-LOW conviction tier of the v9.5
+# ETH BLEND ladder.
+#
+# UP-only ETH 5m strategy. Reads the EXISTING probability_lgb_v9_5_eth
+# column (the blended v9.5 ETH classifier+regressor output). NO new
+# emission needed. NO dependency on the parallel pure-LGB column in PR
+# `feat/v9_5_eth_pure_lgb_strategy`.
+#
+# Sibling strategies in this ladder (band-sweep tiering, RDS notes
+# #631 / #632 + the band-design note inserted 2026-05-24):
+#   v9_5_eth_blend_up_low   — fire UP at 0.78 <= p < 0.82  (THIS strategy)
+#   v9_5_eth_blend_up_mid   — fire UP at 0.82 <= p < 0.86
+#   v9_5_eth_blend_up_high  — fire UP at p >= 0.86          (ceiling)
+#   v9_5_eth_blend_down_low — fire DOWN at 0.18 < p <= 0.24
+#   v9_5_eth_blend_down_mid — fire DOWN at 0.12 < p <= 0.18
+#   v9_5_eth_blend_down_high— fire DOWN at p <= 0.12        (floor)
+#
+# BAND SEMANTICS: fire if the snapshot probability falls inside the band.
+# This is NOT a one-sided threshold; the upper edge matters because higher
+# conviction is routed to the next tier (up_mid). The ladder is designed
+# to enable differential position-sizing per tier — Billy controls the
+# allocation via runtime overrides + the per-strategy max_position_usd cap.
+#
+# BAND PROVENANCE (v9.5 ETH BLEND walk-forward OOF band sweep,
+# /tmp/v9_5_eth_band_blend_v2.csv + /tmp/v9_5_eth_walkforward_results.md):
+#   Band [0.78, 0.82): n=141 (89+52), mean WR ~88.7%, Wilson LB ~83%.
+#
+# eval_offset [60, 240]: matches the v9.5 ETH model's calibrated horizon
+# range (broad band — the ladder's selectivity comes from the band, NOT
+# the eval-offset gate). Single-tick fire keeps the ladder responsive at
+# this lowest conviction tier.
+#
+# Defaults GHOST per feedback_no_auto_promote.md. $5 max_position_usd for
+# the initial shadow window.
+#
+# Asset: ETH only — defensive guard. The v9.5 ETH model is calibrated for
+# ETH only; firing on BTC/SOL/XRP would be undefined behaviour.
+#
+# References:
+#   - RDS note #631 — v9.5 ETH band-sweep methodology
+#   - RDS note #632 — v9.5 ETH band-sweep results
+#   - Sibling PR: feat/v9_5_eth_pure_lgb_strategy (uses pure-LGB column,
+#     orthogonal data path — no conflict with this ladder).
+#   - Companion strategy: v9_5_eth_raw_lgb (different op-point — tight
+#     0.96/0.04 corners; this ladder fills in the band between the
+#     soft-conviction floor and the tight-corner ceiling).
+#
+status: GHOST
+description: |
+  UP-LOW conviction tier of the v9.5 ETH BLEND ladder. Fires UP when
+  0.78 <= probability_lgb_v9_5_eth < 0.82, within eval_offset [60, 240],
+  on any single qualifying tick. ETH-only (defensive asset guard).
+  DOWN side intentionally NOT implemented (this tier is the UP edge of
+  the band sweep). Band: n=141 OOF, mean WR ~88.7%, Wilson LB ~83%.
+  GHOST mode, $5 max_position_usd.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_5_eth_blend_up_low.py
+pre_gate_hook: evaluate_v9_5_eth_blend_up_low
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.78           # band lower bound (inclusive)
+  up_threshold_max: 0.82       # band upper bound (exclusive) — routes to up_mid
+  eval_offset_min: 60
+  eval_offset_max: 240
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
