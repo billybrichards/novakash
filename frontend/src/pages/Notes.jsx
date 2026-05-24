@@ -32,6 +32,7 @@ const T = {
 };
 
 const POLL_MS = 30_000;
+const PAGE_SIZE = 500; // server caps GET /notes at limit=500
 
 // ─── Utilities ────────────────────────────────────────────────────────────
 
@@ -712,29 +713,40 @@ export default function Notes() {
   const [search, setSearch] = useState('');
 
   const fetchNotes = useCallback(
-    async ({ silent = false } = {}) => {
-      if (!silent) setLoading(true);
+    async ({ silent = false, append = false, offset = 0 } = {}) => {
+      if (!silent && !append) setLoading(true);
       try {
         const res = await api('GET', '/notes', {
           params: {
             status: statusFilter,
-            limit: 100,
-            offset: 0,
+            limit: PAGE_SIZE,
+            offset,
             ...(tagFilter ? { tag: tagFilter } : {}),
           },
         });
         const data = res?.data || {};
-        setNotes(Array.isArray(data.rows) ? data.rows : []);
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        setNotes((prev) => (append ? [...prev, ...rows] : rows));
         setTotal(typeof data.total === 'number' ? data.total : 0);
         setErr(null);
       } catch (e) {
         setErr(e?.response?.data?.detail || e?.message || 'Failed to load notes');
       } finally {
-        if (!silent) setLoading(false);
+        if (!silent && !append) setLoading(false);
       }
     },
     [api, statusFilter, tagFilter]
   );
+
+  const [loadingMore, setLoadingMore] = useState(false);
+  const handleLoadMore = useCallback(async () => {
+    setLoadingMore(true);
+    try {
+      await fetchNotes({ append: true, offset: notes.length });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [fetchNotes, notes.length]);
 
   // Initial + on-filter-change fetch
   useEffect(() => {
@@ -943,6 +955,20 @@ export default function Notes() {
               onDelete={handleDelete}
             />
           ))}
+          {notes.length < total && (
+            <div style={{ textAlign: 'center', marginTop: 12 }}>
+              <Button
+                variant="cyan"
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                title={`Load next ${Math.min(PAGE_SIZE, total - notes.length)} of ${total - notes.length} remaining`}
+              >
+                {loadingMore
+                  ? 'Loading…'
+                  : `Load more (${total - notes.length} more)`}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>
