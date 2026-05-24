@@ -1,0 +1,79 @@
+name: v9_5_xrp_late_band_AB
+strategy_id: v9_5_xrp_late_band_AB
+version: "1.0.0"
+# v9_5_xrp_late_band_AB — 2026-05-24 (Billy approved)
+#
+# UP-only XRP 5m late-window high-conviction strategy. Reads the existing
+# probability_lgb_v9_5_xrp column (no new emissions needed). Fires when
+# probability >= 0.91 within eval_offset band [90, 150] — i.e. the 1.5-2.5
+# minute late-window pocket (T-minus / seconds-to-close convention; see
+# engine/cell_param_overrides.py and live RDS data).
+#
+# AUDIT OPERATING POINT (RDS note #629):
+#   - 18.4h post-PR-#582 only: 96.8% WR on n=31 windows at thr=0.91,
+#                              eval_offset in [90, 150]
+#                              (Wilson LB 83.8%)
+#   - UP-only: no usable DOWN band yet (explicit per note #629).
+#
+# Why this op-point: v9.5 XRP model peak-WR corner per post-PR-#582
+# stability re-check. Wilson LB 83.8% on n=31 — small sample but the
+# tightest XRP corner seen across the audited operating points.
+#
+# Sister strategy: v9_5_xrp_raw_lgb (GHOST at moderate 0.82/0.20 in
+# eval_offset 60-240 — different operating regime, broader band).
+# Sister strategy: v9_5_xrp_tight (GHOST at very tight 0.95/0.05 in
+# eval_offset 120-240 — different threshold + band).
+#
+# No new probability columns needed — probability_lgb_v9_5_xrp already
+# exists in signal_evaluations and is populated by the v9.5 XRP scorer
+# emitted by timesfm-service (PR #160, merged 2026-05-23).
+#
+# Defaults GHOST per feedback_no_auto_promote.md (post-2026-04-17 rule —
+# Billy promotes manually). $5 max_position_usd for the initial shadow
+# window; raise once GHOST soak confirms the audit numbers.
+#
+# Asset: XRP only — model is XRP-calibrated. Strategy will SKIP defensively
+# on any non-XRP surface.
+#
+# References:
+#   - RDS note #629 — 38h post-PR-#582 stability re-check (source of params)
+#   - Sibling strategy: v9_5_xrp_raw_lgb (broader band, lower threshold)
+#   - Sibling strategy: v9_5_xrp_tight (tighter threshold, different band)
+#
+status: GHOST
+description: |
+  UP-only XRP 5m late-window strategy. Fires on probability_lgb_v9_5_xrp
+  alone: UP at p >= 0.91, within eval_offset [90, 150] (T-minus 90-150s of
+  window close), any single qualifying tick. XRP-only (defensive asset
+  guard). DOWN side intentionally OFF (no usable DOWN band yet per RDS
+  note #629).
+  18.4h post-PR-#582 audit: 96.8% WR on n=31, Wilson LB 83.8%.
+  GHOST mode, $5 max_position_usd for the initial shadow window.
+mode: GHOST
+asset: XRP
+timescale: 5m
+
+hooks_file: v9_5_xrp_late_band_AB.py
+pre_gate_hook: evaluate_v9_5_xrp_late_band_AB
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.91
+  eval_offset_min: 90
+  eval_offset_max: 150
+  min_consecutive_pass_ticks: 1
+  expected_asset: XRP
+  entry_cap: 0.93
+  collateral_pct: 0.025
+  gtc_cap: 0.93
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
