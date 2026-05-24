@@ -1,0 +1,85 @@
+name: v9_2_v12_AND_ghost
+strategy_id: v9_2_v12_AND_ghost
+version: "1.0.0"
+# v9_2_v12_AND_ghost — 2026-05-24 (Billy approved)
+#
+# AND-filter ensemble strategy: fires only when BOTH probability_lgb_v9_2
+# AND probability_lgb_v12 agree on direction at the audit-recommended
+# thresholds. Sister strategy to v9_2_v12_combo (which is LIVE at tighter
+# but smaller-n thresholds 0.75/0.70 UP, 0.20/0.40 DOWN); this GHOST
+# variant uses the audit's optimal Wilson-LB op-point (0.725/0.750 UP,
+# 0.25/0.20 DOWN).
+#
+# Audit operating point (RDS note #618 — 14d filter-mode + AND-filter audit):
+#   UP   when p_v9_2 >= 0.725 AND p_v12 >= 0.750  -> 92.1% WR on n=369
+#                                                    (Wilson LB 88.9%)
+#   DOWN when p_v9_2 <= 0.250 AND p_v12 <= 0.200  -> 81.7% WR on n=202
+#                                                    (Wilson LB 75.8%)
+#   eval_offset between 60 and 210                -> T-60 to T-210
+#   one qualifying tick is enough                 -> no N-of-M cohort gate
+#
+# Why it works (per audit note #618): v9.2 (LIVE BTC model) and v12 (a
+# separate ensemble) are diverse signals — when BOTH agree, calibration is
+# much tighter than either alone (v9.2 alone 77.3% WR, v12 alone 83.9%,
+# combined 89.1%+ even at looser 0.72/0.72 thresholds; 92.1% at audit
+# op-point).
+#
+# Beats v12_meta_gate by 8pp (89% AND-filter vs 81% meta-gate machinery).
+# Simpler is better.
+#
+# No new probability emissions needed — both probability_lgb_v9_2 and
+# probability_lgb_v12 are ALREADY emitted by the LIVE v9.2 and v12 scorers
+# and populated in signal_evaluations. This PR is pure strategy wiring.
+#
+# Defaults GHOST per feedback_no_auto_promote.md (post-2026-04-17 rule —
+# Billy promotes manually). $5 max_position_usd for the initial shadow
+# window; raise once shadow data confirms the audit numbers.
+#
+# Asset: BTC only — both v9.2 and v12 BTC models are BTC-calibrated.
+# Strategy will SKIP defensively on any non-BTC surface.
+#
+# References:
+#   - RDS note #618 — filter-mode + AND-filter audit (source of params)
+#   - Sibling strategy: v9_2_v12_combo (LIVE at tighter thresholds)
+#   - Sibling strategy: v12_meta_gate (GHOST — beaten by 8pp by this filter)
+#
+status: GHOST
+description: |
+  AND-filter ensemble strategy — v9.2 + v12 both must agree (BTC 5m).
+  Fires UP when p_v9_2 >= 0.725 AND p_v12 >= 0.750; DOWN when p_v9_2 <= 0.25
+  AND p_v12 <= 0.20, within eval_offset [60, 210], any single qualifying
+  tick. 92.1% WR on n=369 windows (Wilson LB 88.9%) over 14d — see RDS
+  note #618. Beats v12_meta_gate by 8pp. No cohort gates, no veto layers,
+  no cell pauses, no blocked hours. BTC-only (defensive asset guard).
+  GHOST mode, $5 max_position_usd for the initial shadow window.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_v12_AND_ghost.py
+pre_gate_hook: evaluate_v9_2_v12_AND_ghost
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_v92_threshold: 0.725
+  up_v12_threshold: 0.750
+  down_v92_threshold: 0.25
+  down_v12_threshold: 0.20
+  eval_offset_min: 60
+  eval_offset_max: 210
+  min_consecutive_pass_ticks: 1
+  expected_asset: BTC
+  entry_cap: 0.85
+  collateral_pct: 0.025
+  gtc_cap: 0.90
+
+risk:
+  max_position_usd: 5
+  max_daily_loss_usd: 20
