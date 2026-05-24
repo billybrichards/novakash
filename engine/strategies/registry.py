@@ -1781,6 +1781,86 @@ class StrategyRegistry:
                     )
                 )
 
+        # Meta-gate score persistence — write the three meta_gate columns on
+        # every tick where the corresponding field is populated. Sidecar
+        # writers mirroring the LGB PURE sidecar pattern above. The meta-gate
+        # scores are already persisted to window_snapshots via the bulk
+        # upsert path in pg_signal_repo (lines 67/127/388/690) but were NOT
+        # previously persisted per-row on signal_evaluations — these three
+        # dispatches close that gap. Audit #963 (2026-05-12). Fire-and-forget,
+        # same pattern as v12_pure.
+        v2_meta_gate = getattr(surface, "probability_v2_meta_gate", None)
+        if v2_meta_gate is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_v2_meta_gate"
+        ):
+            try:
+                _v2_meta_gate_p = float(v2_meta_gate)
+            except (TypeError, ValueError):
+                _v2_meta_gate_p = None
+            if _v2_meta_gate_p is not None:
+                v2_meta_gate_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_v2_meta_gate(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_v2_meta_gate=_v2_meta_gate_p,
+                    )
+                )
+                v2_meta_gate_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_v2_meta_gate_write_error"
+                    )
+                )
+
+        v9_2_meta_gate = getattr(surface, "probability_v9_2_meta_gate", None)
+        if v9_2_meta_gate is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_v9_2_meta_gate"
+        ):
+            try:
+                _v9_2_meta_gate_p = float(v9_2_meta_gate)
+            except (TypeError, ValueError):
+                _v9_2_meta_gate_p = None
+            if _v9_2_meta_gate_p is not None:
+                v9_2_meta_gate_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_v9_2_meta_gate(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_v9_2_meta_gate=_v9_2_meta_gate_p,
+                    )
+                )
+                v9_2_meta_gate_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_v9_2_meta_gate_write_error"
+                    )
+                )
+
+        v12_meta_gate = getattr(surface, "probability_v12_meta_gate", None)
+        if v12_meta_gate is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_v12_meta_gate"
+        ):
+            try:
+                _v12_meta_gate_p = float(v12_meta_gate)
+            except (TypeError, ValueError):
+                _v12_meta_gate_p = None
+            if _v12_meta_gate_p is not None:
+                v12_meta_gate_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_v12_meta_gate(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_v12_meta_gate=_v12_meta_gate_p,
+                    )
+                )
+                v12_meta_gate_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_v12_meta_gate_write_error"
+                    )
+                )
+
         # v9.5-style XRP 5m head persistence — write probability_lgb_v9_5_xrp
         # on every tick where the field is populated. Sibling of the v9_3_btc
         # writer; read by BOTH v9_5_xrp_blend (drop-in moderate, p>=0.82
