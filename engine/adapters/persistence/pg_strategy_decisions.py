@@ -17,6 +17,7 @@ import structlog
 
 from domain.ports import StrategyDecisionRepository
 from domain.value_objects import StrategyDecisionRecord
+from infrastructure.log_util import exc_log_fields
 
 log = structlog.get_logger(__name__)
 
@@ -107,7 +108,7 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
                     else datetime.now(timezone.utc),
                 )
         except Exception as exc:
-            log.warning("pg_strategy_decisions.write_error", error=str(exc)[:200])
+            log.warning("pg_strategy_decisions.write_error", **exc_log_fields(exc))
 
     async def get_decisions_for_window(
         self,
@@ -164,7 +165,7 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
                 for r in rows
             ]
         except Exception as exc:
-            log.warning("pg_strategy_decisions.read_error", error=str(exc)[:200])
+            log.warning("pg_strategy_decisions.read_error", **exc_log_fields(exc))
             return []
 
     async def get_decisions_in_range(

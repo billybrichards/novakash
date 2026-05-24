@@ -26,6 +26,7 @@ import structlog
 
 from domain.ports import WindowStateRepository, WriteOutcome
 from domain.value_objects import WindowKey, WindowOutcome
+from infrastructure.log_util import exc_log_fields
 
 log = structlog.get_logger(__name__)
 
@@ -206,7 +207,7 @@ class PgWindowRepository(WindowStateRepository):
                         pass  # Column already exists or not supported
             log.info("db.window_tables_ensured")
         except Exception as exc:
-            log.error("db.ensure_window_tables_failed", error=str(exc))
+            log.error("db.ensure_window_tables_failed", **exc_log_fields(exc))
 
     # -- Window Snapshot Updates ---------------------------------------------
 
@@ -595,7 +596,7 @@ class PgWindowRepository(WindowStateRepository):
                 )
                 return [dict(r) for r in rows]
         except Exception as exc:
-            log.warning("db.get_unresolved_shadow_windows_failed", error=str(exc))
+            log.warning("db.get_unresolved_shadow_windows_failed", **exc_log_fields(exc))
             return []
 
     async def update_shadow_resolution(
@@ -2352,6 +2353,6 @@ class PgWindowRepository(WindowStateRepository):
         except Exception as exc:
             log.warning(
                 "pg_window_repo.label_resolved_windows_failed",
-                error=str(exc)[:100],
+                **exc_log_fields(exc),
             )
             return 0

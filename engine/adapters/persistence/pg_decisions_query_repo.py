@@ -11,6 +11,7 @@ from typing import Optional, Sequence
 
 import structlog
 
+from infrastructure.log_util import exc_log_fields
 from use_cases.ports.decisions_query_repo import DecisionFireRow
 
 log = structlog.get_logger(__name__)
@@ -84,7 +85,7 @@ class PgDecisionsQueryRepo:
                 rows = await conn.fetch(_SQL, since, until)
         except Exception as exc:
             log.warning(
-                "pg_decisions_query_repo.fetch_failed", error=str(exc)[:200]
+                "pg_decisions_query_repo.fetch_failed", **exc_log_fields(exc)
             )
             return []
 

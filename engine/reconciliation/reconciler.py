@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
+from infrastructure.log_util import exc_log_fields
 from reconciliation.state import (
     OpenPosition,
     ReconcilerState,
@@ -765,7 +766,7 @@ class CLOBReconciler:
                 await self._sync_bible_to_trades()
             except Exception as exc:
                 self._log.warning(
-                    "reconciler.bible_sync_error", error=str(exc)[:200]
+                    "reconciler.bible_sync_error", **exc_log_fields(exc)
                 )
 
         # 6. Pending-row janitor: delete stale 'pending' placeholders from
@@ -811,6 +812,16 @@ class CLOBReconciler:
                 # Audit #350: pull direction + window_ts + asset + timeframe
                 # so the canonical resolver can verify each orphan's outcome
                 # before write.
+                #
+                # RDS schema-drift fix (2026-05-24, #FIXEMPTYERRORS): the
+                # ``trades`` table on prod RDS has never had bare ``asset``
+                # or ``timeframe`` columns — those fields are stored inside
+                # the ``metadata`` jsonb blob. The naive ``asset,``/
+                # ``timeframe,`` references made this whole query fail with
+                # ``column "asset" does not exist`` every poll cycle (~1×/min).
+                # Use the same ``COALESCE(metadata->>'asset', 'BTC')`` pattern
+                # already in pg_trade_repo.py and the orphan-resolver downstream
+                # still finds the fields via ``orphan.get("asset")``.
                 orphans = await conn.fetch(
                     """SELECT id, order_id, direction,
                               metadata->>'token_id' as token_id,
@@ -819,8 +830,8 @@ class CLOBReconciler:
                               metadata->>'entry_reason' as entry_reason,
                               stake_usd,
                               fill_size,
-                              asset,
-                              timeframe,
+                              COALESCE(metadata->>'asset', 'BTC') AS asset,
+                              COALESCE(metadata->>'timeframe', '5m') AS timeframe,
                               (metadata->>'window_ts')::bigint AS window_ts
                        FROM trades
                        WHERE status IN ('EXPIRED', 'OPEN', 'FILLED')
@@ -833,7 +844,7 @@ class CLOBReconciler:
                 )
         except Exception as exc:
             self._log.warning(
-                "reconciler.orphan_query_error", error=str(exc)[:200]
+                "reconciler.orphan_query_error", **exc_log_fields(exc)
             )
             return
 
@@ -1203,7 +1214,7 @@ class CLOBReconciler:
                     )
         except Exception as exc:
             self._log.warning(
-                "reconciler.bible_sync_error", error=str(exc)[:200]
+                "reconciler.bible_sync_error", **exc_log_fields(exc)
             )
 
     # ------------------------------------------------------------------
@@ -2923,6 +2934,18 @@ class _TradesPoolDBClient:
                 # previously NULL on fill_price, AND (b) the new SOT pass
                 # is supplying a non-NULL confirmed_fill_price (i.e. we
                 # actually wrote a real number rather than another NULL).
+                # asyncpg type-deduction fix (2026-05-24, #FIXEMPTYERRORS):
+                # ``$2`` is referenced in three places — first against the
+                # NUMERIC column ``polymarket_confirmed_fill_price``, then
+                # twice cast to ``DOUBLE PRECISION``. Without an explicit
+                # cast on the first use, asyncpg's prepare-time type
+                # inference deduces NUMERIC from the column, then sees
+                # DOUBLE PRECISION on subsequent uses → ``inconsistent
+                # types deduced for parameter $2``, and the UPDATE was
+                # failing every reconciliation poll for the past day.
+                # Same root cause for ``$3`` (``polymarket_confirmed_size``).
+                # Explicit ``::DOUBLE PRECISION`` casts everywhere give
+                # asyncpg one consistent type to infer.
                 row = await conn.fetchrow(
                     """
                     WITH prior AS (
@@ -2933,8 +2956,8 @@ class _TradesPoolDBClient:
                     upd AS (
                         UPDATE trades
                         SET polymarket_confirmed_status = $1,
-                            polymarket_confirmed_fill_price = $2,
-                            polymarket_confirmed_size = $3,
+                            polymarket_confirmed_fill_price = $2::DOUBLE PRECISION,
+                            polymarket_confirmed_size = $3::DOUBLE PRECISION,
                             polymarket_confirmed_at = $4,
                             polymarket_last_verified_at = NOW(),
                             sot_reconciliation_state = $5,
@@ -2979,7 +3002,7 @@ class _TradesPoolDBClient:
                 "reconcile_trades_sot.update_row_failed",
                 trade_id=trade_id,
                 state=sot_reconciliation_state,
-                error=str(exc)[:200],
+                **exc_log_fields(exc),
             )
             return False
 
