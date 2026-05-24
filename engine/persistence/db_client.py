@@ -2501,6 +2501,205 @@ class DBClient:
             )
             return 0
 
+    async def update_signal_evaluations_v2_meta_gate(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_v2_meta_gate: Optional[float],
+    ) -> int:
+        """Upsert ``probability_v2_meta_gate`` onto signal_evaluations row.
+
+        Sidecar writer mirroring the LGB PURE writer family. The meta-gate
+        score is emitted by timesfm-service /v4/snapshot and serialized on
+        FullDataSurface — already written to window_snapshots via the bulk
+        upsert path (pg_signal_repo lines 67/127/388/690) but previously
+        NOT persisted per-row on signal_evaluations. This writer closes
+        that gap. Column added by migrations/add_meta_gate_scores.sql
+        (Audit #963, 2026-05-12) — no migration required.
+
+        Idempotent: COALESCE preserves any existing value on conflict
+        (first-write-wins, mirrors sibling writers). Returns row count
+        affected (1 = upsert ok, 0 = no-op).
+        """
+        if not self._pool:
+            return 0
+        if probability_v2_meta_gate is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_v2_meta_gate, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_v2_meta_gate = COALESCE(
+                            signal_evaluations.probability_v2_meta_gate,
+                            EXCLUDED.probability_v2_meta_gate
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_v2_meta_gate),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_v2_meta_gate_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_v2_meta_gate_failed",
+                window_ts=window_ts,
+                asset=asset,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
+    async def update_signal_evaluations_v9_2_meta_gate(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_v9_2_meta_gate: Optional[float],
+    ) -> int:
+        """Upsert ``probability_v9_2_meta_gate`` onto signal_evaluations row.
+
+        Sibling of update_signal_evaluations_v2_meta_gate — sidecar writer
+        for the v9.2 meta-gate score emitted by timesfm-service /v4/snapshot.
+        Already persisted to window_snapshots via the bulk upsert path; this
+        writer closes the per-row signal_evaluations gap. Column added by
+        migrations/add_meta_gate_scores.sql (Audit #963, 2026-05-12).
+
+        Idempotent COALESCE; first-write-wins. Returns row count.
+        """
+        if not self._pool:
+            return 0
+        if probability_v9_2_meta_gate is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_v9_2_meta_gate, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_v9_2_meta_gate = COALESCE(
+                            signal_evaluations.probability_v9_2_meta_gate,
+                            EXCLUDED.probability_v9_2_meta_gate
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_v9_2_meta_gate),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_v9_2_meta_gate_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_v9_2_meta_gate_failed",
+                window_ts=window_ts,
+                asset=asset,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
+    async def update_signal_evaluations_v12_meta_gate(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_v12_meta_gate: Optional[float],
+    ) -> int:
+        """Upsert ``probability_v12_meta_gate`` onto signal_evaluations row.
+
+        Sibling of update_signal_evaluations_v9_2_meta_gate — sidecar writer
+        for the v12 meta-gate score emitted by timesfm-service /v4/snapshot.
+        Already persisted to window_snapshots via the bulk upsert path; this
+        writer closes the per-row signal_evaluations gap. Column added by
+        migrations/add_meta_gate_scores.sql (Audit #963, 2026-05-12).
+
+        Idempotent COALESCE; first-write-wins. Returns row count.
+        """
+        if not self._pool:
+            return 0
+        if probability_v12_meta_gate is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_v12_meta_gate, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_v12_meta_gate = COALESCE(
+                            signal_evaluations.probability_v12_meta_gate,
+                            EXCLUDED.probability_v12_meta_gate
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_v12_meta_gate),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_v12_meta_gate_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_v12_meta_gate_failed",
+                window_ts=window_ts,
+                asset=asset,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     async def update_signal_evaluations_lgb_v9_5_xrp(
         self,
         window_ts,

@@ -1395,6 +1395,196 @@ class PgSignalRepository(SignalRepository):
             )
             return 0
 
+    async def update_signal_evaluations_v2_meta_gate(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_v2_meta_gate: Optional[float],
+    ) -> int:
+        """Upsert ``probability_v2_meta_gate`` on signal_evaluations row.
+
+        Mirror of DBClient.update_signal_evaluations_v2_meta_gate for parity
+        (lesson from PR #439 — keep the two writers verbatim). The meta-gate
+        score is already persisted to window_snapshots via the bulk upsert
+        path; this writer closes the per-row signal_evaluations gap. Column
+        added by migrations/add_meta_gate_scores.sql (Audit #963, 2026-05-12).
+        Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_v2_meta_gate is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_v2_meta_gate, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_v2_meta_gate = COALESCE(
+                            signal_evaluations.probability_v2_meta_gate,
+                            EXCLUDED.probability_v2_meta_gate
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_v2_meta_gate),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_v2_meta_gate_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_v2_meta_gate_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
+    async def update_signal_evaluations_v9_2_meta_gate(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_v9_2_meta_gate: Optional[float],
+    ) -> int:
+        """Upsert ``probability_v9_2_meta_gate`` on signal_evaluations row.
+
+        Mirror of DBClient.update_signal_evaluations_v9_2_meta_gate for parity
+        (lesson from PR #439 — keep the two writers verbatim). Sibling of
+        update_signal_evaluations_v2_meta_gate. Column added by
+        migrations/add_meta_gate_scores.sql (Audit #963, 2026-05-12).
+        Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_v9_2_meta_gate is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_v9_2_meta_gate, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_v9_2_meta_gate = COALESCE(
+                            signal_evaluations.probability_v9_2_meta_gate,
+                            EXCLUDED.probability_v9_2_meta_gate
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_v9_2_meta_gate),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_v9_2_meta_gate_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_v9_2_meta_gate_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
+    async def update_signal_evaluations_v12_meta_gate(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_v12_meta_gate: Optional[float],
+    ) -> int:
+        """Upsert ``probability_v12_meta_gate`` on signal_evaluations row.
+
+        Mirror of DBClient.update_signal_evaluations_v12_meta_gate for parity
+        (lesson from PR #439 — keep the two writers verbatim). Sibling of
+        update_signal_evaluations_v9_2_meta_gate. Column added by
+        migrations/add_meta_gate_scores.sql (Audit #963, 2026-05-12).
+        Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_v12_meta_gate is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_v12_meta_gate, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_v12_meta_gate = COALESCE(
+                            signal_evaluations.probability_v12_meta_gate,
+                            EXCLUDED.probability_v12_meta_gate
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_v12_meta_gate),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_v12_meta_gate_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_v12_meta_gate_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     async def update_signal_evaluations_lgb_v9_5_xrp(
         self,
         window_ts,
