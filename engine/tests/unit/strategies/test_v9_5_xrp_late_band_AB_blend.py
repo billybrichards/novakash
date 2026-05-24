@@ -1,4 +1,4 @@
-"""Unit tests for v9_5_xrp_late_band_AB GHOST strategy.
+"""Unit tests for v9_5_xrp_late_band_AB_blend GHOST strategy.
 
 Coverage:
 - model-not-loaded SKIP (v9_5_xrp_model_not_loaded) — None probability
@@ -27,8 +27,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from strategies.configs.v9_5_xrp_late_band_AB import (
-    evaluate_v9_5_xrp_late_band_AB,
+from strategies.configs.v9_5_xrp_late_band_AB_blend import (
+    evaluate_v9_5_xrp_late_band_AB_blend,
 )
 from strategies import gate_params as _gp
 from strategies.data_surface import FullDataSurface
@@ -37,7 +37,7 @@ from strategies.data_surface import FullDataSurface
 # ── Surface factory ────────────────────────────────────────────────────────
 
 def _make_surface(**overrides) -> FullDataSurface:
-    """Default surface for v9_5_xrp_late_band_AB tests.
+    """Default surface for v9_5_xrp_late_band_AB_blend tests.
 
     asset=XRP, eval_offset=120 (in band [90, 150]), hour_utc=12,
     probability_lgb_v9_5_xrp=0.93 (above the 0.91 UP threshold).
@@ -114,10 +114,10 @@ def _params(**extra):
 
 @pytest.fixture(autouse=True)
 def _clear_consec_state():
-    from strategies.configs import v9_5_xrp_late_band_AB
-    v9_5_xrp_late_band_AB._consec_state.clear()
+    from strategies.configs import v9_5_xrp_late_band_AB_blend
+    v9_5_xrp_late_band_AB_blend._consec_state.clear()
     yield
-    v9_5_xrp_late_band_AB._consec_state.clear()
+    v9_5_xrp_late_band_AB_blend._consec_state.clear()
 
 
 # ── Null probability handling ──────────────────────────────────────────────
@@ -128,10 +128,10 @@ class TestNullProbabilityHandling:
         SKIPs with a clear reason — no crash."""
         surface = _make_surface(probability_lgb_v9_5_xrp=None)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "v9_5_xrp_model_not_loaded"
-        assert d.strategy_id == "v9_5_xrp_late_band_AB"
+        assert d.strategy_id == "v9_5_xrp_late_band_AB_blend"
 
 
 # ── Defensive asset guard ──────────────────────────────────────────────────
@@ -141,14 +141,14 @@ class TestAssetGuard:
         """XRP strategy refuses to fire on a BTC surface — defensive guard."""
         surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp=0.97)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
     def test_eth_surface_skips(self):
         surface = _make_surface(asset="ETH", probability_lgb_v9_5_xrp=0.97)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
@@ -156,7 +156,7 @@ class TestAssetGuard:
         """Asset check runs first — non-XRP with None prob still wrong_asset."""
         surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp=None)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
@@ -168,7 +168,7 @@ class TestEvalOffsetBand:
         """eval_offset=89 is below the late-band min of 90."""
         surface = _make_surface(eval_offset=89)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -176,28 +176,28 @@ class TestEvalOffsetBand:
         """eval_offset=151 is above the late-band max of 150."""
         surface = _make_surface(eval_offset=151)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
     def test_at_min_90_fires(self):
         surface = _make_surface(eval_offset=90, probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_at_max_150_fires(self):
         surface = _make_surface(eval_offset=150, probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_none_eval_offset_skips(self):
         surface = _make_surface(eval_offset=None)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -205,7 +205,7 @@ class TestEvalOffsetBand:
         """eval_offset=240 (e.g. early window) is way out of the late band."""
         surface = _make_surface(eval_offset=240)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -217,16 +217,16 @@ class TestUpThreshold:
         """Exactly at audit threshold 0.91 — fires UP."""
         surface = _make_surface(probability_lgb_v9_5_xrp=0.91)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
-        assert d.strategy_id == "v9_5_xrp_late_band_AB"
-        assert d.entry_reason == "v9_5_xrp_late_band_AB_pass"
+        assert d.strategy_id == "v9_5_xrp_late_band_AB_blend"
+        assert d.entry_reason == "v9_5_xrp_late_band_AB_blend_pass"
 
     def test_up_fires_well_above_threshold(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.98)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -234,14 +234,14 @@ class TestUpThreshold:
         """0.909 < 0.91 — below the UP threshold."""
         surface = _make_surface(probability_lgb_v9_5_xrp=0.909)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
     def test_neutral_skips(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.50)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -256,14 +256,14 @@ class TestNoDownDirection:
         """Even very strong DOWN (p=0.05) must SKIP — UP-only strategy."""
         surface = _make_surface(probability_lgb_v9_5_xrp=0.05)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
     def test_moderate_down_skips(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.20)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -271,7 +271,7 @@ class TestNoDownDirection:
         """Even runtime overrides can't make this fire DOWN — UP-only logic."""
         surface = _make_surface(probability_lgb_v9_5_xrp=0.05)
         with _params(down_threshold=0.10):
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -283,11 +283,11 @@ class TestRuntimeOverride:
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         # Default 0.91 — TRADE.
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         # Raise to 0.95 — SKIP.
         with _params(up_threshold=0.95):
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
@@ -296,11 +296,11 @@ class TestRuntimeOverride:
         surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
         # Default 0.91 — SKIP.
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         # Lower to 0.80 — TRADE.
         with _params(up_threshold=0.80):
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
@@ -308,11 +308,11 @@ class TestRuntimeOverride:
         surface = _make_surface(eval_offset=100, probability_lgb_v9_5_xrp=0.93)
         # Default band [90, 150] — TRADE.
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         # Narrow to [120, 150] — 100 now out of band.
         with _params(eval_offset_min=120):
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "outside_eval_band"
 
@@ -323,20 +323,20 @@ class TestMetadataShape:
     def test_metadata_contains_probability_on_trade(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["probability_lgb_v9_5_xrp"] == pytest.approx(0.93)
         assert d.metadata["up_threshold"] == pytest.approx(0.91)
         assert d.metadata["eval_offset_min"] == 90
         assert d.metadata["eval_offset_max"] == 150
         assert d.metadata["asset"] == "XRP"
-        assert d.metadata["strategy_id"] == "v9_5_xrp_late_band_AB"
+        assert d.metadata["strategy_id"] == "v9_5_xrp_late_band_AB_blend"
         assert d.metadata["strategy_version"] == "1.0.0"
 
     def test_metadata_contains_sizing_on_trade(self):
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["entry_cap"] == pytest.approx(0.93)
         assert d.metadata["collateral_pct"] == pytest.approx(0.025)
@@ -346,7 +346,7 @@ class TestMetadataShape:
         # p=0.93 -> |0.93 - 0.5| * 2 = 0.86 -> HIGH (>= 0.40)
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.confidence == "HIGH"
         assert d.confidence_score == pytest.approx(0.86)
@@ -354,7 +354,7 @@ class TestMetadataShape:
     def test_metadata_includes_eval_offset_on_trade(self):
         surface = _make_surface(eval_offset=120, probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.metadata["eval_offset"] == 120
 
@@ -366,7 +366,7 @@ class TestConsecutiveTicks:
         """min_consecutive_pass_ticks=1 (default) → one qualifying tick fires."""
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
         assert d.metadata["consec_tick_count"] == 1
@@ -376,12 +376,12 @@ class TestConsecutiveTicks:
         """Runtime override min_consecutive_pass_ticks=2 → first tick SKIPs."""
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         with _params(min_consecutive_pass_ticks=2):
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "SKIP"
         assert "awaiting_consec_ticks" in (d.skip_reason or "")
         # Second consecutive tick should TRADE.
         with _params(min_consecutive_pass_ticks=2):
-            d2 = evaluate_v9_5_xrp_late_band_AB(surface)
+            d2 = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d2.action == "TRADE"
         assert d2.direction == "UP"
 
@@ -392,10 +392,10 @@ class TestCrossStrategyIndependence:
     """Module-local _consec_state must NOT leak to sibling strategies."""
 
     def test_consec_state_isolated_from_v9_5_xrp_raw_lgb(self):
-        """Mutating v9_5_xrp_late_band_AB._consec_state must NOT affect
+        """Mutating v9_5_xrp_late_band_AB_blend._consec_state must NOT affect
         v9_5_xrp_raw_lgb._consec_state (they're separate module-locals).
         """
-        from strategies.configs import v9_5_xrp_late_band_AB as late_band
+        from strategies.configs import v9_5_xrp_late_band_AB_blend as late_band
         from strategies.configs import v9_5_xrp_raw_lgb as raw_lgb
 
         # Sanity: clear both.
@@ -406,7 +406,7 @@ class TestCrossStrategyIndependence:
         # Fire this strategy — populates ITS state only.
         surface = _make_surface(probability_lgb_v9_5_xrp=0.93)
         with _params():
-            d = evaluate_v9_5_xrp_late_band_AB(surface)
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
         assert d.action == "TRADE"
         assert len(late_band._consec_state) >= 1
         # raw_lgb's state remains untouched.

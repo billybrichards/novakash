@@ -1,7 +1,7 @@
-name: v9_2_eth_late_band_AB
-strategy_id: v9_2_eth_late_band_AB
+name: v9_2_eth_late_band_AB_blend
+strategy_id: v9_2_eth_late_band_AB_blend
 version: "1.0.0"
-# v9_2_eth_late_band_AB — 2026-05-24 (Billy approved)
+# v9_2_eth_late_band_AB_blend — 2026-05-24 (Billy approved)
 #
 # UP-only ETH 5m late-window high-conviction strategy. Reads the existing
 # probability_lgb_v9_2_eth column (no new emissions needed). Fires when
@@ -53,8 +53,8 @@ mode: GHOST
 asset: ETH
 timescale: 5m
 
-hooks_file: v9_2_eth_late_band_AB.py
-pre_gate_hook: evaluate_v9_2_eth_late_band_AB
+hooks_file: v9_2_eth_late_band_AB_blend.py
+pre_gate_hook: evaluate_v9_2_eth_late_band_AB_blend
 
 sizing:
   type: kelly
