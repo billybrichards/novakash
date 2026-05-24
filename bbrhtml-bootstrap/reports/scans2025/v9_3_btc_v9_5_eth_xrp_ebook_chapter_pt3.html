@@ -1,0 +1,3000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 14 · pt 3 — The Full Session Night: 5 Probabilities Live</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    :root {
+      --bg-deep: #0A0A0F;
+      --bg-surface: #14141C;
+      --bg-elevated: #1C1C28;
+      --bg-card: #161620;
+      --bg-overlay: rgba(255, 255, 255, 0.025);
+
+      --text-primary: #F5F3F0;
+      --text-secondary: #B8B3AB;
+      --text-tertiary: #7A7268;
+      --text-muted: #4A4540;
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+
+      --violet: #8B5CF6;
+      --violet-soft: #A78BFA;
+      --violet-dim: rgba(139, 92, 246, 0.15);
+      --green: #10B981;
+      --green-soft: #34D399;
+      --green-dim: rgba(16, 185, 129, 0.15);
+      --cyan: #06B6D4;
+      --cyan-soft: #22D3EE;
+      --cyan-dim: rgba(6, 182, 212, 0.15);
+      --amber: #F59E0B;
+      --amber-dim: rgba(245, 158, 11, 0.15);
+      --pink: #EC4899;
+      --pink-dim: rgba(236, 72, 153, 0.15);
+      --red: #EF4444;
+      --red-dim: rgba(239, 68, 68, 0.15);
+
+      --font-display: "Instrument Serif", "Times New Roman", serif;
+      --font-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: "JetBrains Mono", "Courier New", monospace;
+
+      --content-max: 86rem;
+      --reading-max: 46rem;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; font-size: 16px; -webkit-font-smoothing: antialiased; }
+    body {
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-weight: 400;
+      line-height: 1.68;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(6, 182, 212, 0.10) 0%, transparent 50%),
+        radial-gradient(ellipse 60% 40% at 90% 30%, rgba(139, 92, 246, 0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 10% 60%, rgba(16, 185, 129, 0.04) 0%, transparent 60%);
+      background-attachment: fixed;
+    }
+    ::selection { background: var(--cyan); color: var(--bg-deep); }
+
+    .reading-progress {
+      position: fixed; top: 0; left: 0; height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--violet), var(--green));
+      z-index: 100; width: 0; transition: width 0.12s ease-out;
+    }
+
+    .side-nav {
+      position: fixed; left: 1.25rem; top: 50%;
+      transform: translateY(-50%);
+      z-index: 60;
+      display: flex; flex-direction: column; gap: 0.4rem;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .side-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 0.28rem 0.6rem;
+      border-left: 1px solid var(--border-subtle);
+      transition: color 0.2s, border-color 0.2s, padding-left 0.2s;
+      display: block;
+      white-space: nowrap;
+    }
+    .side-nav a:hover, .side-nav a.active {
+      color: var(--text-primary);
+      border-left-color: var(--cyan);
+      padding-left: 0.9rem;
+    }
+    @media (max-width: 1280px) { .side-nav { display: none; } }
+
+    .container { max-width: var(--content-max); margin: 0 auto; padding: 0 1.5rem; }
+    .reading { max-width: var(--reading-max); margin: 0 auto; }
+    section { padding: 6rem 0; position: relative; }
+    section + section { border-top: 1px solid var(--border-subtle); }
+    @media (min-width: 720px) { section { padding: 8rem 0; } }
+
+    .kicker {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 1.25rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .kicker::before {
+      content: '';
+      display: inline-block;
+      width: 1.5rem;
+      height: 1px;
+      background: var(--text-tertiary);
+    }
+    .kicker--cyan { color: var(--cyan-soft); }
+    .kicker--cyan::before { background: var(--cyan-soft); }
+    .kicker--violet { color: var(--violet-soft); }
+    .kicker--violet::before { background: var(--violet-soft); }
+    .kicker--green { color: var(--green-soft); }
+    .kicker--green::before { background: var(--green-soft); }
+    .kicker--amber { color: var(--amber); }
+    .kicker--amber::before { background: var(--amber); }
+    .kicker--red { color: var(--red); }
+    .kicker--red::before { background: var(--red); }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      line-height: 1.05;
+    }
+    h2 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      margin-bottom: 1rem;
+    }
+    h2 em { color: var(--cyan-soft); font-style: italic; }
+    h3 {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      margin: 2.5rem 0 0.75rem;
+    }
+    h4 {
+      font-size: clamp(1.15rem, 2vw, 1.45rem);
+      margin: 1.75rem 0 0.5rem;
+      color: var(--text-primary);
+    }
+    p { margin-bottom: 1.1rem; color: var(--text-secondary); font-size: 1.02rem; }
+    p strong { color: var(--text-primary); font-weight: 500; }
+    p em { color: var(--text-primary); font-style: italic; font-family: var(--font-display); font-size: 1.08em; }
+    a {
+      color: var(--cyan-soft);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(34, 211, 238, 0.35);
+      transition: border-color 0.2s;
+    }
+    a:hover { border-bottom-color: var(--cyan-soft); }
+
+    code, .mono {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      color: var(--cyan-soft);
+      background: var(--bg-overlay);
+      padding: 0.08em 0.4em;
+      border-radius: 4px;
+      border: 1px solid var(--border-subtle);
+    }
+    p code { background: rgba(6,182,212,0.08); border-color: rgba(6,182,212,0.18); }
+
+    pre {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 1.5rem;
+      overflow-x: auto;
+      margin: 1.75rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-primary);
+      position: relative;
+    }
+    pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+    pre .tk-com { color: var(--text-tertiary); font-style: italic; }
+    pre .tk-key { color: var(--violet-soft); }
+    pre .tk-str { color: var(--green-soft); }
+    pre .tk-num { color: var(--amber); }
+    pre .tk-fn  { color: var(--cyan-soft); }
+    pre .tk-bad { color: var(--red); }
+    pre::before {
+      content: attr(data-lang);
+      position: absolute;
+      top: 0.5rem; right: 1rem;
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    /* ─── HERO ─────────────────────────────────────────────────────── */
+    .hero {
+      min-height: 96vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 4rem 1.5rem 6rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-grid { max-width: var(--content-max); margin: 0 auto; width: 100%; position: relative; z-index: 2; }
+    .hero-kicker {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      display: block;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s 0.1s both;
+    }
+    .hero-kicker span:first-child { color: var(--cyan-soft); margin-right: 1rem; }
+    .hero-title {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: clamp(2.8rem, 8.5vw, 6.4rem);
+      line-height: 0.97;
+      letter-spacing: -0.03em;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s 0.25s both;
+    }
+    .hero-title em {
+      color: var(--cyan-soft);
+      font-style: italic;
+      display: inline-block;
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--violet) 60%, var(--green) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: gradShift 9s ease infinite;
+      background-size: 220% 220%;
+    }
+    @keyframes gradShift {
+      0%, 100% { background-position: 0% 0%; }
+      50% { background-position: 100% 100%; }
+    }
+    .hero-sub {
+      font-size: clamp(1.1rem, 2vw, 1.35rem);
+      line-height: 1.55;
+      max-width: 60rem;
+      color: var(--text-primary);
+      margin-bottom: 2.5rem;
+      font-weight: 300;
+      animation: fadeInUp 0.8s 0.4s both;
+    }
+    .hero-sub em { font-family: var(--font-display); color: var(--cyan-soft); }
+    .hero-promise {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: var(--text-tertiary);
+      max-width: 52rem;
+      padding-left: 1rem;
+      border-left: 2px solid var(--cyan);
+      animation: fadeInUp 0.8s 0.55s both;
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ─── PUNCH CARD ───────────────────────────────────────────────── */
+    .punch-card {
+      margin-top: 3.5rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0;
+      max-width: 80rem;
+      animation: fadeInUp 0.8s 0.65s both;
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      overflow: hidden;
+      background: var(--bg-surface);
+    }
+    .punch-cell {
+      padding: 1.4rem 1.6rem;
+      border-right: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+      position: relative;
+    }
+    .punch-cell:last-child { border-right: none; }
+    .punch-cell .punch-n {
+      font-family: var(--font-display);
+      font-size: 3.4rem;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      color: var(--cyan-soft);
+      display: block;
+      margin-bottom: 0.35rem;
+    }
+    .punch-cell .punch-lbl {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+    .punch-cell.violet .punch-n { color: var(--violet-soft); }
+    .punch-cell.green  .punch-n { color: var(--green-soft); }
+    .punch-cell.amber  .punch-n { color: var(--amber); }
+    .punch-cell.red    .punch-n { color: var(--red); }
+
+    .hero-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
+      max-width: 64rem;
+      animation: fadeInUp 0.8s 0.85s both;
+    }
+    .hero-meta-item {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-default);
+    }
+    .hero-meta-item strong {
+      display: block;
+      color: var(--text-primary);
+      font-size: 1.55rem;
+      font-weight: 400;
+      margin-top: 0.4rem;
+      font-family: var(--font-display);
+      letter-spacing: -0.01em;
+      text-transform: none;
+    }
+    .hero-meta-item .arrow { color: var(--cyan-soft); }
+    .hero-meta-item .pp { color: var(--green-soft); font-size: 0.85rem; font-family: var(--font-mono); margin-left: 0.4rem; }
+
+    /* ─── MOMENT CARDS ─────────────────────────────────────────────── */
+    .moments-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+      margin-top: 3.5rem;
+    }
+    @media (min-width: 980px) {
+      .moments-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .moment {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.8rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.3s, border-color 0.3s;
+    }
+    .moment:hover { transform: translateY(-3px); border-color: var(--border-strong); }
+    .moment-time {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.7rem;
+    }
+    .moment-head {
+      font-family: var(--font-display);
+      font-size: 1.45rem;
+      line-height: 1.15;
+      margin-bottom: 0.85rem;
+      letter-spacing: -0.01em;
+      color: var(--text-primary);
+    }
+    .moment-body { font-size: 0.93rem; line-height: 1.6; color: var(--text-secondary); }
+    .moment-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.6rem;
+      border-radius: 999px;
+      margin-top: 1.2rem;
+    }
+    .moment[data-mood="bad"]  .moment-tag { background: var(--red-dim); color: var(--red); }
+    .moment[data-mood="good"] .moment-tag { background: var(--green-dim); color: var(--green-soft); }
+    .moment[data-mood="next"] .moment-tag { background: var(--violet-dim); color: var(--violet-soft); }
+    .moment[data-mood="warn"] .moment-tag { background: var(--amber-dim); color: var(--amber); }
+    .moment[data-mood="bad"]  { border-left: 3px solid var(--red); }
+    .moment[data-mood="good"] { border-left: 3px solid var(--green); }
+    .moment[data-mood="next"] { border-left: 3px solid var(--violet); }
+    .moment[data-mood="warn"] { border-left: 3px solid var(--amber); }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 3rem;
+      margin-top: 3rem;
+      align-items: start;
+    }
+    @media (min-width: 980px) {
+      .two-col { grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+    }
+
+    /* ─── STRATEGY CARDS / TABLES ─────────────────────────────────── */
+    .strat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 22px;
+      padding: 2.25rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .strat-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 4px;
+    }
+    .strat-card.cyan::before   { background: linear-gradient(90deg, var(--cyan), transparent); }
+    .strat-card.violet::before { background: linear-gradient(90deg, var(--violet), transparent); }
+    .strat-card.green::before  { background: linear-gradient(90deg, var(--green), transparent); }
+    .strat-card.amber::before  { background: linear-gradient(90deg, var(--amber), transparent); }
+    .strat-card .strat-tag {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.6rem;
+    }
+    .strat-card.cyan   .strat-tag { color: var(--cyan-soft); }
+    .strat-card.violet .strat-tag { color: var(--violet-soft); }
+    .strat-card.green  .strat-tag { color: var(--green-soft); }
+    .strat-card.amber  .strat-tag { color: var(--amber); }
+    .strat-card h3 { font-size: 1.7rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+    .strat-card .strat-codename {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--cyan-soft);
+      margin-bottom: 1.25rem;
+      word-break: break-all;
+    }
+    .strat-card.violet .strat-codename { color: var(--violet-soft); }
+    .strat-card.green  .strat-codename { color: var(--green-soft); }
+    .strat-card .strat-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1rem;
+      padding: 0.6rem 0;
+      border-top: 1px solid var(--border-subtle);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+    .strat-card .strat-line .k { color: var(--text-tertiary); letter-spacing: 0.08em; }
+    .strat-card .strat-line .v { color: var(--text-primary); text-align: right; }
+    .strat-card .strat-line .v.good   { color: var(--green-soft); }
+    .strat-card .strat-line .v.cyan   { color: var(--cyan-soft); }
+    .strat-card .strat-line .v.violet { color: var(--violet-soft); }
+    .strat-card .strat-line .v.amber  { color: var(--amber); }
+    .strat-card .strat-line .v.bad    { color: var(--red); }
+    .strat-card .strat-foot {
+      margin-top: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-tertiary);
+      line-height: 1.55;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--border-default);
+    }
+
+    .chart-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.5rem;
+      margin: 3rem 0;
+      overflow: hidden;
+    }
+    .chart-title {
+      font-family: var(--font-mono);
+      font-size: 0.73rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin-bottom: 0.4rem;
+      padding-left: 0.5rem;
+    }
+    .chart-sub {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--text-tertiary);
+      margin-bottom: 1rem;
+      padding-left: 0.5rem;
+    }
+    .plotly-host { width: 100%; }
+
+    .result-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      margin: 1.5rem 0;
+    }
+    .result-table caption {
+      text-align: left;
+      caption-side: top;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.75rem;
+      padding-left: 0.5rem;
+    }
+    .result-table th, .result-table td {
+      text-align: left;
+      padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .result-table th {
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border-default);
+    }
+    .result-table td.num   { text-align: right; }
+    .result-table th.num   { text-align: right; }
+    .result-table td.label { color: var(--text-primary); }
+    .result-table td.hl    { color: var(--cyan-soft); font-weight: 600; }
+    .result-table td.live  { color: var(--green-soft); font-weight: 600; }
+    .result-table td.ghost { color: var(--violet-soft); font-weight: 600; }
+    .result-table td.dim   { color: var(--text-tertiary); }
+    .result-table tr.highlight   td { background: rgba(6, 182, 212, 0.05); }
+    .result-table tr.breakthrough td { background: rgba(16, 185, 129, 0.06); color: var(--green-soft); }
+    .result-table tr.breakthrough td.label { color: var(--green-soft); font-weight: 500; }
+    .result-table tr.viol td { background: rgba(139, 92, 246, 0.06); color: var(--violet-soft); }
+    .result-table tr.viol td.label { color: var(--violet-soft); font-weight: 500; }
+    .result-table tr.bad td { background: rgba(239,68,68,0.06); color: var(--red); }
+
+    .pull-quote {
+      font-family: var(--font-display);
+      font-size: clamp(1.6rem, 3.3vw, 2.4rem);
+      line-height: 1.25;
+      color: var(--text-primary);
+      padding: 2.5rem 0;
+      max-width: 52rem;
+      margin: 2rem auto;
+      letter-spacing: -0.015em;
+    }
+    .pull-quote em { color: var(--cyan-soft); font-style: italic; }
+    .pull-quote::before {
+      content: '"';
+      display: block;
+      color: var(--cyan-soft);
+      font-size: 4rem;
+      line-height: 0.2;
+      margin-bottom: 1.5rem;
+      font-family: var(--font-display);
+    }
+    .pull-quote cite {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 1.5rem;
+      font-style: normal;
+    }
+
+    .svg-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.5rem;
+      margin: 2.5rem 0;
+      overflow: hidden;
+    }
+    .svg-wrap svg { width: 100%; height: auto; display: block; }
+
+    .callout {
+      background: var(--bg-card);
+      border-left: 3px solid var(--cyan);
+      border-radius: 10px;
+      padding: 1.4rem 1.6rem;
+      margin: 2rem 0;
+      font-family: var(--font-body);
+      font-size: 0.96rem;
+    }
+    .callout.warn   { border-left-color: var(--amber); }
+    .callout.bad    { border-left-color: var(--red);   }
+    .callout.good   { border-left-color: var(--green); }
+    .callout.violet { border-left-color: var(--violet); }
+    .callout-title {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--cyan-soft);
+      margin-bottom: 0.6rem;
+    }
+    .callout.warn   .callout-title { color: var(--amber); }
+    .callout.bad    .callout-title { color: var(--red); }
+    .callout.good   .callout-title { color: var(--green-soft); }
+    .callout.violet .callout-title { color: var(--violet-soft); }
+
+    .footer {
+      padding: 4rem 1.5rem 6rem;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border-subtle);
+    }
+    .footer span { color: var(--cyan-soft); }
+
+    .tag-pill {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.6rem;
+      border-radius: 999px;
+      margin-right: 0.35rem;
+      margin-bottom: 0.3rem;
+    }
+    .tag-pill.live  { background: var(--green-dim); color: var(--green-soft); }
+    .tag-pill.ghost { background: var(--violet-dim); color: var(--violet-soft); }
+    .tag-pill.open  { background: var(--amber-dim); color: var(--amber); }
+    .tag-pill.merged { background: var(--cyan-dim); color: var(--cyan-soft); }
+    .tag-pill.skip   { background: var(--red-dim); color: var(--red); }
+  </style>
+</head>
+<body>
+
+<div class="reading-progress" id="reading-progress"></div>
+
+<nav class="side-nav" id="side-nav">
+  <a href="#hero">00 · cold open</a>
+  <a href="#trigger">01 · the trigger</a>
+  <a href="#data-infra">02 · data infra</a>
+  <a href="#btc-story">03 · v9.3 BTC</a>
+  <a href="#eth-deploy">04 · v9.5 ETH deploy</a>
+  <a href="#incident">05 · the incident</a>
+  <a href="#xrp">06 · XRP</a>
+  <a href="#final-state">07 · final state</a>
+  <a href="#inventory">08 · inventory</a>
+  <a href="#lessons">09 · lessons</a>
+  <a href="#next">10 · what's next</a>
+  <a href="#close">11 · close</a>
+</nav>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     HERO
+═══════════════════════════════════════════════════════════════════ -->
+<section class="hero" id="hero">
+  <div class="hero-grid">
+    <span class="hero-kicker">
+      <span>Chapter 14 · pt 3</span>
+      <span>2026-05-22 → 2026-05-23</span>
+      <span style="color: var(--violet-soft);">the full session night</span>
+    </span>
+
+    <h1 class="hero-title">
+      One night.<br>
+      <em>5 probabilities</em><br>
+      live.
+    </h1>
+
+    <p class="hero-sub">
+      Three new models trained. <em>Three PRs merged</em>. Two outages narrowly avoided.
+      One prod incident survived. A <em>v2 box</em> presumed alive that had been
+      stopped for fourteen days. A docker compose override that needed two files,
+      not one. And a disk that was 99% full because nobody had ever pruned the
+      backup image tags. By dawn: ETH, BTC, XRP — all emitting.
+    </p>
+
+    <p class="hero-promise">
+      This is the long-form retrospective of a single eight-hour window — from
+      "iso_expand had a few extra losses, can we improve v9.2 BTC?" through
+      "five probabilities on the wire." Every number in this chapter is sourced
+      from the run artefacts of that night. No inflated estimates.
+    </p>
+
+    <div class="punch-card">
+      <div class="punch-cell">
+        <span class="punch-n">5</span>
+        <span class="punch-lbl">probabilities<br>live by dawn</span>
+      </div>
+      <div class="punch-cell violet">
+        <span class="punch-n">4</span>
+        <span class="punch-lbl">PRs merged<br>timesfm side</span>
+      </div>
+      <div class="punch-cell amber">
+        <span class="punch-n">3</span>
+        <span class="punch-lbl">engine PRs<br>open / GHOST</span>
+      </div>
+      <div class="punch-cell green">
+        <span class="punch-n">2</span>
+        <span class="punch-lbl">outages<br>narrowly avoided</span>
+      </div>
+      <div class="punch-cell red">
+        <span class="punch-n">1</span>
+        <span class="punch-lbl">prod incident<br>survived</span>
+      </div>
+      <div class="punch-cell">
+        <span class="punch-n">~8h</span>
+        <span class="punch-lbl">elapsed<br>wall clock</span>
+      </div>
+    </div>
+
+    <div class="hero-meta">
+      <div class="hero-meta-item">
+        v9.4 ETH LIVE WR (24h, p≥0.72)
+        <strong>76.91<span class="pp">%</span></strong>
+      </div>
+      <div class="hero-meta-item">
+        v9.3 BTC walk-forward UP p≥0.96
+        <strong>91.3<span class="pp">%</span></strong>
+      </div>
+      <div class="hero-meta-item">
+        v9.5 XRP UP ceiling (n≥100)
+        <strong>82.9<span class="pp">%</span></strong>
+      </div>
+      <div class="hero-meta-item">
+        Disk pruned on classifier-gpu
+        <strong>~35 <span class="pp">GB</span></strong>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 1 — THE TRIGGER
+═══════════════════════════════════════════════════════════════════ -->
+<section id="trigger">
+  <div class="container reading">
+    <span class="kicker kicker--cyan">01 · The trigger</span>
+    <h2>A <em>few extra losses</em>.</h2>
+
+    <p>
+      The question arrived informally. <code>iso_expand</code> — the v9.2 BTC
+      isotonic-recalibrated strategy that had been carrying the live BTC leg
+      for weeks — had logged a string of losses that didn't quite feel like
+      noise. The threshold was holding, the model was emitting, but the win
+      rate had drifted just enough to be visible above the bar.
+    </p>
+
+    <p>
+      "Can we improve v9.2 BTC?" That was the prompt. Five words. No formal
+      ticket, no migration plan, no shadow-mode acceptance criteria.
+      Just a question.
+    </p>
+
+    <p>
+      By dawn, that question had touched every asset the system tracks.
+      A new v9.3 BTC base model trained on a walk-forward corpus 18× the size
+      of the original v9.2 single-split. A new v9.5 ETH emission path
+      wired end-to-end and deployed. A v9.5 XRP corpus rebuilt twice — first
+      on a 3.5-day skeleton that the walk-forward CV refused to even run on,
+      then on an 8.62-day version that exposed an honest WR ceiling almost
+      ten points below v9.5 ETH. And in between, a thirty-minute incident
+      where every probability the system emits went dark.
+    </p>
+
+    <p>
+      Nothing about the prompt suggested any of that. The night unspooled
+      because each finding implicated the next. The v9.3 BTC walk-forward
+      revealed that v9.2's headline 95% WR was inflated by a tiny test slice
+      (n=161 windows) — which meant the v9.4 ETH and v9.5 ETH numbers
+      probably had the same problem, which meant we needed to ship the v9.5
+      ETH emission path tonight so the 24h GHOST window could start counting,
+      which meant the v3 box deploy plan from memory needed to be re-checked,
+      which is when we found the box had been stopped for 14 days, which is
+      when we found the disk problem on its replacement…
+    </p>
+
+    <div class="pull-quote">
+      The way you find out your infrastructure is fragile is by trying
+      to ship through it at three in the morning.
+      <cite>— field note, 2026-05-23</cite>
+    </div>
+
+    <p>
+      This chapter follows the night chronologically. The numbers are
+      pulled from the run artefacts: <code>/tmp/btc_v9_3/*.csv</code>,
+      <code>/tmp/xrp_v9_5_cache/*.csv</code>, the <code>public.notes</code>
+      RDS table (rows 585 → 595), the merge reports filed to
+      <code>/tmp/v9_5_*_report.md</code>, and the SSM deploy logs caught
+      mid-flight.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 2 — THE DATA INFRA UNLOCK
+═══════════════════════════════════════════════════════════════════ -->
+<section id="data-infra">
+  <div class="container reading">
+    <span class="kicker kicker--violet">02 · The data infra unlock</span>
+    <h2>DuckDB plus <em>psql COPY</em>.</h2>
+
+    <p>
+      Before any of the models, the night turned on a small infrastructure
+      reframing. Pulling enough training data through the SSM tunnel had
+      stopped being possible the canonical way.
+    </p>
+
+    <p>
+      The previous pattern — <code>asyncpg</code> over the SSM port-forward
+      at <code>127.0.0.1:15432</code> — had worked for the small TVP slices
+      the audit-#391 pipeline expected. Tonight's pulls were bigger.
+      The XRP corpus build hung silently inside <code>asyncpg.fetch</code>
+      on the first 1-day chunk, with the kernel buffer pinned at <strong>164 MB
+      and 9 minutes of idle TCP time</strong>. The <code>wait_for(120s)</code>
+      guard never fired. The process sat in <code>D</code> state with no
+      bytes moving until killed.
+    </p>
+
+    <p>
+      The fix was to <em>stop trying to bulk-pull through asyncpg</em>.
+      The pattern that worked was a hybrid: <strong>bulk via DuckDB
+      reading the daily S3 parquet export, delta via <code>psql COPY</code>
+      through the SSM tunnel in small chunks</strong>.
+    </p>
+
+    <h3>The pipeline that worked</h3>
+
+    <ol style="margin-left: 1.2rem; color: var(--text-secondary);">
+      <li style="margin: 0.5rem 0;"><strong>Bulk:</strong>
+        DuckDB <code>read_parquet('local-2026-05-18.parquet')</code> →
+        1,340 windows / 393,315 rows / 5.34d in <strong>2.7s</strong>.</li>
+      <li style="margin: 0.5rem 0;"><strong>Delta:</strong>
+        <code>psql -h 127.0.0.1 -p 15432 -c "COPY (SELECT … WHERE window_ts BETWEEN $1 AND $2) TO STDOUT"</code>
+        in 2-hour chunks. Eight chunks at 80-130s each, 165 windows / 62,224 rows.</li>
+      <li style="margin: 0.5rem 0;"><strong>Merge:</strong>
+        pandas <code>concat</code> on (window_ts, delta_secs) → 1,505 windows /
+        441,022 rows / 8.62d total.</li>
+      <li style="margin: 0.5rem 0;"><strong>Enrich:</strong>
+        JSONB <code>features</code> → 53 flat float32 columns;
+        9 v9.5-NEW keys NaN-filled (no engine emitter for XRP);
+        gamma 5 NaN-filled (XRP gamma is 15m-only).</li>
+    </ol>
+
+    <p>
+      The rule that emerged: <strong>for any pull above ~100k rows, asyncpg
+      through SSM is unreliable. Use DuckDB on the daily parquet export for
+      bulk and <code>psql COPY</code> for the delta.</strong> The parquet
+      export already exists; the daily writer dumps to S3 at 04:00 UTC.
+      The SSM tunnel only has to carry the tail.
+    </p>
+
+    <div class="svg-wrap">
+      <div class="chart-title">Pull pattern · bulk + delta + combine</div>
+      <div class="chart-sub">why a hybrid beats either path alone</div>
+      <svg viewBox="0 0 920 360" role="img" aria-label="Data infrastructure pull pattern">
+        <defs>
+          <linearGradient id="bulkGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#22D3EE" stop-opacity="0.6"/>
+            <stop offset="1" stop-color="#22D3EE" stop-opacity="0.15"/>
+          </linearGradient>
+          <linearGradient id="deltaGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#A78BFA" stop-opacity="0.6"/>
+            <stop offset="1" stop-color="#A78BFA" stop-opacity="0.15"/>
+          </linearGradient>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#7A7268"/>
+          </marker>
+        </defs>
+
+        <!-- S3 parquet source -->
+        <rect x="20" y="40" width="170" height="80" rx="10" fill="#161620" stroke="#22D3EE" stroke-width="1.4"/>
+        <text x="105" y="68" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#22D3EE">S3 PARQUET EXPORT</text>
+        <text x="105" y="86" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">daily @ 04:00 UTC</text>
+        <text x="105" y="102" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">~600 MB ticks_v2_probability</text>
+
+        <!-- RDS source -->
+        <rect x="20" y="200" width="170" height="80" rx="10" fill="#161620" stroke="#A78BFA" stroke-width="1.4"/>
+        <text x="105" y="228" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#A78BFA">RDS via SSM</text>
+        <text x="105" y="246" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">127.0.0.1:15432</text>
+        <text x="105" y="262" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">tail 2-4d (post-snapshot)</text>
+
+        <!-- bulk path -->
+        <path d="M 190 80 C 310 80, 310 110, 430 110" stroke="url(#bulkGrad)" stroke-width="3" fill="none" marker-end="url(#arr)"/>
+        <text x="270" y="70"  font-family="JetBrains Mono" font-size="10" fill="#22D3EE">DuckDB read_parquet()</text>
+        <text x="270" y="100" font-family="JetBrains Mono" font-size="9"  fill="#7A7268">5.34d · 1340 windows · 2.7s</text>
+
+        <!-- delta path -->
+        <path d="M 190 240 C 310 240, 310 170, 430 170" stroke="url(#deltaGrad)" stroke-width="3" fill="none" marker-end="url(#arr)"/>
+        <text x="270" y="230" font-family="JetBrains Mono" font-size="10" fill="#A78BFA">psql COPY (2h chunks)</text>
+        <text x="270" y="252" font-family="JetBrains Mono" font-size="9"  fill="#7A7268">8 × 80-130s · 165 windows</text>
+
+        <!-- merger -->
+        <rect x="430" y="100" width="200" height="80" rx="10" fill="#161620" stroke="#10B981" stroke-width="1.4"/>
+        <text x="530" y="128" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#34D399">pandas.concat</text>
+        <text x="530" y="146" text-anchor="middle" font-family="JetBrains Mono" font-size="9"  fill="#B8B3AB">on (window_ts, delta_secs)</text>
+        <text x="530" y="162" text-anchor="middle" font-family="JetBrains Mono" font-size="9"  fill="#7A7268">dedupe — RDS wins ties</text>
+
+        <!-- output -->
+        <path d="M 630 140 C 720 140, 720 140, 770 140" stroke="#10B981" stroke-width="2.5" fill="none" marker-end="url(#arr)"/>
+
+        <rect x="770" y="100" width="130" height="80" rx="10" fill="#161620" stroke="#10B981" stroke-width="1.4"/>
+        <text x="835" y="128" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#34D399">CORPUS</text>
+        <text x="835" y="146" text-anchor="middle" font-family="JetBrains Mono" font-size="13" fill="#F5F3F0">1505 win</text>
+        <text x="835" y="162" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">8.62 days</text>
+
+        <!-- failure case label -->
+        <rect x="20" y="310" width="880" height="40" rx="8" fill="#1C1C28" stroke="#EF4444" stroke-width="1" stroke-dasharray="4 3"/>
+        <text x="40" y="336" font-family="JetBrains Mono" font-size="10" fill="#EF4444">why this beats asyncpg</text>
+        <text x="220" y="336" font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">asyncpg ≥100k rows over SSM: stalls @ 164 MB kernel buffer, 9 min idle, wait_for never fires</text>
+      </svg>
+    </div>
+
+    <p>
+      The lesson generalised. The exact same pattern — bulk DuckDB +
+      delta <code>psql COPY</code> — was what built the XRP corpus an hour
+      later, and the v9.3 BTC walk-forward corpus earlier in the night.
+      The asyncpg path was retired for any pull touching more than a
+      day of TVP data. The SSM tunnel survived; the strategy on top of it
+      didn't.
+    </p>
+
+    <div class="callout">
+      <div class="callout-title">Operating heuristic</div>
+      For <strong>&lt; 100k rows</strong>: asyncpg over SSM is fine.
+      For <strong>≥ 100k rows</strong>: pull bulk via DuckDB from the
+      daily S3 parquet, top up via psql COPY in 2h chunks. The mistake
+      was assuming asyncpg's <code>wait_for</code> guard would catch the
+      stall — at network level the bytes were flowing into the kernel
+      buffer just fine, so neither side knew the application layer was
+      stuck.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 3 — v9.3 BTC (CONDENSED)
+═══════════════════════════════════════════════════════════════════ -->
+<section id="btc-story">
+  <div class="container">
+    <span class="kicker kicker--cyan">03 · The v9.3 BTC story</span>
+    <h2>The <em>walk-forward</em> revelation.</h2>
+
+    <div class="reading">
+      <p>
+        Chapters 14·pt1 and 14·pt2 covered v9.3 BTC in full. This is the
+        condensed inline of the result so the rest of the night reads
+        coherently — and so the pattern that exposed v9.2's inflated WR
+        sits next to the patterns that would soon do the same to ETH and XRP.
+      </p>
+
+      <h3>Walk-forward CV vs single-split</h3>
+
+      <p>
+        The original v9.2 BTC was validated on a single
+        <em>last-10%-of-corpus</em> hold-out: 24 days of data, 90% train,
+        10% test. The test slice ended up containing 161 windows that scored
+        above <code>p ≥ 0.96</code>. On those 161 windows the model logged a
+        95.0% win rate. That number went into the headline.
+      </p>
+
+      <p>
+        v9.3 BTC re-ran the same test with proper walk-forward CV:
+        <strong>5 folds × 4 days test, 24-day corpus, 5,702 windows total</strong>.
+        At the same <code>p ≥ 0.96</code> threshold, the WR landed at
+        <strong>91.3% on 1,488 windows</strong>. The model was about
+        as good as v9.2 — it was the test geometry that had been lying.
+      </p>
+    </div>
+
+    <div class="two-col">
+      <div class="strat-card cyan">
+        <div class="strat-tag">v9.2 BTC · SINGLE-SPLIT</div>
+        <h3>The optimistic headline</h3>
+        <div class="strat-codename">last-10% temporal hold-out</div>
+        <div class="strat-line"><span class="k">test slice</span><span class="v">2.4d / 161 win</span></div>
+        <div class="strat-line"><span class="k">UP p ≥ 0.96 WR</span><span class="v cyan">95.0%</span></div>
+        <div class="strat-line"><span class="k">DOWN p ≤ 0.04 WR</span><span class="v cyan">93.7%</span></div>
+        <div class="strat-line"><span class="k">fires per window</span><span class="v">≈ 25</span></div>
+        <div class="strat-foot">
+          The test set was so thin that one outlier 5-minute window could
+          shift the headline by half a point. The fold geometry was a
+          single line at <em>t=21.6d</em>.
+        </div>
+      </div>
+
+      <div class="strat-card violet">
+        <div class="strat-tag">v9.3 BTC · WALK-FORWARD</div>
+        <h3>The honest baseline</h3>
+        <div class="strat-codename">5 folds × 4d test (k=5 × ftd=4)</div>
+        <div class="strat-line"><span class="k">total scored</span><span class="v">20d / 5702 win</span></div>
+        <div class="strat-line"><span class="k">UP p ≥ 0.96 WR</span><span class="v violet">91.3%</span></div>
+        <div class="strat-line"><span class="k">DOWN p ≤ 0.04 WR</span><span class="v violet">90.9%</span></div>
+        <div class="strat-line"><span class="k">fires per window</span><span class="v">≈ 22</span></div>
+        <div class="strat-foot">
+          Same booster architecture, same threshold. The 3.7pp drop is
+          pure test-geometry. v9.2 wasn't wrong; v9.2 was
+          over-estimated. We were paying for that overestimate in <em>iso_expand</em>.
+        </div>
+      </div>
+    </div>
+
+    <div class="reading">
+      <h3>TIER 1 + 2 + 3 enrichment</h3>
+      <p>
+        v9.3 added 23 new features in three tiers — Tier 1: nested 5m
+        return / vol / VPIN summaries. Tier 2: source-quality and
+        session-bucket. Tier 3: v3 column renames bringing the BTC schema
+        into alignment with ETH/XRP. Net effect at LIVE thresholds:
+        <strong>+7.2pp UP WR</strong> at <code>p ≥ 0.72</code> vs v9.2 on
+        the same walk-forward folds. The model is genuinely better, just
+        not 95% better.
+      </p>
+
+      <h3>v9.4 META (deferred)</h3>
+      <p>
+        A v9.4 stack — meta-features computed from the v9.3 base probability
+        trajectory across a window — added <strong>+11.6pp DOWN WR</strong>
+        on the walk-forward CV. But the meta-features were computed using
+        the <em>full</em> window's base-prob trajectory at training time, and
+        only the <em>past-only</em> trajectory at serve time. The train-serve
+        skew is unbounded and not yet quantified. v9.4 stays on the bench
+        until the past-only retrain runs. The chapter 14·pt2 wrote it up;
+        the gating decision stuck.
+      </p>
+
+      <h3>Optuna SUPER — 65 trials, best composite 0.8136</h3>
+      <p>
+        With the baseline established, Optuna spent the evening hunting
+        for hyperparameters. 65 trials completed via TPESampler. The best
+        composite (weighted UP WR × volume × DOWN WR × volume) landed at
+        <strong>0.8136</strong> on trial 65. The optimisation surface is
+        shallow — the top quartile of trials all clustered within
+        <strong>0.025 composite</strong> of the leader.
+      </p>
+    </div>
+
+    <div class="chart-wrap">
+      <div class="chart-title">Optuna trajectories · BTC (65 trials) vs XRP (40 trials)</div>
+      <div class="chart-sub">composite score per trial · running best in cyan/violet</div>
+      <div id="chart-optuna" class="plotly-host" style="height: 460px;"></div>
+    </div>
+
+    <div class="reading">
+      <h3>90% WR strategy at UP 0.935 / DOWN 0.065</h3>
+      <p>
+        After Optuna, the threshold sweep on the OOF predictions identified
+        a 90% WR operating point at <code>UP p ≥ 0.935</code> /
+        <code>DOWN p ≤ 0.065</code>. That's the <em>v9_3_btc_tight</em>
+        strategy. The looser <em>v9_3_btc_raw_lgb</em> sits at
+        <code>UP p ≥ 0.72</code> / <code>DOWN p ≤ 0.20</code> — the same
+        threshold v9.2 uses, so the engine-side comparison is like-for-like
+        when GHOST eventually goes head-to-head.
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>v9.3 BTC · target-WR operating points (walk-forward OOF)</caption>
+      <thead>
+        <tr>
+          <th>target</th><th>side</th><th>thr</th>
+          <th class="num">n_windows</th><th class="num">WR</th>
+          <th class="num">median first-fire stc</th>
+          <th class="num">median fires/win</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="breakthrough">
+          <td class="label">90% WR</td><td>UP</td><td>0.935</td>
+          <td class="num">1,725</td><td class="num">90.3%</td>
+          <td class="num">274 s</td><td class="num">25</td>
+        </tr>
+        <tr class="breakthrough">
+          <td class="label">90% WR</td><td>DOWN</td><td>0.065</td>
+          <td class="num">1,590</td><td class="num">90.4%</td>
+          <td class="num">258 s</td><td class="num">19</td>
+        </tr>
+        <tr><td class="label dim">95% WR</td><td>UP</td><td>—</td>
+          <td class="num dim">0</td><td class="num dim">unreachable @ n≥100</td>
+          <td class="num dim">—</td><td class="num dim">—</td></tr>
+        <tr><td class="label dim">99% WR</td><td>UP</td><td>—</td>
+          <td class="num dim">0</td><td class="num dim">no pocket</td>
+          <td class="num dim">—</td><td class="num dim">—</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        The fire-timing tells a story too. BTC fires <em>early</em> in the
+        window — first fire median at <code>stc=274s</code> (i.e. 26s past
+        window-open). Compare that to what XRP would later show:
+        <code>stc=154s</code> (mid-window) and <code>stc=104s</code> for the
+        tight corner. BTC's UP signal builds quickly off the open and
+        plateaus. XRP's signal takes its time. Same architecture, completely
+        different temporal shape.
+      </p>
+
+      <h3>The per-tick / per-window distinction (why the headlines drift)</h3>
+
+      <p>
+        Both v9.2's and v9.3's threshold sweeps emit two WR numbers per
+        threshold: <em>tick WR</em> and <em>window WR</em>. Tick WR
+        counts every individual scoring event above the threshold and
+        weights them equally. Window WR collapses every fire inside a
+        single 5-minute window down to one outcome and counts that once.
+      </p>
+
+      <p>
+        The numbers look very different. At v9.3 BTC's
+        <code>p ≥ 0.96</code> on the walk-forward OOF: tick WR
+        <strong>96.5%</strong>, window WR <strong>91.3%</strong>.
+        A 5.2pp gap. The reason is that high-conviction windows fire
+        many ticks — a window that's about to win at 0.96 conviction
+        might fire 30 ticks above the threshold, all of which count
+        toward tick WR. A window that's about to lose at 0.96
+        conviction might fire 5 ticks. Tick WR over-weights the
+        wins because the wins are louder.
+      </p>
+
+      <p>
+        Per-window dedup is the honest accounting. v9.2 BTC's headline
+        95% was a per-window number — already deduped — but the test
+        slice was only 161 windows. The single-split test had two
+        problems compounding: the WR was honest but the sample was
+        thin, so noise dominated. v9.3's walk-forward fixed both: same
+        per-window dedup, but applied to 1,488 windows at the same
+        threshold. That's the number we now quote.
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>v9.3 BTC walk-forward · tick vs window WR by threshold (UP side)</caption>
+      <thead>
+        <tr>
+          <th>threshold</th>
+          <th class="num">n_fires (ticks)</th>
+          <th class="num">n_windows</th>
+          <th class="num">tick WR</th>
+          <th class="num">window WR</th>
+          <th class="num">gap</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="label">p ≥ 0.72</td><td class="num">109,672</td><td class="num">2,887</td>
+            <td class="num hl">85.8%</td><td class="num">71.0%</td><td class="num dim">14.8pp</td></tr>
+        <tr><td class="label">p ≥ 0.80</td><td class="num">89,369</td><td class="num">2,603</td>
+            <td class="num hl">89.6%</td><td class="num">75.4%</td><td class="num dim">14.2pp</td></tr>
+        <tr><td class="label">p ≥ 0.88</td><td class="num">67,621</td><td class="num">2,189</td>
+            <td class="num hl">92.3%</td><td class="num">81.6%</td><td class="num dim">10.7pp</td></tr>
+        <tr><td class="label">p ≥ 0.92</td><td class="num">52,401</td><td class="num">1,883</td>
+            <td class="num hl">94.1%</td><td class="num">86.8%</td><td class="num dim">7.3pp</td></tr>
+        <tr class="breakthrough"><td class="label">p ≥ 0.96</td><td class="num">33,819</td><td class="num">1,488</td>
+            <td class="num">96.5%</td><td class="num">91.3%</td><td class="num dim">5.2pp</td></tr>
+        <tr><td class="label">p ≥ 0.98</td><td class="num">24,106</td><td class="num">1,289</td>
+            <td class="num hl">96.9%</td><td class="num">92.9%</td><td class="num dim">4.0pp</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        The gap shrinks as the threshold tightens — at <code>p ≥ 0.98</code>
+        the model is so confident that almost every fire inside a window
+        agrees, so the tick/window numbers converge. At <code>p ≥ 0.72</code>
+        the model is still in calibration territory and the wins fire
+        many more ticks per window than the losses. <strong>Always quote
+        window WR.</strong> Tick WR is for debug.
+      </p>
+    </div>
+
+    <div class="chart-wrap">
+      <div class="chart-title">v9.3 BTC walk-forward · tick WR vs window WR · UP side</div>
+      <div class="chart-sub">the gap is fire-density bias; window-dedup is honest</div>
+      <div id="chart-tick-window" class="plotly-host" style="height: 420px;"></div>
+    </div>
+
+    <div class="reading">
+      <h3>How the corpus was built</h3>
+      <p>
+        The v9.3 BTC corpus exemplifies the data-infra pattern that section
+        2 introduced. The bulk slice came from a parquet snapshot
+        (<code>2026-05-18</code>) joined to <code>market_data.outcome</code>
+        via DuckDB. The delta — the post-snapshot 4-5 days — came via psql
+        COPY in 2-hour chunks through the SSM tunnel. Combined:
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>v9.3 BTC training corpus · 24-day span</caption>
+      <thead><tr><th>component</th><th class="num">span</th><th class="num">rows</th><th class="num">windows</th></tr></thead>
+      <tbody>
+        <tr><td class="label">bulk · DuckDB on parquet</td><td class="num">~19d</td><td class="num">~480k</td><td class="num">~4,200</td></tr>
+        <tr><td class="label">delta · psql COPY (2h chunks)</td><td class="num">~5d</td><td class="num">~120k</td><td class="num">~1,500</td></tr>
+        <tr class="highlight"><td class="label">combined</td><td class="num">24.0d</td><td class="num">600,478</td><td class="num">5,702</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        The corpus has six Δ buckets per resolved window
+        (30/60/90/120/180/240 seconds-to-fill), so the 5,702 windows
+        translate to ~34k unique training rows per Δ-head once
+        outcomes are joined and unresolved windows are dropped. The
+        ENRICHED feature set adds 23 columns on top of the v9.2 base,
+        landing at 78 features. The booster trains on float32 to keep
+        the in-memory footprint manageable on the dev box's 31 GB RAM.
+      </p>
+
+      <h3>Per-Δ head training (the production pass)</h3>
+    </div>
+
+    <table class="result-table">
+      <caption>v9.3 BTC · production training (Optuna best params) per-Δ heads</caption>
+      <thead>
+        <tr>
+          <th>Δ (s)</th>
+          <th class="num">n_rows</th>
+          <th class="num">best_iter</th>
+          <th class="num">base UP rate</th>
+          <th class="num">trailing-2d UP WR @ 0.72</th>
+          <th class="num">trailing-2d DOWN WR @ 0.20</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="label">30</td><td class="num">0 (copy from 60)</td><td class="num">653</td><td class="num">0.498</td><td class="num">—</td><td class="num">—</td></tr>
+        <tr><td class="label">60</td><td class="num">44,644</td><td class="num">653</td><td class="num">0.498</td><td class="num">92.6%</td><td class="num">86.3%</td></tr>
+        <tr><td class="label">90</td><td class="num">83,448</td><td class="num">940</td><td class="num">0.498</td><td class="num">89.8%</td><td class="num">89.3%</td></tr>
+        <tr><td class="label">120</td><td class="num">126,126</td><td class="num">909</td><td class="num">0.496</td><td class="num">89.8%</td><td class="num">92.0%</td></tr>
+        <tr><td class="label">180</td><td class="num">155,616</td><td class="num">494</td><td class="num">0.489</td><td class="num">90.0%</td><td class="num">93.3%</td></tr>
+        <tr><td class="label">240</td><td class="num">152,318</td><td class="num">550</td><td class="num">0.483</td><td class="num">92.8%</td><td class="num">94.1%</td></tr>
+        <tr class="highlight"><td class="label">TOTAL</td><td class="num">562,152</td><td class="num">—</td><td class="num">—</td><td class="num hl">91.0%</td><td class="num hl">92.4%</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        The Δ=30 head is a copy of Δ=60 because the training corpus
+        contains no windows scored at seconds-to-fill below 45 — the
+        engine routes those requests to the 030 slot but the model
+        behind it is functionally the 060 head. v9.2 BTC has the same
+        property. Acceptable for parity, flagged as a known limitation.
+      </p>
+
+      <p>
+        Wall time for the full per-Δ production pass: <strong>20.5
+        seconds</strong> on the RTX 3060 dev box. The whole night's
+        modelling work — three asset trains, two Optuna sweeps, a
+        walk-forward, a threshold sweep — was budget-bounded by the
+        data-pull time, not the GPU time. LightGBM on this hardware
+        does the booster-training in tens of seconds; getting the data
+        into RAM was where every minute went.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 4 — v9.5 ETH DEPLOY CHAIN
+═══════════════════════════════════════════════════════════════════ -->
+<section id="eth-deploy">
+  <div class="container">
+    <span class="kicker kicker--green">04 · The v9.5 ETH deploy chain</span>
+    <h2>The v2 box that <em>wasn't there</em>.</h2>
+
+    <div class="reading">
+      <p>
+        v9.5 ETH had been training for hours by the time the BTC walk-forward
+        finished. The model side was done; what remained was the deploy.
+        Two PRs queued — <strong>timesfm #157</strong> (the emission path:
+        new env flag <code>V9_5_ETH_ENABLED</code>, S3 pointer loader at
+        <code>v2/eth/current_v9_5.json</code>, V2Scorer wired into
+        <code>V4SnapshotAssembler</code>) and <strong>timesfm #158</strong>
+        (the loader patch: nine v9.5-NEW features that <em>training</em>
+        had but <em>serve</em> couldn't yet emit).
+      </p>
+
+      <h3>The 9-feature gap</h3>
+      <p>
+        The earlier review claimed 42 missing features. The actual gap was 9.
+        The arithmetic in the scoping doc had miscounted: the
+        <code>V5FeatureLoader</code> emits 51 JSONB keys + 5 gamma None-fills
+        + <code>eval_offset</code> + <code>v2_logit</code> = 58 features.
+        The booster needs 67. Difference: nine v9.5-NEW features that have
+        no engine emitter yet — the Binance order-book depth band aggregates
+        and the Polymarket CLOB pre-event aggregates.
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>v9.5 ETH · the 9-feature gap, by source</caption>
+      <thead><tr><th>feature</th><th>group</th><th>source at training</th><th>source at serve</th></tr></thead>
+      <tbody>
+        <tr><td class="label">binance_depth_imbalance_inner</td><td>Binance OB</td><td>daily snapshots</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">binance_depth_imbalance_1pct</td><td>Binance OB</td><td>daily snapshots</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">binance_depth_imbalance_5pct</td><td>Binance OB</td><td>daily snapshots</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">binance_spread_pct</td><td>Binance OB</td><td>daily snapshots</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">clob_pre_imbalance</td><td>CLOB pre-evt</td><td>ticks_clob LATERAL</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">clob_pre_vig</td><td>CLOB pre-evt</td><td>ticks_clob LATERAL</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">clob_up_pre_stdev</td><td>CLOB pre-evt</td><td>ticks_clob LATERAL</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">clob_dn_pre_stdev</td><td>CLOB pre-evt</td><td>ticks_clob LATERAL</td><td class="bad">NO emitter</td></tr>
+        <tr><td class="label">clob_up_pre_n</td><td>CLOB pre-evt</td><td>ticks_clob LATERAL</td><td class="bad">NO emitter</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        The patch took the missing-path approach: <code>v5_feature_loader.py</code>
+        now calls <code>setdefault(None)</code> for all 9 keys before scoring.
+        The booster's missing-value leaf handles every tick down that path.
+        Training-time NaN coverage for these features was 0.0-0.6%; at serve
+        time we make it 100%. Documented skew. The 24h GHOST window will
+        either show v9.5's edge survives it or it won't.
+      </p>
+
+      <h3>Merge order: 158 → 157 → main</h3>
+      <p>
+        PR #158 (the loader patch) was based on the <code>feat/v9_5_eth_emission</code>
+        branch — i.e. it stacked on top of PR #157. Squash-merge #158 into
+        #157's branch first, then squash-merge #157 into main. SHAs:
+        <code>de58c9f</code> and <code>30abd66</code> respectively, both
+        completed within 90 seconds of each other at 21:46-21:47 UTC.
+        Migration <code>007_add_v9_5_eth_column.sql</code> landed on main
+        with both PRs.
+      </p>
+
+      <h3>The deploy attempt</h3>
+      <p>
+        Then came the part that nearly broke the night. The migration
+        applied cleanly via the port-forward (one statement,
+        <code>ALTER TABLE signal_evaluations ADD COLUMN IF NOT EXISTS
+        probability_lgb_v9_5_eth NUMERIC</code>, 731,660 existing rows
+        untouched). Then the deploy script reached for the v2 box —
+        <code>i-0125675acf0e486e7</code> / <code>16.52.14.182</code> —
+        as instructed by memory file <code>reference_v2_box_deploy.md</code>.
+      </p>
+
+      <p>
+        <code>aws ec2 describe-instances</code> came back:
+        <strong>state = stopped, since 2026-05-09 13:50 UTC</strong>.
+        Fourteen days. The v2 box hadn't been live for two weeks.
+      </p>
+
+      <p>
+        The memory file did mention this — buried at the end:
+        "classifier-gpu (i-0f77468732c4d8250 / 3.96.151.28:8080) is THE
+        single source of truth for /v4/snapshot. v2 box: STOPPED
+        2026-05-09 13:50 UTC." But the deploy task had quoted the
+        <em>method</em> from the top of the file ("Target:
+        i-0125675acf0e486e7 / 16.52.14.182") without re-reading the
+        2026-05-09 cutover note. The allowlist hook caught the redirect
+        attempt: the agent asked to deploy to classifier-gpu instead, the
+        hook refused because Billy's authorisation had explicitly named
+        the v2 box.
+      </p>
+    </div>
+
+    <div class="callout warn">
+      <div class="callout-title">Memory hygiene</div>
+      The memory file <code>reference_v2_box_deploy.md</code> was correct
+      at the top (method) and correct at the bottom (the 2026-05-09
+      cutover). The mistake was the agent quoting the method and skipping
+      the addendum. Fix: explicit override authorisation, then update the
+      memory file <em>before</em> the next deploy so the v2-box paragraph
+      reads "STOPPED — DO NOT DEPLOY HERE. Use classifier-gpu." rather
+      than relying on the reader to make it to the cutover note.
+    </div>
+
+    <div class="reading">
+      <h3>Authorised redirect</h3>
+      <p>
+        Billy authorised the redirect to classifier-gpu. The deploy
+        proceeded — tarball pushed to
+        <code>s3://bbrnovakash-models-do-not-delete/deploys/timesfm-deploy-v9_5_eth_20260522T220846Z.tar.gz</code>,
+        SSM <code>send-command</code> on
+        <code>i-0f77468732c4d8250</code>, container rebuilt,
+        <code>V9_5_ETH_ENABLED=true</code> appended to
+        <code>/home/ubuntu/timesfm-service/.env</code>. Health check came
+        back ok in 16 seconds.
+      </p>
+
+      <h3>v9.4 LIVE — the baseline that justified the night</h3>
+      <p>
+        While the deploy was in flight, the GHOST monitor SQL ran against
+        the prior 24 hours of v9.4 ETH LIVE data. Result:
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>v9.4 ETH LIVE · 24h GHOST baseline (p ≥ 0.72)</caption>
+      <thead><tr><th>model</th><th class="num">total rows</th><th class="num">UP signals</th><th class="num">wins</th><th class="num">WR</th></tr></thead>
+      <tbody>
+        <tr class="breakthrough">
+          <td class="label">v9.4 ETH (LIVE)</td>
+          <td class="num">30,404</td>
+          <td class="num">6,891</td>
+          <td class="num">5,300</td>
+          <td class="num">76.91%</td>
+        </tr>
+        <tr>
+          <td class="label dim">v9.5 ETH (pre-deploy)</td>
+          <td class="num dim">30,404</td>
+          <td class="num dim">0</td>
+          <td class="num dim">0</td>
+          <td class="num dim">—</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        <strong>76.91% WR at p ≥ 0.72 over 24h on 6,891 UP signals.</strong>
+        This is the production-real WR. It validates the v9.3 ENRICHED
+        walk-forward estimate to within a couple of percentage points
+        — which means the methodology shift from single-split to
+        walk-forward isn't just academic. It's reproducible against
+        live data.
+      </p>
+
+      <p>
+        Post-deploy, <code>/v4/snapshot?asset=ETH</code> returned both
+        <code>probability_lgb_v9_2_eth = 0.6094</code> (v9.4 LIVE) and
+        <code>probability_lgb_v9_5_eth = 0.286</code> on the same tick.
+        The 24h GHOST clock started ticking at 23:18 UTC.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 5 — v9.3 BTC DEPLOY + PROD INCIDENT
+═══════════════════════════════════════════════════════════════════ -->
+<section id="incident">
+  <div class="container">
+    <span class="kicker kicker--red">05 · v9.3 BTC deploy + the prod incident</span>
+    <h2>Thirty <em>minutes dark</em>.</h2>
+
+    <div class="reading">
+      <p>
+        With v9.5 ETH safely emitting, attention turned to v9.3 BTC.
+        Same shape: PR #159 (the BTC emission path), migration 008
+        (<code>ADD COLUMN probability_lgb_v9_3_btc NUMERIC</code>),
+        deploy to classifier-gpu, flip <code>V9_3_BTC_ENABLED=true</code>.
+        The PR diff was clean — 1,525 insertions, 0 deletions, mirroring
+        the v9.5 ETH pattern file-for-file. The migration applied. The
+        tarball uploaded. The SSM command went out.
+      </p>
+
+      <p>
+        Then the container failed to start.
+      </p>
+    </div>
+
+    <pre data-lang="docker logs"><code><span class="tk-com"># docker logs timesfm-service --tail 50</span>
+Traceback (most recent call last):
+  File "/srv/app/main.py", line 14, in &lt;module&gt;
+    <span class="tk-key">import</span> timesfm
+<span class="tk-bad">ModuleNotFoundError</span>: No module named 'timesfm'
+ERROR: container exited with code 1
+ERROR: docker compose: timesfm-service kept restarting
+<span class="tk-com"># crashloop · all 5 probabilities going to None on /v4/snapshot</span>
+</code></pre>
+
+    <div class="reading">
+      <p>
+        The base TimesFM library wasn't there. Which is impossible — that
+        library is a build-time pip install, baked into the image, used by
+        every previous deploy. Unless <em>this</em> image had built without
+        it.
+      </p>
+
+      <h3>The disk diagnosis</h3>
+      <p>
+        <code>df -h</code> on classifier-gpu came back with
+        <strong>114 GB used / 117 GB total / 99% full</strong>. Three GB
+        of headroom. The TimesFM wheel is roughly 250 MB compressed but
+        unpacks to ~900 MB; the pip install would have started, partially
+        written, run out of disk, and silently truncated the package
+        without raising. The image was built; the dependency was a husk.
+      </p>
+
+      <p>
+        <code>docker image ls</code> revealed why. Thirteen old image
+        backups: <code>gpu-gates-{date}</code>,
+        <code>gpu-before-{date}</code>, going back two months. Average
+        layer size 15.3 GB. Combined, they were occupying <strong>~200 GB
+        of overlay storage</strong> on a 117 GB disk — heavily deduplicated
+        because they shared base layers, but every <code>--no-cache</code>
+        rebuild forked a new layer set that didn't dedup with anything.
+      </p>
+    </div>
+
+    <div class="svg-wrap">
+      <div class="chart-title">Prod incident timeline · 2026-05-23 ~01:00–01:30 UTC</div>
+      <div class="chart-sub">deploy → crashloop → diagnosis → prune → recovery</div>
+      <svg viewBox="0 0 940 260" role="img" aria-label="Prod incident timeline">
+        <defs>
+          <linearGradient id="alertBand" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="#EF4444" stop-opacity="0.0"/>
+            <stop offset="20%" stop-color="#EF4444" stop-opacity="0.18"/>
+            <stop offset="80%" stop-color="#EF4444" stop-opacity="0.18"/>
+            <stop offset="100%" stop-color="#EF4444" stop-opacity="0.0"/>
+          </linearGradient>
+        </defs>
+
+        <!-- baseline -->
+        <line x1="40" x2="900" y1="180" y2="180" stroke="#2A2A38" stroke-width="1"/>
+
+        <!-- outage band -->
+        <rect x="180" y="50" width="560" height="170" fill="url(#alertBand)" opacity="0.6"/>
+        <text x="460" y="65" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#EF4444" letter-spacing="0.18em">PROBABILITY EMISSION = NONE · ~30 MIN</text>
+
+        <!-- events -->
+        <g font-family="JetBrains Mono" font-size="10" fill="#B8B3AB">
+          <!-- T0 -->
+          <circle cx="120" cy="180" r="6" fill="#22D3EE" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="120" y="205" text-anchor="middle" fill="#22D3EE">deploy attempt</text>
+          <text x="120" y="220" text-anchor="middle" font-size="8" fill="#7A7268">tarball + SSM</text>
+          <text x="120" y="235" text-anchor="middle" font-size="8" fill="#7A7268">~01:00</text>
+
+          <!-- T1 -->
+          <circle cx="220" cy="180" r="6" fill="#EF4444" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="220" y="110" text-anchor="middle" fill="#EF4444">crashloop</text>
+          <text x="220" y="124" text-anchor="middle" font-size="8" fill="#7A7268">ModuleNotFoundError: timesfm</text>
+          <text x="220" y="138" text-anchor="middle" font-size="8" fill="#7A7268">~01:02</text>
+
+          <!-- T2 -->
+          <circle cx="340" cy="180" r="6" fill="#F59E0B" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="340" y="110" text-anchor="middle" fill="#F59E0B">diagnosis</text>
+          <text x="340" y="124" text-anchor="middle" font-size="8" fill="#7A7268">df: 114/117 GB · 99% full</text>
+          <text x="340" y="138" text-anchor="middle" font-size="8" fill="#7A7268">~01:08</text>
+
+          <!-- T3 -->
+          <circle cx="460" cy="180" r="6" fill="#F59E0B" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="460" y="110" text-anchor="middle" fill="#F59E0B">root cause</text>
+          <text x="460" y="124" text-anchor="middle" font-size="8" fill="#7A7268">13 stale gpu-gates-* / gpu-before-* tags</text>
+          <text x="460" y="138" text-anchor="middle" font-size="8" fill="#7A7268">~01:12</text>
+
+          <!-- T4 -->
+          <circle cx="580" cy="180" r="6" fill="#A78BFA" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="580" y="110" text-anchor="middle" fill="#A78BFA">docker prune</text>
+          <text x="580" y="124" text-anchor="middle" font-size="8" fill="#7A7268">~35 GB freed</text>
+          <text x="580" y="138" text-anchor="middle" font-size="8" fill="#7A7268">~01:18</text>
+
+          <!-- T5 -->
+          <circle cx="700" cy="180" r="6" fill="#A78BFA" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="700" y="110" text-anchor="middle" fill="#A78BFA">rebuild --no-cache</text>
+          <text x="700" y="124" text-anchor="middle" font-size="8" fill="#7A7268">~10 min wall</text>
+          <text x="700" y="138" text-anchor="middle" font-size="8" fill="#7A7268">~01:21</text>
+
+          <!-- T6 -->
+          <circle cx="820" cy="180" r="6" fill="#34D399" stroke="#0A0A0F" stroke-width="2"/>
+          <text x="820" y="205" text-anchor="middle" fill="#34D399">recovery</text>
+          <text x="820" y="220" text-anchor="middle" font-size="8" fill="#7A7268">5 probs emitting</text>
+          <text x="820" y="235" text-anchor="middle" font-size="8" fill="#7A7268">~01:30</text>
+        </g>
+
+        <!-- arrow line connecting events -->
+        <path d="M 120 180 L 820 180" stroke="#4A4540" stroke-width="1" stroke-dasharray="2 4"/>
+      </svg>
+    </div>
+
+    <div class="reading">
+      <h3>The prune</h3>
+      <p>
+        <code>docker image prune -a --filter "until=336h"</code> reclaimed
+        about 35 GB. The thirteen <code>gpu-gates-*</code> / <code>gpu-before-*</code>
+        tags went; the current <code>latest</code> tag and the rollback
+        target stayed. Disk pressure dropped to ~70% used. Rebuild
+        proceeded clean.
+      </p>
+
+      <h3>The second mistake (caught quickly)</h3>
+      <p>
+        The first rebuild used <code>docker compose -f docker-compose.yml up -d</code>.
+        Container started. Probabilities emitted. But the
+        <code>V9_5_ETH_ENABLED=true</code> flag wasn't honoured — the
+        container was running on CPU-only profile, missing the GPU
+        capability declarations that <code>docker-compose.gpu.yml</code>
+        layers in. The fix was one line:
+        <code>docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --force-recreate</code>.
+        Two files, not one.
+      </p>
+
+      <p>
+        Lesson burned in: on classifier-gpu, every <code>docker compose</code>
+        invocation needs both the base file and the GPU override. The
+        deploy script in <code>reference_v2_box_deploy.md</code> documented
+        this; the SSM <code>send-command</code> wrapper had dropped the
+        <code>-f docker-compose.gpu.yml</code> override during the rebuild.
+        Restored. The deploy script will get a guard.
+      </p>
+    </div>
+
+    <div class="callout bad">
+      <div class="callout-title">Total outage window</div>
+      <strong>~30 minutes</strong> from initial deploy attempt to all five
+      probabilities back. During this window, <code>/v4/snapshot</code> for
+      BTC, ETH, and XRP all returned probabilities with status <code>ok</code>
+      but the <code>probability_lgb_*</code> fields were either None or
+      stale values from a registry that wasn't being refreshed. The
+      engine-side strategies degraded to SKIP (model_not_loaded), which is
+      the safe failure mode — no incorrect fires were issued.
+    </div>
+
+    <div class="reading">
+      <h3>Post-recovery verification</h3>
+      <p>
+        Final state, all five probabilities back:
+      </p>
+    </div>
+
+    <pre data-lang="curl"><code><span class="tk-com"># curl /v4/snapshot · post-recovery · 2026-05-23 ~01:30 UTC</span>
+BTC: {<span class="tk-str">'probability_lgb_v9_2'</span>: <span class="tk-num">0.125</span>,
+      <span class="tk-str">'probability_lgb_v9_3_btc'</span>: <span class="tk-num">0.480</span>}
+ETH: {<span class="tk-str">'probability_lgb_v9_2_eth'</span>: <span class="tk-num">0.648</span>,
+      <span class="tk-str">'probability_lgb_v9_5_eth'</span>: <span class="tk-num">0.286</span>}
+XRP: {<span class="tk-str">'probability_lgb_v9_2_xrp'</span>: <span class="tk-num">0.428</span>}
+</code></pre>
+
+    <p style="margin-top: 1.5rem; max-width: 50rem;">
+      Four probabilities. The fifth — v9.5 XRP — was still being trained.
+      That came an hour later.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 6 — XRP TWO ATTEMPTS
+═══════════════════════════════════════════════════════════════════ -->
+<section id="xrp">
+  <div class="container">
+    <span class="kicker kicker--amber">06 · XRP, twice</span>
+    <h2>The asset that <em>wouldn't cooperate</em>.</h2>
+
+    <div class="reading">
+      <p>
+        XRP had never had a v9-series model. The v1 candidate from
+        2026-05-19 was offline-only — trained on 58 features, no S3 stage,
+        no LIVE wiring, no walk-forward CV. The plan tonight was to skip
+        v9.3 and v9.4 entirely and land XRP directly at v9.5-equivalent.
+        That happened. Twice.
+      </p>
+
+      <h3>Attempt 1 · the 3.5-day skeleton</h3>
+      <p>
+        First pass burned ~30 minutes on the asyncpg dead-end (see
+        section 2). What survived was a corpus built from the
+        <em>locally-available</em> half of the 2026-05-18 parquet sync —
+        the other half was still being throttled down from S3.
+      </p>
+
+      <p>
+        Numbers: <strong>205,345 rows / 702 windows / 3.50 days / 0.487 UP
+        rate</strong>. Walk-forward CV with k=5 × 2d test refused to even
+        run — the guard <code>span ≥ 2 × fold_test_days</code> requires 4
+        days minimum, and 3.5 &lt; 4. The training proceeded with default
+        <code>V5_LGB_PARAMS</code> on the full corpus, no held-out, no
+        hyperparameter search, no honest WR estimate. The artefacts
+        landed at <code>training/trials/2026_05_23_v9_5_xrp_production/</code>
+        and uploaded to S3 at <code>v2/xrp/xrp_5m/543b554_v9_5/...</code>,
+        but the pointer JSON was never updated. The "deploy" was just
+        scaffolding.
+      </p>
+
+      <h3>Attempt 2 · the 8.62-day corpus with Optuna</h3>
+      <p>
+        After the prod incident wrapped up and the BTC+ETH probabilities
+        were stable, the XRP build relaunched on the hybrid DuckDB+psql
+        COPY pattern from section 2. Bulk in 2.7s, delta in eight 2-hour
+        chunks. <strong>1,505 windows / 8.62 days / 441,022 rows / 49.2%
+        UP rate.</strong> The walk-forward CV now had headroom for
+        k=4 × 1.5d folds. The honest estimation was unlocked.
+      </p>
+    </div>
+
+    <h3 style="max-width: 50rem; margin-left: auto; margin-right: auto;">Optuna · 40 trials</h3>
+
+    <div class="reading">
+      <p>
+        Optuna ran with the same search space as the BTC SUPER run, plus
+        a new <code>down_reweight</code> axis specific to XRP. The best
+        trial was #15 with composite <strong>0.8943</strong> — but
+        only on the bulk-slice OOF. When the best params were re-run on the
+        FULL 8.62d walk-forward, the WR dropped to ~80% per side. The
+        9-percentage-point gap was Optuna overfitting to the bulk slice
+        — the only honest read of XRP's ceiling is the full-corpus number.
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>XRP v9.5 · Optuna best trial parameters (trial 15)</caption>
+      <thead><tr><th>param</th><th class="num">value</th><th>note</th></tr></thead>
+      <tbody>
+        <tr><td class="label">num_leaves</td><td class="num hl">184</td><td class="dim">moderate complexity</td></tr>
+        <tr><td class="label">learning_rate</td><td class="num hl">0.01046</td><td class="dim">slow, more trees</td></tr>
+        <tr><td class="label">min_data_in_leaf</td><td class="num hl">113</td><td class="dim">leaf-level regularisation</td></tr>
+        <tr><td class="label">feature_fraction</td><td class="num hl">0.840</td><td class="dim">column subsample</td></tr>
+        <tr><td class="label">bagging_fraction</td><td class="num hl">0.738</td><td class="dim">row subsample (heavy)</td></tr>
+        <tr><td class="label">bagging_freq</td><td class="num hl">1</td><td class="dim">resample every iteration</td></tr>
+        <tr><td class="label">lambda_l1</td><td class="num hl">1.572</td><td class="dim">sparsity nudge</td></tr>
+        <tr><td class="label">lambda_l2</td><td class="num hl">0.013</td><td class="dim">near-zero</td></tr>
+        <tr class="breakthrough">
+          <td class="label">max_depth</td><td class="num">2</td>
+          <td>shallow — signal in 2-3 feature interactions</td>
+        </tr>
+        <tr class="viol">
+          <td class="label">down_reweight</td><td class="num">1.5</td>
+          <td>milder than ETH (3.0) — XRP base UP rate is 49.2%</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <h3>The two findings that mattered</h3>
+      <p>
+        First: <strong>XRP wants a milder <code>down_reweight</code> than
+        ETH</strong>. ETH's 3.0× reweighting handled the asymmetric
+        DOWN-side base rate. XRP's base UP rate is 49.2% — almost
+        perfectly balanced — and trials with reweighting at 3.0× or 5.0×
+        scored worse than 1.0× / 1.5×. The mild 1.5× reweighting won.
+      </p>
+
+      <p>
+        Second: <strong>shallow trees plus heavy bagging is universal</strong>.
+        Both BTC's and XRP's best Optuna trials picked
+        <code>max_depth=2</code> (or near it) and
+        <code>bagging_fraction</code> in the 0.74-0.80 range with
+        <code>bagging_freq=1</code>. The signal in both assets sits in a
+        small number of shallow feature interactions; deep trees overfit
+        the per-window noise. This is a hyperparameter pattern, not an
+        asset coincidence.
+      </p>
+
+      <h3>The ceiling — no 90% UP pocket on XRP</h3>
+      <p>
+        Threshold sweep on the full walk-forward OOF showed XRP topping
+        out at <strong>~83% UP WR</strong> at <code>p ≥ 0.97</code>
+        (n=263) and <strong>~93% DOWN WR</strong> at <code>p ≤ 0.005</code>
+        (n=182, near-degenerate). There is no UP-side 90% pocket
+        reachable from this corpus. The two strategies picked were both
+        defensible operating points:
+      </p>
+    </div>
+
+    <div class="two-col">
+      <div class="strat-card cyan">
+        <div class="strat-tag">v9_5_xrp_raw_lgb — GHOST</div>
+        <h3>Drop-in replacement</h3>
+        <div class="strat-codename">UP p ≥ 0.82 · DOWN p ≤ 0.20</div>
+        <div class="strat-line"><span class="k">UP windows</span>     <span class="v">476</span></div>
+        <div class="strat-line"><span class="k">UP WR</span>          <span class="v cyan">74.8%</span></div>
+        <div class="strat-line"><span class="k">UP fire-rate</span>   <span class="v">51.3%</span></div>
+        <div class="strat-line"><span class="k">DOWN windows</span>   <span class="v">551</span></div>
+        <div class="strat-line"><span class="k">DOWN WR</span>        <span class="v cyan">71.9%</span></div>
+        <div class="strat-line"><span class="k">DOWN fire-rate</span> <span class="v">59.4%</span></div>
+        <div class="strat-line"><span class="k">median first-fire (UP)</span> <span class="v">stc 154s</span></div>
+        <div class="strat-foot">
+          Mirrors v9.5 ETH's selectivity profile. Single column
+          (probability_lgb_v9_5_xrp) feeds both this and tight; same
+          model, two operating points.
+        </div>
+      </div>
+
+      <div class="strat-card violet">
+        <div class="strat-tag">v9_5_xrp_tight — GHOST</div>
+        <h3>High-precision corner</h3>
+        <div class="strat-codename">UP p ≥ 0.95 · DOWN p ≤ 0.05</div>
+        <div class="strat-line"><span class="k">UP windows</span>     <span class="v">282</span></div>
+        <div class="strat-line"><span class="k">UP WR</span>          <span class="v violet">80.9%</span></div>
+        <div class="strat-line"><span class="k">UP fire-rate</span>   <span class="v">30.4%</span></div>
+        <div class="strat-line"><span class="k">DOWN windows</span>   <span class="v">319</span></div>
+        <div class="strat-line"><span class="k">DOWN WR</span>        <span class="v violet">83.1%</span></div>
+        <div class="strat-line"><span class="k">DOWN fire-rate</span> <span class="v">34.4%</span></div>
+        <div class="strat-line"><span class="k">median first-fire (UP)</span> <span class="v">stc 104s</span></div>
+        <div class="strat-foot">
+          Late-window subsegment, eval_offset [120, 240]. XRP signal
+          builds slower than BTC — first fire is mid-to-late, not early.
+          80%+ WR is the honest ceiling.
+        </div>
+      </div>
+    </div>
+
+    <div class="reading">
+      <h3>The temporal shape — XRP fires late</h3>
+      <p>
+        This was the most striking finding. BTC's median first-fire is at
+        <code>stc=274s</code> — i.e. fires arrive 26 seconds past
+        window-open and persist. XRP's median first-fire is at
+        <code>stc=154s</code> for the raw threshold and
+        <code>stc=104s</code> for the tight corner. <strong>XRP fires
+        mid-to-late</strong> in the 5-minute window, exactly opposite
+        BTC's early-fire pattern. The YAML <code>eval_offset</code> bands
+        had to shift: BTC at [20, 170], XRP at [60, 240] / [120, 240].
+      </p>
+    </div>
+
+    <div class="chart-wrap">
+      <div class="chart-title">WR by asset · at LIVE thresholds</div>
+      <div class="chart-sub">v9.4 ETH LIVE (24h prod) · v9.3 BTC walk-forward OOF · v9.5 XRP walk-forward OOF</div>
+      <div id="chart-wr-by-asset" class="plotly-host" style="height: 480px;"></div>
+    </div>
+
+    <div class="reading">
+      <h3>The XRP threshold sweep · full picture</h3>
+      <p>
+        Optuna established the best hyperparameters; the threshold sweep
+        established what those hyperparameters can do. Run on the full
+        8.62-day walk-forward OOF, 928 unique windows scored, both sides
+        swept from p=0.55 to p=0.95 on UP and p=0.45 to p=0.05 on DOWN.
+        The DOWN side carries XRP's signal; the UP side caps lower.
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>XRP v9.5 · full-corpus walk-forward threshold sweep (selected)</caption>
+      <thead>
+        <tr>
+          <th>side</th><th>threshold</th>
+          <th class="num">n_windows</th>
+          <th class="num">fire-rate</th>
+          <th class="num">window WR</th>
+          <th class="num">vs target</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>UP</td><td>0.60</td><td class="num">712</td><td class="num">76.7%</td><td class="num">61.2%</td><td class="num dim">noise</td></tr>
+        <tr><td>UP</td><td>0.70</td><td class="num">635</td><td class="num">68.4%</td><td class="num">66.0%</td><td class="num dim">below LIVE</td></tr>
+        <tr><td>UP</td><td>0.75</td><td class="num">549</td><td class="num">59.2%</td><td class="num">71.0%</td><td class="num dim">approaching</td></tr>
+        <tr class="highlight"><td>UP</td><td>0.82</td><td class="num">476</td><td class="num">51.3%</td><td class="num hl">74.8%</td><td class="num">raw_lgb operating point</td></tr>
+        <tr><td>UP</td><td>0.85</td><td class="num">440</td><td class="num">47.4%</td><td class="num">78.2%</td><td class="num dim">below 80</td></tr>
+        <tr><td>UP</td><td>0.90</td><td class="num">389</td><td class="num">41.9%</td><td class="num">80.2%</td><td class="num dim">at 80</td></tr>
+        <tr class="viol"><td>UP</td><td>0.95</td><td class="num">282</td><td class="num">30.4%</td><td class="num hl">80.9%</td><td class="num">tight operating point</td></tr>
+        <tr class="bad"><td>UP</td><td>0.97+</td><td class="num">≤263</td><td class="num">≤28%</td><td class="num hl">82.9%</td><td class="num">ceiling · no 90% pocket</td></tr>
+        <tr><td>DOWN</td><td>0.45</td><td class="num">804</td><td class="num">86.6%</td><td class="num">56.3%</td><td class="num dim">noise</td></tr>
+        <tr><td>DOWN</td><td>0.30</td><td class="num">635</td><td class="num">68.4%</td><td class="num">66.9%</td><td class="num dim">below LIVE</td></tr>
+        <tr><td>DOWN</td><td>0.25</td><td class="num">569</td><td class="num">61.3%</td><td class="num">70.8%</td><td class="num dim">approaching</td></tr>
+        <tr class="highlight"><td>DOWN</td><td>0.20</td><td class="num">551</td><td class="num">59.4%</td><td class="num hl">71.9%</td><td class="num">raw_lgb operating point</td></tr>
+        <tr><td>DOWN</td><td>0.15</td><td class="num">479</td><td class="num">51.6%</td><td class="num">76.2%</td><td class="num dim">below 80</td></tr>
+        <tr><td>DOWN</td><td>0.10</td><td class="num">434</td><td class="num">46.8%</td><td class="num">78.1%</td><td class="num dim">below 80</td></tr>
+        <tr class="viol"><td>DOWN</td><td>0.05</td><td class="num">319</td><td class="num">34.4%</td><td class="num hl">83.1%</td><td class="num">tight operating point</td></tr>
+        <tr><td>DOWN</td><td>0.115</td><td class="num">173</td><td class="num">18.7%</td><td class="num hl">90.2%</td><td class="num">90% pocket exists DOWN only</td></tr>
+        <tr class="bad"><td>DOWN</td><td>0.005</td><td class="num">182</td><td class="num">19.6%</td><td class="num hl">93.4%</td><td class="num">degenerate · skip</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        The DOWN-side 90% pocket at <code>p ≤ 0.115</code> (n=173) is
+        real but thin. The 93.4% at <code>p ≤ 0.005</code> is sliding
+        toward the "always-fire-DOWN" degeneracy where 80% of the
+        corpus' DOWN windows happen to have very low probability
+        regardless of model conviction. The defensible tight DOWN
+        operating point is <code>p ≤ 0.05</code> (n=319, 83.1% WR) —
+        thrice the volume of the 90% pocket, only 7pp lower WR.
+      </p>
+
+      <h3>Why XRP fires late · the temporal explanation</h3>
+      <p>
+        XRP's signal builds slower than BTC's. The fire-timing data
+        below tells the story: BTC's tight strategy gets its first
+        fire at <code>stc=274s</code> — about 26 seconds past
+        window-open, the model has already locked in its conviction.
+        XRP's tight strategy doesn't fire its first conviction-band
+        prediction until <code>stc=104s</code> — i.e. about
+        <strong>196 seconds into the 300-second window</strong>.
+      </p>
+
+      <p>
+        The driving features explain it. BTC's top-importance features
+        include <code>nested_5m_ret</code>,
+        <code>tfm_p10</code>, and the v2_logit transfer — features
+        that resolve early in the window because they're derived from
+        the prior 5-minute close. XRP's top features are
+        <code>ret_since_window_open</code>,
+        <code>cg_taker_net_usd</code>, <code>ret_60s</code>, and
+        <code>cg_long_pct</code> — features that need time within the
+        window to accumulate signal. Returns since open need
+        return data to accumulate. CG taker flow needs taker flow to
+        arrive on the wire. The model has to wait.
+      </p>
+
+      <p>
+        Practically, this means the <code>eval_offset</code> band in
+        the YAML strategies differs: BTC tight runs
+        <code>[20, 170]</code> (early-window subsegment), XRP tight
+        runs <code>[120, 240]</code> (late-window subsegment). The
+        engine's gate evaluator only considers fires that arrive
+        within these bands. Outside the band: SKIP cleanly, no fire.
+      </p>
+    </div>
+
+    <div class="callout violet">
+      <div class="callout-title">Honest read</div>
+      XRP at v9.5 architecture <strong>does not reach v9.5 ETH parity</strong>.
+      ETH's walk-forward CV showed 90%+ pockets; XRP tops at ~83% UP / ~93%
+      DOWN. The drivers are: corpus span (8.62d vs ETH's 22.66d), the same
+      9-feature NaN-fill gap (binance_depth_*, clob_pre_*) applied to both
+      training AND serve, and an RDS horizon limit (~11d for XRP TVP) that
+      cannot be bypassed without writer-side accumulation. Conclusion: ship
+      XRP as v9.5.0-thin with conservative LIVE thresholds after GHOST
+      validation. Don't fabricate the 90% pocket that isn't there.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 7 — FINAL STATE
+═══════════════════════════════════════════════════════════════════ -->
+<section id="final-state">
+  <div class="container reading">
+    <span class="kicker kicker--green">07 · The final state</span>
+    <h2>Five probabilities. <em>Live</em>.</h2>
+
+    <p>
+      By 17:30 UTC on 2026-05-23, after the XRP deploy completed and
+      probed <code>/v4/snapshot</code> returned non-null for every key,
+      the system state stabilised. Two emitters in LIVE mode, three
+      in GHOST. All five on the wire.
+    </p>
+
+    <table class="result-table">
+      <caption>Probability emitters · post-deploy state</caption>
+      <thead>
+        <tr>
+          <th>probability</th>
+          <th>status</th>
+          <th>sample value</th>
+          <th>strategy</th>
+          <th>notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="label">probability_lgb_v9_2_eth</td>
+          <td><span class="tag-pill live">LIVE</span></td>
+          <td class="num hl">0.648</td>
+          <td>v9_4_eth_raw_lgb</td>
+          <td class="dim">76.91% WR over 24h on 6,891 UP signals</td>
+        </tr>
+        <tr>
+          <td class="label">probability_lgb_v9_5_eth</td>
+          <td><span class="tag-pill ghost">GHOST</span></td>
+          <td class="num hl">0.286</td>
+          <td>v9_5_eth_raw_lgb</td>
+          <td class="dim">24h GHOST clock running, engine PR open</td>
+        </tr>
+        <tr>
+          <td class="label">probability_lgb_v9_2</td>
+          <td><span class="tag-pill live">LIVE</span></td>
+          <td class="num hl">0.259</td>
+          <td>v9_2_raw_lgb · v9_2_iso_expand · v9_2_iso_strict</td>
+          <td class="dim">BTC LIVE leg; iso_expand was the trigger</td>
+        </tr>
+        <tr>
+          <td class="label">probability_lgb_v9_3_btc</td>
+          <td><span class="tag-pill ghost">GHOST</span></td>
+          <td class="num hl">0.405</td>
+          <td>v9_3_btc_raw_lgb · v9_3_btc_tight</td>
+          <td class="dim">walk-forward 91.3% UP / 90.9% DOWN @ tight</td>
+        </tr>
+        <tr>
+          <td class="label">probability_lgb_v9_5_xrp</td>
+          <td><span class="tag-pill ghost">GHOST</span></td>
+          <td class="num hl">0.7398</td>
+          <td>v9_5_xrp_raw_lgb · v9_5_xrp_tight</td>
+          <td class="dim">ceiling ~83% UP / ~93% DOWN — corpus 8.62d</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>
+      The two LIVE strategies are running production traffic. The three
+      GHOST strategies are emitting but not firing — their engine-side
+      writers (PRs #570, #571, #574) are queued for merge. Once those
+      land, <code>signal_evaluations</code> starts accumulating the new
+      probability columns, and the 24h GHOST clock on each strategy can
+      run its honest comparison against the corresponding LIVE leg.
+    </p>
+
+    <p>
+      None of the new strategies have been promoted. Per the
+      <code>no auto-promote</code> rule established 2026-04-17, every
+      LIVE flip is hand-driven by Billy after the GHOST window completes.
+      Tonight's deploys queue up the data; tomorrow morning is the
+      decision.
+    </p>
+  </div>
+
+  <div class="container">
+    <div class="chart-wrap">
+      <div class="chart-title">Emissions timeline · 2026-05-22 18:00 → 2026-05-23 17:30 UTC</div>
+      <div class="chart-sub">when each probability went live · LIVE in green, GHOST in violet, prod incident shaded</div>
+      <div id="chart-emissions" class="plotly-host" style="height: 420px;"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 8 — INVENTORY
+═══════════════════════════════════════════════════════════════════ -->
+<section id="inventory">
+  <div class="container">
+    <span class="kicker kicker--violet">08 · The PRs, migrations, notes</span>
+    <h2>What <em>actually shipped</em>.</h2>
+
+    <div class="reading">
+      <p>
+        The night's paper trail. Every PR, every migration, every RDS
+        note row. The inventory is the source-of-truth — quote it
+        before quoting any narrative.
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>timesfm repo · PRs merged this session</caption>
+      <thead><tr><th>PR</th><th>title</th><th>state</th><th>commit</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="label">#157</td>
+          <td>feat(v9.5): add probability_lgb_v9_5_eth emission path</td>
+          <td><span class="tag-pill merged">MERGED</span></td>
+          <td class="hl">30abd66</td>
+        </tr>
+        <tr>
+          <td class="label">#158</td>
+          <td>feat(v9_5): emit 9 missing v9.5 ETH loader features</td>
+          <td><span class="tag-pill merged">MERGED</span></td>
+          <td class="hl">de58c9f</td>
+        </tr>
+        <tr>
+          <td class="label">#159</td>
+          <td>feat(v9.3): add probability_lgb_v9_3_btc emission path</td>
+          <td><span class="tag-pill merged">MERGED</span></td>
+          <td class="hl">ca38b23</td>
+        </tr>
+        <tr>
+          <td class="label">#160</td>
+          <td>feat(v9.5): add probability_lgb_v9_5_xrp emission + XRP training</td>
+          <td><span class="tag-pill merged">MERGED</span></td>
+          <td class="hl">4089642</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="result-table">
+      <caption>novakash engine repo · PRs open this session</caption>
+      <thead><tr><th>PR</th><th>title</th><th>state</th><th>strategies</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="label">#570</td>
+          <td>feat(strategies): add v9_5_eth_raw_lgb (GHOST)</td>
+          <td><span class="tag-pill open">OPEN</span></td>
+          <td class="dim">1 GHOST strategy</td>
+        </tr>
+        <tr>
+          <td class="label">#571</td>
+          <td>feat(strategies): add v9_3_btc_raw_lgb + v9_3_btc_tight (GHOST)</td>
+          <td><span class="tag-pill open">OPEN</span></td>
+          <td class="dim">2 GHOST strategies</td>
+        </tr>
+        <tr>
+          <td class="label">#574</td>
+          <td>feat(strategies): add v9_5_xrp_raw_lgb + v9_5_xrp_tight (GHOST)</td>
+          <td><span class="tag-pill open">OPEN</span></td>
+          <td class="dim">2 GHOST strategies</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="result-table">
+      <caption>RDS migrations · applied to prod via SSM port-forward</caption>
+      <thead><tr><th>migration</th><th>statement</th><th>rows affected</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="label">007</td>
+          <td><code>ALTER TABLE signal_evaluations ADD COLUMN IF NOT EXISTS probability_lgb_v9_5_eth NUMERIC</code></td>
+          <td class="num">0 (additive)</td>
+        </tr>
+        <tr>
+          <td class="label">008</td>
+          <td><code>ALTER TABLE signal_evaluations ADD COLUMN IF NOT EXISTS probability_lgb_v9_3_btc NUMERIC</code></td>
+          <td class="num">0 (additive)</td>
+        </tr>
+        <tr>
+          <td class="label">009</td>
+          <td><code>ALTER TABLE signal_evaluations ADD COLUMN IF NOT EXISTS probability_lgb_v9_5_xrp NUMERIC</code></td>
+          <td class="num">0 (additive)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <table class="result-table">
+      <caption>RDS public.notes · rows inserted this session</caption>
+      <thead><tr><th>note id</th><th>title</th><th>theme</th></tr></thead>
+      <tbody>
+        <tr><td class="label">#585</td><td>BTC corpus build (walk-forward, 24d)</td><td class="dim">methodology</td></tr>
+        <tr><td class="label">#587</td><td>v9.3 ENRICHED + v9.4 META results</td><td class="dim">model performance</td></tr>
+        <tr><td class="label">#589</td><td>Sequence-modeling plan</td><td class="dim">future work</td></tr>
+        <tr><td class="label">#590</td><td>LoRA + v9.5 ETH status addendum</td><td class="dim">model performance</td></tr>
+        <tr><td class="label">#592</td><td>Optuna best + 90% WR operating points</td><td class="dim">tuning</td></tr>
+        <tr><td class="label">#593</td><td>XRP v9.5 first attempt (3.5d, no WFCV)</td><td class="dim">model performance</td></tr>
+        <tr><td class="label">#594</td><td>Session log of record (this night)</td><td class="dim">retrospective</td></tr>
+        <tr><td class="label">#595</td><td>XRP v9.5 deploy + engine PR</td><td class="dim">deploy</td></tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <h3>Deploy architecture · the boxes that matter</h3>
+      <p>
+        The deploys hit three machines, plus the dev box. The flow:
+      </p>
+    </div>
+
+    <div class="svg-wrap">
+      <div class="chart-title">Deploy topology · timesfm-service + engine + RDS</div>
+      <div class="chart-sub">post-2026-05-09 cutover · classifier-gpu is the live emitter</div>
+      <svg viewBox="0 0 940 420" role="img" aria-label="Deploy architecture diagram">
+        <defs>
+          <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#7A7268"/>
+          </marker>
+        </defs>
+
+        <!-- DEV BOX (RTX 3060) -->
+        <rect x="30" y="30" width="220" height="110" rx="12" fill="#161620" stroke="#22D3EE" stroke-width="1.5"/>
+        <text x="140" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#22D3EE">DEV BOX · RTX 3060</text>
+        <text x="140" y="73" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">training · Optuna · WFCV</text>
+        <text x="140" y="89" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">31 GB RAM · 438 GB free</text>
+        <text x="140" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">training/trials/2026_05_2{2,3}_*</text>
+        <text x="140" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">→ S3 boosters + isotonic + meta</text>
+
+        <!-- S3 -->
+        <rect x="30" y="170" width="220" height="110" rx="12" fill="#161620" stroke="#A78BFA" stroke-width="1.5"/>
+        <text x="140" y="195" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#A78BFA">S3 · bbrnovakash-models</text>
+        <text x="140" y="213" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">v2/eth/  v2/btc/  v2/xrp/</text>
+        <text x="140" y="229" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">6 boosters + 6 iso + meta</text>
+        <text x="140" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">current_v9_5.json (eth, xrp)</text>
+        <text x="140" y="264" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">current_v9_3.json (btc)</text>
+
+        <!-- v2 box (stopped) -->
+        <rect x="30" y="310" width="220" height="80" rx="12" fill="#1C1C28" stroke="#EF4444" stroke-width="1.5" stroke-dasharray="6 4"/>
+        <text x="140" y="335" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#EF4444">v2 BOX · STOPPED</text>
+        <text x="140" y="353" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">i-0125675acf0e486e7 / 16.52.14.182</text>
+        <text x="140" y="369" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">stopped 2026-05-09 13:50 UTC</text>
+
+        <!-- Classifier-GPU (live) -->
+        <rect x="380" y="120" width="240" height="160" rx="14" fill="#161620" stroke="#10B981" stroke-width="2"/>
+        <text x="500" y="148" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#34D399">CLASSIFIER-GPU · LIVE</text>
+        <text x="500" y="165" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">i-0f77468732c4d8250 / 3.96.151.28</text>
+        <text x="500" y="184" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#F5F3F0">/v4/snapshot · :8080</text>
+        <text x="500" y="208" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#22D3EE">probability_lgb_v9_2 · v9_2_eth · v9_2_xrp</text>
+        <text x="500" y="224" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#A78BFA">probability_lgb_v9_5_eth · v9_3_btc · v9_5_xrp</text>
+        <text x="500" y="244" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">docker-compose.yml + docker-compose.gpu.yml</text>
+        <text x="500" y="260" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">also: RDS bastion (SSM port-forward)</text>
+
+        <!-- Engine (open PRs) -->
+        <rect x="700" y="30" width="220" height="110" rx="12" fill="#161620" stroke="#F59E0B" stroke-width="1.5"/>
+        <text x="810" y="55" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#F59E0B">NOVAKASH ENGINE</text>
+        <text x="810" y="73" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">consumes /v4/snapshot</text>
+        <text x="810" y="89" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">strategies + DB writers</text>
+        <text x="810" y="108" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">PRs #570 / #571 / #574 OPEN</text>
+        <text x="810" y="124" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">all GHOST default</text>
+
+        <!-- RDS -->
+        <rect x="700" y="170" width="220" height="110" rx="12" fill="#161620" stroke="#22D3EE" stroke-width="1.5"/>
+        <text x="810" y="195" text-anchor="middle" font-family="JetBrains Mono" font-size="11" fill="#22D3EE">RDS · novakash-pg-prod</text>
+        <text x="810" y="213" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">postgres 16.13</text>
+        <text x="810" y="229" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">signal_evaluations (5 prob cols)</text>
+        <text x="810" y="248" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#B8B3AB">strategy_configs · public.notes</text>
+        <text x="810" y="264" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#7A7268">via SSM → 127.0.0.1:15432</text>
+
+        <!-- Dev box → S3 -->
+        <path d="M 140 140 L 140 170" stroke="#A78BFA" stroke-width="2" marker-end="url(#arr2)"/>
+        <text x="155" y="158" font-family="JetBrains Mono" font-size="8" fill="#A78BFA">upload</text>
+
+        <!-- S3 → classifier-gpu -->
+        <path d="M 250 225 C 320 225, 320 200, 380 200" stroke="#10B981" stroke-width="2" marker-end="url(#arr2)"/>
+        <text x="285" y="195" font-family="JetBrains Mono" font-size="8" fill="#10B981">boto3 fetch</text>
+
+        <!-- classifier-gpu → engine -->
+        <path d="M 620 175 C 680 175, 680 110, 700 110" stroke="#F59E0B" stroke-width="2" marker-end="url(#arr2)"/>
+        <text x="640" y="135" font-family="JetBrains Mono" font-size="8" fill="#F59E0B">poll /v4/snapshot</text>
+
+        <!-- engine → RDS -->
+        <path d="M 810 140 L 810 170" stroke="#22D3EE" stroke-width="2" marker-end="url(#arr2)"/>
+        <text x="825" y="158" font-family="JetBrains Mono" font-size="8" fill="#22D3EE">write</text>
+
+        <!-- classifier-gpu → RDS bastion -->
+        <path d="M 620 225 L 700 225" stroke="#7A7268" stroke-width="1" stroke-dasharray="3 3" marker-end="url(#arr2)"/>
+        <text x="660" y="220" font-family="JetBrains Mono" font-size="8" fill="#7A7268">SSM bastion</text>
+
+        <!-- v2 box X mark -->
+        <path d="M 30 310 L 250 390 M 250 310 L 30 390" stroke="#EF4444" stroke-width="1.5" opacity="0.35"/>
+
+      </svg>
+    </div>
+
+    <div class="reading">
+      <p>
+        Three machines plus a database. The dev box (this one) does
+        training and stages artefacts. S3 holds the boosters,
+        isotonic calibrators, meta JSON, and pointer files.
+        classifier-gpu pulls from S3 on container boot, runs the
+        scorers, and exposes <code>/v4/snapshot</code>. The novakash
+        engine polls <code>/v4/snapshot</code> from its own machine and
+        writes the probabilities to RDS. RDS is reached via SSM
+        port-forward through classifier-gpu (it doubles as the RDS
+        bastion since the hub box has been hosed for weeks).
+      </p>
+
+      <p>
+        The v2 box used to be the <code>/v4/snapshot</code> host. It
+        was stopped on 2026-05-09 in the cutover described in section 4;
+        the cutover was complete, but the memory file's lede paragraph
+        hadn't been updated. The dotted X on the diagram is a
+        cosmetic flag: don't go there.
+      </p>
+
+      <h3>The corpora · what we now hold</h3>
+      <p>
+        Three training corpora were built or rebuilt tonight, each at
+        a different scale. They will all be reused — the corpus is the
+        cap on what the next iteration can learn. For reference, here
+        is the inventory at session close:
+      </p>
+    </div>
+
+    <table class="result-table">
+      <caption>Training corpora · post-session state</caption>
+      <thead>
+        <tr>
+          <th>asset</th>
+          <th>cache file</th>
+          <th class="num">span</th>
+          <th class="num">windows</th>
+          <th class="num">rows</th>
+          <th class="num">base UP rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="label">BTC</td>
+          <td><code>btc_corpus_ENRICHED.parquet</code></td>
+          <td class="num">24.0d</td>
+          <td class="num">5,702</td>
+          <td class="num">~562k</td>
+          <td class="num">0.491</td>
+        </tr>
+        <tr>
+          <td class="label">ETH</td>
+          <td><code>eth_xrp_dataset_eth_2026-05-18.parquet</code></td>
+          <td class="num">22.66d</td>
+          <td class="num">5,601</td>
+          <td class="num">~700k</td>
+          <td class="num">0.500</td>
+        </tr>
+        <tr>
+          <td class="label">XRP (v1 · 3.5d)</td>
+          <td><code>xrp_corpus_ENRICHED.parquet</code></td>
+          <td class="num">3.50d</td>
+          <td class="num">702</td>
+          <td class="num">205k</td>
+          <td class="num">0.487</td>
+        </tr>
+        <tr class="highlight">
+          <td class="label">XRP (v2 · final)</td>
+          <td><code>xrp_corpus_ENRICHED_v2.parquet</code></td>
+          <td class="num">8.62d</td>
+          <td class="num">1,505</td>
+          <td class="num">441k</td>
+          <td class="num">0.492</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        XRP's v2 corpus is 2.15× larger than v1 in windows and 2.46×
+        larger in time span. It's still only 38% the size of the ETH
+        corpus by span and 27% by windows. The natural next step is
+        another corpus rebuild in ~2 weeks once the RDS TVP writer has
+        accumulated more XRP history. The bottleneck is not training —
+        it's data.
+      </p>
+
+      <h3>S3 model artefacts · the pointer state</h3>
+    </div>
+
+    <table class="result-table">
+      <caption>S3 model pointers · post-session state</caption>
+      <thead>
+        <tr>
+          <th>asset</th>
+          <th>pointer</th>
+          <th>tag</th>
+          <th>artefacts</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="label">BTC v9.2 LIVE</td>
+          <td><code>v2/btc/current.json</code></td>
+          <td class="hl">candidate_ab83564</td>
+          <td class="dim">UNTOUCHED · LIVE since 2026-04-22</td>
+        </tr>
+        <tr>
+          <td class="label">BTC v9.3 GHOST</td>
+          <td><code>v2/btc/current_v9_3.json</code></td>
+          <td class="hl">30abd66_v9_3</td>
+          <td class="dim">NEW · 6 boosters + 6 iso + meta</td>
+        </tr>
+        <tr>
+          <td class="label">ETH v9.4 LIVE</td>
+          <td><code>v2/eth/current.json</code></td>
+          <td class="hl">candidate_v9_4_eth</td>
+          <td class="dim">UNTOUCHED · LIVE since 2026-05-21</td>
+        </tr>
+        <tr>
+          <td class="label">ETH v9.5 GHOST</td>
+          <td><code>v2/eth/current_v9_5.json</code></td>
+          <td class="hl">73134e9_v9_5</td>
+          <td class="dim">NEW · 6 boosters + 6 iso + meta</td>
+        </tr>
+        <tr>
+          <td class="label">XRP v9.5 GHOST</td>
+          <td><code>v2/xrp/current_v9_5.json</code></td>
+          <td class="hl">f300dcd_v9_5</td>
+          <td class="dim">NEW (8.62d) · supersedes 3.5d v1</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="reading">
+      <p>
+        Two LIVE pointers untouched. Three GHOST pointers fresh. The
+        original 3.5-day XRP artefacts are preserved at
+        <code>v2/xrp/xrp_5m/543b554_v9_5/...</code>
+        as the rollback target — even though they were never promoted,
+        they exist as a baseline if v9.5.0-thin proves problematic.
+      </p>
+
+      <h3>Notes backup</h3>
+      <p>
+        At the close of the session, <code>public.notes</code> held
+        <strong>555 rows / 593 max id</strong> (38 rows had been deleted
+        over the lifetime of the table). The full table was dumped to
+        <code>~/backups/notes/rds_notes_backup_2026-05-23.sql.gz</code>
+        — 1.1 MB compressed, <code>--column-inserts</code> format for
+        idempotent restore. A nightly cron job at 04:00 UTC was scoped
+        but not yet installed. Local Postgres at
+        <code>127.0.0.1:5433</code> was not running this session — the
+        restore command is pinned in the report at
+        <code>/tmp/rds_notes_backup_report.md</code> for when Billy
+        starts the local container.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 9 — LESSONS
+═══════════════════════════════════════════════════════════════════ -->
+<section id="lessons">
+  <div class="container">
+    <span class="kicker kicker--amber">09 · Lessons</span>
+    <h2>Ten <em>things</em> learned.</h2>
+
+    <div class="moments-grid">
+
+      <div class="moment" data-mood="bad">
+        <div class="moment-time">L01 · MEMORY HYGIENE</div>
+        <div class="moment-head">The v2 box memo had a stale top paragraph.</div>
+        <div class="moment-body">
+          A memory file with a correct addendum and an outdated lede is
+          worse than a missing file. The lede gets quoted, the addendum
+          gets skipped. Fix: invert the structure. If a box is dead,
+          the first paragraph of its deploy memo should be
+          "DECOMMISSIONED — DO NOT DEPLOY HERE."
+        </div>
+        <span class="moment-tag">Fixed in memory</span>
+      </div>
+
+      <div class="moment" data-mood="good">
+        <div class="moment-time">L02 · NO AUTO-PROMOTE</div>
+        <div class="moment-head">The hand-driven LIVE rule earned its keep.</div>
+        <div class="moment-body">
+          Three new strategies trained, three new probability emitters
+          deployed, zero promoted to LIVE without explicit Billy approval.
+          The allowlist hook caught the v2-box redirect attempt. The
+          GHOST default in YAML caught the strategies. The pattern works.
+          Every flip was hand-done; nothing escaped.
+        </div>
+        <span class="moment-tag">Held the line</span>
+      </div>
+
+      <div class="moment" data-mood="warn">
+        <div class="moment-time">L03 · DOCKER COMPOSE</div>
+        <div class="moment-head">On classifier-gpu, both files. Always.</div>
+        <div class="moment-body">
+          <code>docker-compose.yml</code> alone gives a CPU-profile
+          container that boots, emits, and silently misses the GPU
+          declarations from <code>docker-compose.gpu.yml</code>. The
+          override is non-optional. Deploy script gets a guard:
+          <code>compose -f base -f gpu</code>, no exceptions.
+        </div>
+        <span class="moment-tag">Guard added</span>
+      </div>
+
+      <div class="moment" data-mood="bad">
+        <div class="moment-time">L04 · DISK HYGIENE</div>
+        <div class="moment-head">99% full is a silent killer.</div>
+        <div class="moment-body">
+          pip install does not raise on partial writes when disk fills
+          mid-install. The package <em>looks</em> installed. The python
+          import fails with <code>ModuleNotFoundError</code> only at
+          runtime. classifier-gpu now needs a weekly
+          <code>docker image prune</code> cron + a disk-pressure alert at
+          80%. Thirteen stale image tags is two months of debt.
+        </div>
+        <span class="moment-tag">Routine prune scheduled</span>
+      </div>
+
+      <div class="moment" data-mood="good">
+        <div class="moment-time">L05 · DATA INFRA</div>
+        <div class="moment-head">DuckDB + psql COPY &gt; asyncpg for big pulls.</div>
+        <div class="moment-body">
+          Above ~100k rows, asyncpg through SSM stalls invisibly. The
+          hybrid pattern — DuckDB on the daily S3 parquet for bulk,
+          psql COPY in 2h chunks for the delta — finishes in seconds
+          what asyncpg can't finish in tens of minutes. New default.
+        </div>
+        <span class="moment-tag">Pattern adopted</span>
+      </div>
+
+      <div class="moment" data-mood="good">
+        <div class="moment-time">L06 · OPTUNA RESUMABILITY</div>
+        <div class="moment-head">The SQLite study survived worker crashes.</div>
+        <div class="moment-body">
+          The XRP Optuna study (40 trials over 9 minutes) had two
+          worker crashes mid-run from asyncpg artefacts still on the
+          host. The SQLite study DB at
+          <code>/tmp/xrp_v9_5_cache/optuna_study.db</code> persisted
+          every completed trial. Resumed each time without losing work.
+          Use SQLite storage, not in-memory, for any non-trivial Optuna.
+        </div>
+        <span class="moment-tag">Default storage = sqlite</span>
+      </div>
+
+      <div class="moment" data-mood="warn">
+        <div class="moment-time">L07 · PER-WINDOW vs PER-TICK</div>
+        <div class="moment-head">WR per tick lies. WR per window is honest.</div>
+        <div class="moment-body">
+          v9.2 BTC's 95% headline was a per-window number on too few
+          windows. v9.3's 91.3% is a per-window number on enough windows.
+          Per-tick WR can look 5-10pp higher because winning windows
+          fire many ticks. Dedup before reporting. The walk-forward CV
+          forced this dedup; it's now the default.
+        </div>
+        <span class="moment-tag">Per-window default</span>
+      </div>
+
+      <div class="moment" data-mood="next">
+        <div class="moment-time">L08 · SHALLOW + BAGGY</div>
+        <div class="moment-head">max_depth=2 + heavy bagging is universal.</div>
+        <div class="moment-body">
+          Both BTC's and XRP's Optuna best trials picked
+          <code>max_depth ≤ 2</code> and bagging in the 0.74-0.80 range
+          with <code>bagging_freq=1</code>. The signal in both assets
+          sits in a small number of shallow interactions; deep trees
+          overfit per-window noise. This is the LGB-on-microstructure
+          fingerprint — not an asset coincidence.
+        </div>
+        <span class="moment-tag">Universal pattern</span>
+      </div>
+
+      <div class="moment" data-mood="next">
+        <div class="moment-time">L09 · ASYMMETRIC REWEIGHTING</div>
+        <div class="moment-head">XRP wants 1.5×, ETH wants 3.0×.</div>
+        <div class="moment-body">
+          ETH's base UP rate is asymmetric — <code>down_reweight=3.0</code>
+          helps. XRP's base UP rate is 49.2% (well-balanced). Trials with
+          dr ≥ 3.0 on XRP scored worse than dr=1.0/1.5. Stop applying
+          ETH's reweighting wholesale; tune per-asset.
+        </div>
+        <span class="moment-tag">Per-asset tuning</span>
+      </div>
+
+      <div class="moment" data-mood="warn">
+        <div class="moment-time">L10 · LOADER GAP</div>
+        <div class="moment-head">9 features have no engine emitter — for ETH AND XRP.</div>
+        <div class="moment-body">
+          <code>binance_depth_*</code> (4) and <code>clob_pre_*</code> (5) are
+          trained-on but not served-on for both ETH and XRP. LGB's missing-value
+          leaf handles the gap, but the model's feature importance shows
+          these features carry signal. ETH's loader-side PR (#158) covers
+          the None-fill, but the engine-side emitter doesn't exist for
+          either asset yet. Ceiling is bounded until that ships.
+        </div>
+        <span class="moment-tag">Follow-up PR queued</span>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 10 — WHAT'S NEXT
+═══════════════════════════════════════════════════════════════════ -->
+<section id="next">
+  <div class="container reading">
+    <span class="kicker kicker--violet">10 · What's next</span>
+    <h2>The <em>queue</em>.</h2>
+
+    <p>
+      Five probabilities live, three new strategies in GHOST, all the
+      training is done — but the engine half of the deploy is still
+      open. The immediate queue, in priority order:
+    </p>
+
+    <ol style="margin-left: 1.2rem; color: var(--text-secondary);">
+      <li style="margin: 0.7rem 0;">
+        <strong>Engine PRs #570, #571, #574 merge.</strong> The DB
+        writers for <code>probability_lgb_v9_5_eth</code>,
+        <code>probability_lgb_v9_3_btc</code>, and
+        <code>probability_lgb_v9_5_xrp</code> live here. Until these
+        merge, the new probability columns get written to the
+        <code>/v4/snapshot</code> response but never persisted to
+        <code>signal_evaluations</code>. GHOST WR analysis is blocked on
+        this.
+      </li>
+
+      <li style="margin: 0.7rem 0;">
+        <strong>24h GHOST validation per strategy.</strong> Once engine
+        PRs land, the comparison-against-LIVE window starts on each new
+        strategy. The targets are: <em>v9.5 ETH</em> vs v9.4 LIVE,
+        <em>v9.3 BTC raw_lgb</em> vs v9.2 raw_lgb, <em>v9.3 BTC tight</em>
+        as a new tier, and <em>v9.5 XRP</em> against its own baseline
+        (XRP has no incumbent LIVE leg — it's a cold start).
+      </li>
+
+      <li style="margin: 0.7rem 0;">
+        <strong>Manual LIVE promotion per strategy.</strong> Billy's
+        call on each, after GHOST. The promotion path: edit
+        <code>strategy_runtime_overrides.params.mode = 'LIVE'</code> on
+        the DB row, restart the engine consumer. No CI gate, no
+        auto-promote rule. v9.3 BTC raw_lgb is the most likely first
+        promotion — it's the like-for-like swap of v9.2.
+      </li>
+
+      <li style="margin: 0.7rem 0;">
+        <strong>v9.5 ETH loader follow-up PR for the 9 features.</strong>
+        Analogous to #158 but for engine-side emission. Either snapshot
+        the Binance depth book at window-open into a new
+        <code>ticks_binance_book</code> table, or compute the Polymarket
+        CLOB pre-event aggregates in the engine and write to JSONB.
+        Same patch closes the gap for XRP simultaneously.
+      </li>
+
+      <li style="margin: 0.7rem 0;">
+        <strong>XRP corpus accumulation.</strong> RDS
+        <code>ticks_v2_probability</code> horizon for XRP currently caps
+        at ~11 days. The v9.5 XRP retrain wants the full 22-day
+        equivalent of ETH; that's 2 weeks of writer-side accumulation
+        away. The 8.62d v9.5 XRP shipped tonight is the interim model.
+      </li>
+
+      <li style="margin: 0.7rem 0;">
+        <strong>Tier 4-5 BTC features.</strong> The v9.3 ENRICHED set
+        stopped at Tier 3. Tier 4 (<code>vpin_60s_*</code>,
+        <code>gamma_*</code>) and Tier 5 (<code>clob_imbalance</code>
+        deep aggregates) were scoped but deferred. Net expected lift on
+        v9.3 BTC walk-forward CV: another 2-4pp on UP WR at tight
+        thresholds. Lower priority than the loader patch.
+      </li>
+
+      <li style="margin: 0.7rem 0;">
+        <strong>v9.4 ETH stacking on past-only meta-features.</strong>
+        The v9.4 META gain (+11.6pp DOWN WR) is real but its train-serve
+        skew is unbounded. The past-only retrain has not happened yet.
+        Without that, v9.4 stays on the bench. With it, v9.5 ETH gets
+        an honest stacking layer.
+      </li>
+    </ol>
+
+    <p>
+      None of this is on tonight's clock. The session ships what it ships.
+      The queue is for tomorrow.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SECTION 11 — CLOSE
+═══════════════════════════════════════════════════════════════════ -->
+<section id="close">
+  <div class="container reading">
+    <span class="kicker kicker--cyan">11 · Close</span>
+    <h2>Big night.</h2>
+
+    <p>
+      Five probabilities on the wire. Four PRs merged. Three engine PRs
+      queued. Two outages narrowly avoided. One thirty-minute incident
+      where every probability went dark — survived, diagnosed, fixed.
+      Roughly eight hours of wall-clock from the trigger ("iso_expand
+      had a few extra losses, can we improve v9.2 BTC?") to the final
+      state (<code>v9_5_xrp = 0.7398</code> emitting on
+      <code>/v4/snapshot?asset=xrp</code>).
+    </p>
+
+    <p>
+      The engine half is queued. GHOST monitoring is on deck. The
+      no-auto-promote rule held. The memory file got its long-overdue
+      correction. The pruning cron got scoped. The DuckDB+psql COPY
+      pattern joined the canonical toolkit. The thirteen stale image
+      tags will not happen again.
+    </p>
+
+    <p>
+      Tomorrow morning, Billy reads the GHOST numbers and decides which
+      of the new strategies graduate. Until then — the system is stable,
+      the data is captured, the artefacts are in S3, the migrations are
+      idempotent, the rollback paths are documented. Nothing is
+      auto-promoted. Nothing is ringing the alarm bell.
+    </p>
+
+    <div class="pull-quote">
+      <em>Sleep well.</em>
+      <cite>— session log of record · note #594 · 2026-05-23 15:44 UTC</cite>
+    </div>
+
+    <p style="text-align: center; font-family: var(--font-mono); color: var(--text-tertiary); font-size: 0.78rem; letter-spacing: 0.18em; text-transform: uppercase; margin-top: 4rem;">
+      — end of chapter 14 · pt 3 —
+    </p>
+  </div>
+</section>
+
+<div class="footer">
+  Chapter 14 · part 3 of 3 · <span>v9.3 BTC · v9.5 ETH · v9.5 XRP</span><br>
+  2026-05-22 → 2026-05-23 · <span>billy@changeblock.io</span>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   reading progress + side-nav
+═════════════════════════════════════════════════════════════════════*/
+(function(){
+  const bar = document.getElementById('reading-progress');
+  const nav = document.getElementById('side-nav');
+  const links = nav ? nav.querySelectorAll('a') : [];
+  function onScroll(){
+    const h = document.documentElement;
+    const pct = (h.scrollTop / Math.max(1, (h.scrollHeight - h.clientHeight))) * 100;
+    bar.style.width = pct + '%';
+    /* highlight active section */
+    let active = '';
+    document.querySelectorAll('section[id]').forEach(s => {
+      const r = s.getBoundingClientRect();
+      if (r.top < window.innerHeight * 0.4 && r.bottom > 0) active = s.id;
+    });
+    links.forEach(l => {
+      l.classList.toggle('active', l.getAttribute('href') === '#' + active);
+    });
+  }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   Plotly base layout (dark)
+═════════════════════════════════════════════════════════════════════*/
+function baseLayout(xtitle, ytitle, extra = {}) {
+  const base = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor:  'rgba(0,0,0,0)',
+    font: { family: 'JetBrains Mono, monospace', color: '#B8B3AB', size: 11 },
+    margin: { l: 64, r: 24, t: 24, b: 56 },
+    xaxis: {
+      title: { text: xtitle, font: { size: 10, color: '#7A7268' } },
+      gridcolor: 'rgba(255,255,255,0.04)',
+      zerolinecolor: 'rgba(255,255,255,0.08)',
+      tickfont: { size: 10, color: '#B8B3AB' },
+      linecolor: 'rgba(255,255,255,0.15)',
+    },
+    yaxis: {
+      title: { text: ytitle, font: { size: 10, color: '#7A7268' } },
+      gridcolor: 'rgba(255,255,255,0.04)',
+      zerolinecolor: 'rgba(255,255,255,0.08)',
+      tickfont: { size: 10, color: '#B8B3AB' },
+      linecolor: 'rgba(255,255,255,0.15)',
+    },
+    legend: {
+      orientation: 'h',
+      y: -0.18,
+      font: { size: 10, color: '#B8B3AB' },
+      bgcolor: 'rgba(0,0,0,0)',
+    },
+    hoverlabel: {
+      bgcolor: '#14141C',
+      bordercolor: '#22D3EE',
+      font: { family: 'JetBrains Mono, monospace', color: '#F5F3F0', size: 11 },
+    },
+  };
+  /* apply extras */
+  if (extra.xaxis) base.xaxis = { ...base.xaxis, ...extra.xaxis };
+  if (extra.yaxis) base.yaxis = { ...base.yaxis, ...extra.yaxis };
+  if (extra.legend) base.legend = { ...base.legend, ...extra.legend };
+  if (extra.margin) base.margin = { ...base.margin, ...extra.margin };
+  if (extra.layout) Object.assign(base, extra.layout);
+  return base;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   CHART 1 — Optuna trajectories BTC vs XRP
+═════════════════════════════════════════════════════════════════════*/
+(function(){
+  /* BTC SUPER 65 completed trials */
+  const btc = [[0,0.7891],[3,0.7836],[4,0.7909],[7,0.7724],[8,0.7757],[9,0.7883],[10,0.7830],[11,0.7846],[12,0.7952],[13,0.7764],[14,0.8051],[15,0.8081],[16,0.8057],[17,0.7969],[18,0.8087],[19,0.8092],[20,0.7911],[21,0.7963],[22,0.7869],[23,0.8000],[24,0.7989],[25,0.8029],[26,0.7961],[27,0.8093],[28,0.8049],[29,0.7830],[30,0.8071],[31,0.8035],[32,0.7909],[33,0.7843],[34,0.7957],[35,0.8067],[36,0.8103],[37,0.8062],[38,0.7936],[39,0.8007],[40,0.7857],[41,0.8072],[42,0.7832],[43,0.7937],[44,0.8060],[45,0.8076],[46,0.7934],[47,0.8129],[48,0.7925],[49,0.7873],[50,0.7943],[51,0.7924],[52,0.7883],[53,0.7952],[54,0.8037],[55,0.8063],[56,0.8014],[57,0.7995],[58,0.7969],[59,0.7961],[60,0.7937],[61,0.8057],[62,0.7917],[63,0.8077],[64,0.7939],[65,0.8136],[66,0.8079]];
+  /* XRP 40 completed trials */
+  const xrp = [[0,0.7874],[1,0.8632],[2,0.6960],[3,0.8065],[4,0.8099],[5,0.8021],[6,0.8339],[7,0.8190],[8,0.8140],[9,0.8318],[10,0.7823],[11,0.8581],[12,0.8712],[13,0.8696],[14,0.8112],[15,0.8943],[16,0.8034],[17,0.8256],[18,0.8469],[19,0.8210],[20,0.8302],[21,0.8670],[22,0.8458],[23,0.8593],[24,0.8615],[25,0.7952],[26,0.7036],[27,0.8095],[28,0.8133],[29,0.8419],[30,0.8063],[31,0.8710],[32,0.8710],[33,0.8287],[34,0.8549],[35,0.8263],[36,0.8353],[37,0.7823],[38,0.8629],[39,0.8263]];
+
+  /* running best */
+  function runningBest(arr) {
+    let best = -Infinity, out = [];
+    arr.forEach(([n,v]) => { if (v > best) best = v; out.push([n, best]); });
+    return out;
+  }
+  const btcBest = runningBest(btc);
+  const xrpBest = runningBest(xrp);
+
+  Plotly.newPlot('chart-optuna', [
+    /* BTC trial points */
+    {
+      x: btc.map(d => d[0]),
+      y: btc.map(d => d[1]),
+      mode: 'markers',
+      name: 'BTC trial',
+      marker: { color: 'rgba(34, 211, 238, 0.55)', size: 7, line: { color: '#22D3EE', width: 1 } },
+      hovertemplate: 'BTC trial %{x}<br>composite=%{y:.4f}<extra></extra>',
+    },
+    /* BTC running best */
+    {
+      x: btcBest.map(d => d[0]),
+      y: btcBest.map(d => d[1]),
+      mode: 'lines',
+      name: 'BTC running best',
+      line: { color: '#22D3EE', width: 2.5, shape: 'hv' },
+      hovertemplate: 'BTC best @ trial %{x}<br>%{y:.4f}<extra></extra>',
+    },
+    /* XRP trial points */
+    {
+      x: xrp.map(d => d[0]),
+      y: xrp.map(d => d[1]),
+      mode: 'markers',
+      name: 'XRP trial',
+      marker: { color: 'rgba(167, 139, 250, 0.55)', size: 7, symbol: 'diamond', line: { color: '#A78BFA', width: 1 } },
+      hovertemplate: 'XRP trial %{x}<br>composite=%{y:.4f}<extra></extra>',
+    },
+    /* XRP running best */
+    {
+      x: xrpBest.map(d => d[0]),
+      y: xrpBest.map(d => d[1]),
+      mode: 'lines',
+      name: 'XRP running best',
+      line: { color: '#A78BFA', width: 2.5, shape: 'hv', dash: 'dot' },
+      hovertemplate: 'XRP best @ trial %{x}<br>%{y:.4f}<extra></extra>',
+    },
+  ], baseLayout('trial number', 'composite score (WR × volume)', {
+    xaxis: { range: [-1, 70] },
+    yaxis: { range: [0.68, 0.92], tickformat: '.3f' },
+    layout: {
+      annotations: [
+        { x: 65, y: 0.8136, text: 'BTC best @ #65<br>0.8136',
+          showarrow: true, ax: -50, ay: -30,
+          font: { color: '#22D3EE', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#22D3EE', arrowhead: 2 },
+        { x: 15, y: 0.8943, text: 'XRP best @ #15<br>0.8943',
+          showarrow: true, ax: 50, ay: -20,
+          font: { color: '#A78BFA', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#A78BFA', arrowhead: 2 },
+        { x: 33, y: 0.71, text: 'note: XRP composite is bulk-slice<br>full-corpus WFCV drops ~9pp',
+          showarrow: false,
+          font: { color: '#F59E0B', size: 9, family: 'JetBrains Mono' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   CHART 2 — WR by asset (grouped bar)
+═════════════════════════════════════════════════════════════════════*/
+(function(){
+  /* labels = asset/threshold ; values = WR (%) ; n = window count */
+  const data = [
+    { label: 'ETH v9.4 LIVE\np ≥ 0.72\n(24h prod)',    wr: 76.91, n: 6891, color: '#10B981' },
+    { label: 'BTC v9.3 raw\np ≥ 0.72\n(WFCV OOF)',     wr: 71.04, n: 2887, color: '#22D3EE' },
+    { label: 'XRP v9.5 raw\np ≥ 0.82\n(WFCV OOF)',     wr: 74.79, n: 476,  color: '#F59E0B' },
+    { label: 'BTC v9.3 tight\np ≥ 0.935\n(WFCV OOF)',  wr: 90.32, n: 1725, color: '#22D3EE' },
+    { label: 'XRP v9.5 tight\np ≥ 0.95\n(WFCV OOF)',   wr: 80.85, n: 282,  color: '#F59E0B' },
+    { label: 'BTC v9.3 tight\np ≤ 0.065 DOWN\n(WFCV OOF)', wr: 90.44, n: 1590, color: '#22D3EE' },
+    { label: 'XRP v9.5 tight\np ≤ 0.05 DOWN\n(WFCV OOF)',  wr: 83.07, n: 319,  color: '#F59E0B' },
+  ];
+
+  Plotly.newPlot('chart-wr-by-asset', [
+    {
+      x: data.map(d => d.label),
+      y: data.map(d => d.wr),
+      type: 'bar',
+      marker: {
+        color: data.map(d => d.color),
+        opacity: 0.85,
+        line: { color: data.map(d => d.color), width: 1.5 },
+      },
+      text: data.map(d => `${d.wr.toFixed(1)}%\nn=${d.n}`),
+      textposition: 'outside',
+      textfont: { color: '#F5F3F0', size: 10, family: 'JetBrains Mono' },
+      hovertemplate: '%{x}<br>WR = %{y:.2f}%<extra></extra>',
+    },
+    /* 90% reference line */
+    {
+      x: data.map(d => d.label),
+      y: data.map(_ => 90),
+      mode: 'lines',
+      name: '90% WR target',
+      line: { color: '#34D399', width: 1.5, dash: 'dash' },
+      hoverinfo: 'skip',
+      showlegend: false,
+    },
+  ], baseLayout('', 'window WR (%)', {
+    yaxis: { range: [60, 100], tickformat: '.0f', ticksuffix: '%' },
+    margin: { l: 64, r: 24, t: 24, b: 120 },
+    layout: {
+      annotations: [
+        { x: 6, y: 90, text: '90% WR target',
+          showarrow: false, xref: 'x', yref: 'y',
+          xanchor: 'right', yanchor: 'bottom',
+          font: { color: '#34D399', size: 9, family: 'JetBrains Mono' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   CHART 2b — tick WR vs window WR (UP side, v9.3 BTC walk-forward)
+═════════════════════════════════════════════════════════════════════*/
+(function(){
+  /* threshold sweep · v9.3 walk-forward · UP side · from /tmp/btc_v9_3/v9_3_walkforward.csv */
+  const thrs = [0.60, 0.66, 0.72, 0.78, 0.84, 0.88, 0.92, 0.94, 0.96, 0.98];
+  const tickWR   = [79.8, 83.6, 85.8, 89.5, 91.2, 92.3, 94.1, 95.7, 96.5, 96.9];
+  const winWR    = [62.9, 68.0, 71.0, 75.1, 78.9, 81.6, 86.8, 89.8, 91.3, 92.9];
+
+  Plotly.newPlot('chart-tick-window', [
+    {
+      x: thrs, y: tickWR,
+      mode: 'lines+markers',
+      name: 'tick WR (inflated)',
+      line: { color: '#F59E0B', width: 2.5, shape: 'spline' },
+      marker: { color: '#F59E0B', size: 8 },
+      hovertemplate: 'p≥%{x:.2f}<br>tick WR=%{y:.1f}%<extra></extra>',
+    },
+    {
+      x: thrs, y: winWR,
+      mode: 'lines+markers',
+      name: 'window WR (honest)',
+      line: { color: '#22D3EE', width: 2.5, shape: 'spline' },
+      marker: { color: '#22D3EE', size: 8 },
+      hovertemplate: 'p≥%{x:.2f}<br>window WR=%{y:.1f}%<extra></extra>',
+    },
+    /* fill region between */
+    {
+      x: thrs.concat(thrs.slice().reverse()),
+      y: tickWR.concat(winWR.slice().reverse()),
+      fill: 'toself',
+      fillcolor: 'rgba(245, 158, 11, 0.10)',
+      line: { width: 0 },
+      hoverinfo: 'skip',
+      showlegend: false,
+    },
+  ], baseLayout('UP threshold', 'WR (%)', {
+    xaxis: { range: [0.58, 1.00], tickformat: '.2f' },
+    yaxis: { range: [55, 100], tickformat: '.0f', ticksuffix: '%' },
+    layout: {
+      annotations: [
+        { x: 0.96, y: 96.5, text: 'tick: 96.5%',
+          showarrow: true, ax: 40, ay: -20,
+          font: { color: '#F59E0B', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#F59E0B', arrowhead: 2 },
+        { x: 0.96, y: 91.3, text: 'window: 91.3%',
+          showarrow: true, ax: 40, ay: 30,
+          font: { color: '#22D3EE', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#22D3EE', arrowhead: 2 },
+        { x: 0.78, y: 67, text: 'gap shrinks as<br>threshold tightens',
+          showarrow: false,
+          font: { color: '#7A7268', size: 9, family: 'JetBrains Mono' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   CHART 3 — Emissions timeline (Gantt-style)
+═════════════════════════════════════════════════════════════════════*/
+(function(){
+  /* times in UTC hours since 2026-05-22 18:00 */
+  /* span: 18:00 → next-day 17:30 = +23.5h */
+  const rows = [
+    { name: 'v9.2 BTC (LIVE)',     start: 0,    end: 23.5, status: 'live',  color: '#10B981' },
+    { name: 'v9.4 ETH (LIVE)',     start: 0,    end: 23.5, status: 'live',  color: '#10B981' },
+    { name: 'v9.2 XRP (LIVE)',     start: 0,    end: 23.5, status: 'live',  color: '#10B981' },
+    { name: 'v9.5 ETH (GHOST)',    start: 5.3,  end: 23.5, status: 'ghost', color: '#A78BFA' },
+    { name: 'v9.3 BTC (GHOST)',    start: 7.5,  end: 23.5, status: 'ghost', color: '#A78BFA' },
+    { name: 'v9.5 XRP (GHOST)',    start: 22.3, end: 23.5, status: 'ghost', color: '#F59E0B' },
+  ];
+
+  /* Outage band ~7.0 - 7.5 (01:00-01:30 next day) ⇒ 7.0–7.5 hours from start */
+  const outageStart = 7.0;
+  const outageEnd   = 7.5;
+
+  const traces = [];
+  rows.forEach((r, i) => {
+    traces.push({
+      x: [r.start, r.end],
+      y: [r.name, r.name],
+      mode: 'lines',
+      line: { color: r.color, width: 14 },
+      name: r.name,
+      hovertemplate: r.name + '<br>active from h+%{x:.1f}<extra></extra>',
+      showlegend: false,
+    });
+  });
+
+  /* "go-live" markers */
+  traces.push({
+    x: [5.3, 7.5, 22.3],
+    y: ['v9.5 ETH (GHOST)', 'v9.3 BTC (GHOST)', 'v9.5 XRP (GHOST)'],
+    mode: 'markers+text',
+    marker: { color: '#22D3EE', size: 13, symbol: 'diamond', line: { color: '#0A0A0F', width: 2 } },
+    text: ['v9.5 ETH on', 'v9.3 BTC on', 'v9.5 XRP on'],
+    textposition: 'top center',
+    textfont: { color: '#22D3EE', size: 9, family: 'JetBrains Mono' },
+    hovertemplate: '%{text}<br>h+%{x:.1f}<extra></extra>',
+    showlegend: false,
+  });
+
+  Plotly.newPlot('chart-emissions', traces, baseLayout('hours from 2026-05-22 18:00 UTC', '', {
+    xaxis: {
+      range: [-0.5, 24.5],
+      tickvals: [0, 4, 8, 12, 16, 20, 24],
+      ticktext: ['18:00 day-1', '22:00', '02:00', '06:00', '10:00', '14:00', '18:00 day-2'],
+    },
+    yaxis: {
+      automargin: true,
+      tickfont: { size: 10 },
+    },
+    margin: { l: 160, r: 24, t: 24, b: 56 },
+    layout: {
+      shapes: [
+        /* outage band */
+        { type: 'rect', xref: 'x', yref: 'paper',
+          x0: outageStart, x1: outageEnd, y0: 0, y1: 1,
+          fillcolor: 'rgba(239, 68, 68, 0.12)',
+          line: { width: 0 } },
+      ],
+      annotations: [
+        { x: (outageStart + outageEnd) / 2, y: 1.04, xref: 'x', yref: 'paper',
+          text: 'prod incident · ~30min',
+          showarrow: false,
+          font: { color: '#EF4444', size: 9, family: 'JetBrains Mono' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+})();
+
+</script>
+
+</body>
+</html>

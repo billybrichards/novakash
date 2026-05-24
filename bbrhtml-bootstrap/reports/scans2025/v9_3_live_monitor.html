@@ -1,0 +1,150 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="3">
+<title>v9.3 ETH live monitor</title>
+<style>
+  :root {
+    --bg: #0b0e14; --bg-2: #131722; --bg-3: #1c2230;
+    --fg: #e1e5ef; --fg-dim: #8e98ad; --fg-mute: #5b6478;
+    --rule: #232a3a;
+    --accent: #7aa2ff; --good: #6dc88a; --warn: #f3b06a; --bad: #ef6b6b; --info: #6cb5d3;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
+    line-height: 1.5; font-size: 14px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px; }
+  header { display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 1px solid var(--rule); padding-bottom: 14px; margin-bottom: 24px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+  header .ts { color: var(--fg-mute); font-family: var(--mono); font-size: 12px; }
+  .pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--good);
+    animation: pulse 1.2s ease-in-out infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+
+  .progress-shell { background: var(--bg-2); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 18px 22px; margin-bottom: 24px; }
+  .progress-shell h3 { margin: 0 0 10px; font-size: 14px; color: var(--fg-dim); letter-spacing: 0.04em; text-transform: uppercase; }
+  .progress-bar { background: var(--bg-3); height: 26px; border-radius: 4px; overflow: hidden; position: relative; }
+  .progress-fill { background: linear-gradient(90deg, var(--info), var(--accent)); height: 100%;
+    transition: width 0.4s ease; width: 100%; }
+  .progress-fill.done { background: linear-gradient(90deg, var(--good), #5db378); }
+  .progress-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-family: var(--mono); font-size: 13px; font-weight: 600; }
+
+  .steps { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; }
+  .step { display: flex; gap: 16px; background: var(--bg-2); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 12px 16px; transition: background 0.2s; }
+  .step-num { font-family: var(--mono); font-size: 12px; color: var(--fg-mute); width: 18px; }
+  .step-body { flex: 1; }
+  .step-label { font-size: 14px; font-weight: 500; }
+  .step-sub { color: var(--fg-mute); font-size: 12px; font-family: var(--mono); margin-top: 2px; }
+  .step-done .step-label { color: var(--good); }
+  .step-running { background: rgba(108, 181, 211, 0.06); border-color: var(--info); }
+  .step-running .step-label { color: var(--info); }
+  .step-pending .step-label { color: var(--fg-mute); }
+
+  .gpu-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 24px; }
+  .gpu-cell { background: var(--bg-2); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; }
+  .gpu-cell .lbl { color: var(--fg-mute); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .gpu-cell .val { font-family: var(--mono); font-size: 18px; margin-top: 4px; color: var(--fg); }
+  .gpu-cell .val.hot { color: var(--warn); }
+
+  .meta { display: flex; gap: 20px; font-size: 12px; color: var(--fg-mute); margin-bottom: 20px; }
+  .meta strong { color: var(--fg); }
+
+  .log-tail { background: #07090f; border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--fg-dim);
+    max-height: 320px; overflow-y: auto; }
+  .log-tail div { white-space: pre; overflow-wrap: anywhere; }
+  .footer { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--rule);
+    font-size: 11px; color: var(--fg-mute); text-align: center; }
+</style>
+</head><body>
+<div class="wrap">
+
+<header>
+  <h1><span class="pulse"></span>v9.3 ETH — live monitor</h1>
+  <div class="ts">refreshed 23:09:44 · auto-refresh 3s</div>
+</header>
+
+<div class="progress-shell">
+  <h3>LoRA inference progress</h3>
+  <div class="progress-bar">
+    <div class="progress-fill done"></div>
+    <div class="progress-label">36,288 / 36,288 (100.0%)</div>
+  </div>
+</div>
+
+<div class="gpu-row">
+  <div class="gpu-cell"><div class="lbl">GPU util</div><div class="val">8%</div></div>
+  <div class="gpu-cell"><div class="lbl">VRAM</div><div class="val">482/12288 MiB</div></div>
+  <div class="gpu-cell"><div class="lbl">Power</div><div class="val">26W</div></div>
+  <div class="gpu-cell"><div class="lbl">Temp</div><div class="val ">51°C</div></div>
+  <div class="gpu-cell"><div class="lbl">Rate</div><div class="val">20/s</div></div>
+</div>
+
+<div class="steps">
+  
+        <div class="step step-done">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-label">✓ Fetch ETH ticks</div>
+            <div class="step-sub">31 MB cached</div>
+          </div>
+        </div>
+        <div class="step step-done">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-label">✓ Load TimesFM + LoRA on GPU</div>
+            <div class="step-sub">VRAM 462MB / 12288MB</div>
+          </div>
+        </div>
+        <div class="step step-done">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-label">✓ Run 36,288 LoRA inferences (batch=64)</div>
+            <div class="step-sub">Parquet written</div>
+          </div>
+        </div>
+        <div class="step step-done">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <div class="step-label">✓ Agent B: train v9.3 with 58 features + A/B</div>
+            <div class="step-sub">models in trial dir</div>
+          </div>
+        </div>
+</div>
+
+<div class="meta">
+  <div>LoRA process: <strong>completed</strong></div>
+  <div>Parquet: <strong>YES (1 MB)</strong></div>
+  <div>Ticks cache: <strong>YES (31 MB)</strong></div>
+</div>
+
+<h3 style="font-size:13px;color:var(--fg-dim);letter-spacing:0.04em;text-transform:uppercase;margin:24px 0 8px">Latest log lines</h3>
+<div class="log-tail">
+<div>max     2423.511475   2423.223877   2426.816895     17.499512        0.999671</div>
+<div></div>
+<div>============================================================</div>
+<div>FINAL REPORT</div>
+<div>============================================================</div>
+<div>Total inferences performed : 36,288</div>
+<div>Skipped (insufficient data): 0</div>
+<div>Parquet path               : /tmp/v9_3_eth_tfm_offline.parquet</div>
+<div>Parquet size               : 1757 KB</div>
+<div>Row count                  : 36,288</div>
+<div>VRAM peak usage            : 618 MB</div>
+<div>Wall time                  : 1770s (29.5 min)</div>
+<div>Windows                    : 6,048</div>
+<div>stc values                 : [60, 120, 180, 210, 240, 270]</div>
+<div>============================================================</div>
+</div>
+
+<div class="footer">
+  v9.3 ETH workflow · monitor at /tmp/v9_3_monitor.py · log /tmp/tfm_eth_offline.log
+</div>
+
+</div></body></html>

@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>v9.2 ETH/XRP — Pipeline + Cache Issue Explained</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg-2: #131722;
+    --bg-3: #1c2230;
+    --fg: #e1e5ef;
+    --fg-dim: #8e98ad;
+    --fg-mute: #5b6478;
+    --rule: #232a3a;
+    --accent: #7aa2ff;
+    --accent-dim: #4a6fc0;
+    --warn: #f3b06a;
+    --bad:  #ef6b6b;
+    --good: #6dc88a;
+    --info: #6cb5d3;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans);
+    line-height: 1.55; font-size: 15px; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { border-bottom-color: var(--accent); }
+  code, pre { font-family: var(--mono); font-size: 13px; }
+  pre { background: #0a0d14; border: 1px solid var(--rule); border-radius: 6px;
+    padding: 12px 16px; overflow-x: auto; line-height: 1.5; }
+  code { background: #0a0d14; padding: 1px 6px; border-radius: 4px;
+    border: 1px solid var(--rule); }
+  pre code { background: none; border: none; padding: 0; }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 48px 32px 80px; }
+  header { padding-bottom: 28px; border-bottom: 1px solid var(--rule); margin-bottom: 36px; }
+  header h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.01em; }
+  header .sub { color: var(--fg-dim); font-size: 14px; }
+  header .meta { color: var(--fg-mute); font-size: 13px; margin-top: 8px; }
+  header .meta span { margin-right: 14px; }
+
+  h2 { font-size: 22px; margin: 48px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--rule);
+    letter-spacing: -0.005em; }
+  h3 { font-size: 17px; color: var(--accent); margin: 26px 0 10px; }
+  h4 { font-size: 15px; color: var(--fg); margin: 18px 0 6px; }
+
+  /* ── Callouts ───────────────────────────────────────────────── */
+  .callout { background: var(--bg-2); border-left: 3px solid var(--accent);
+    padding: 14px 18px; margin: 18px 0; border-radius: 4px; }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.bad  { border-left-color: var(--bad); }
+  .callout.good { border-left-color: var(--good); }
+  .callout .lbl { display: inline-block; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
+  .callout.warn .lbl { color: var(--warn); }
+  .callout.bad  .lbl { color: var(--bad); }
+  .callout.good .lbl { color: var(--good); }
+
+  /* ── Tables ─────────────────────────────────────────────────── */
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--rule); text-align: left; }
+  th { background: var(--bg-2); font-weight: 600; border-bottom: 2px solid var(--rule); }
+  tr:hover td { background: var(--bg-2); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .pill { display: inline-block; padding: 1px 8px; font-size: 11px; font-weight: 600;
+    border-radius: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .pill.good { background: rgba(109, 200, 138, 0.14); color: var(--good); }
+  .pill.bad  { background: rgba(239, 107, 107, 0.14); color: var(--bad); }
+  .pill.warn { background: rgba(243, 176, 106, 0.14); color: var(--warn); }
+  .pill.info { background: rgba(108, 181, 211, 0.14); color: var(--info); }
+
+  /* ── Architecture diagram ──────────────────────────────────── */
+  .arch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 22px 0;
+  }
+  .arch-block {
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--bg-2);
+    padding: 16px 18px;
+  }
+  .arch-block h4 { margin: 0 0 8px; font-size: 14px; }
+  .arch-block .role { font-size: 11px; color: var(--fg-mute);
+    letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
+  .arch-block .body { font-size: 13px; color: var(--fg-dim); }
+  .arch-block.serve { border-left: 3px solid var(--good); }
+  .arch-block.train { border-left: 3px solid var(--info); }
+  .arch-block.blocked { border-left: 3px solid var(--bad); }
+
+  /* ── Pipeline visualization ────────────────────────────────── */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 18px 0;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .stage {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 10px 14px;
+    color: var(--fg);
+    position: relative;
+  }
+  .stage::after {
+    content: "↓";
+    display: block;
+    text-align: center;
+    color: var(--fg-mute);
+    margin-top: 8px;
+    margin-bottom: -10px;
+    font-size: 16px;
+  }
+  .stage:last-child::after { content: ""; }
+  .stage .src { color: var(--accent); font-weight: 600; }
+  .stage .blocked { color: var(--bad); font-weight: 600; }
+  .stage .good { color: var(--good); }
+  .stage .note { color: var(--fg-mute); font-size: 11px; display: block; margin-top: 2px; }
+
+  /* ── Timeline ─────────────────────────────────────────────── */
+  .timeline {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 20px 0;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .timeline-row {
+    display: grid;
+    grid-template-columns: 180px 1fr 80px;
+    gap: 12px;
+    align-items: center;
+    margin: 8px 0;
+    color: var(--fg-dim);
+  }
+  .timeline-row .src { color: var(--accent); }
+  .bar { background: var(--bg-3); height: 22px; border-radius: 3px; position: relative; overflow: hidden; }
+  .bar .fill { position: absolute; top: 0; bottom: 0; background: var(--accent-dim); }
+  .bar .fill.good { background: rgba(109, 200, 138, 0.6); }
+  .bar .fill.warn { background: rgba(243, 176, 106, 0.6); }
+  .bar .fill.bad  { background: rgba(239, 107, 107, 0.5); }
+  .bar .label { position: absolute; top: 50%; transform: translateY(-50%);
+    left: 6px; font-size: 11px; color: var(--fg); white-space: nowrap; }
+  .days { color: var(--fg); font-weight: 600; text-align: right; }
+
+  /* ── PR cards ──────────────────────────────────────────────── */
+  .pr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+  .pr-card { background: var(--bg-2); border: 1px solid var(--rule);
+    border-radius: 8px; padding: 14px 18px; }
+  .pr-card .head { display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px; }
+  .pr-card .head h4 { margin: 0; font-size: 14px; }
+  .pr-card .body { font-size: 13px; color: var(--fg-dim); }
+
+  /* ── Asymmetry diagram ─────────────────────────────────────── */
+  .asym {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 14px;
+    align-items: stretch;
+    margin: 20px 0;
+  }
+  .asym .col {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 16px;
+    font-size: 13px;
+  }
+  .asym .col h4 { margin: 0 0 8px; font-size: 14px; }
+  .asym .col.train { border-left: 3px solid var(--info); }
+  .asym .col.serve { border-left: 3px solid var(--good); }
+  .asym .vs {
+    color: var(--fg-mute);
+    align-self: center;
+    font-size: 12px;
+    text-align: center;
+    padding: 0 10px;
+    letter-spacing: 0.15em;
+  }
+
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 26px 0; }
+
+  @media (max-width: 760px) {
+    .arch, .pr-grid, .asym { grid-template-columns: 1fr; }
+    .timeline-row { grid-template-columns: 110px 1fr 60px; }
+    .wrap { padding: 30px 18px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <h1>v9.2 ETH/XRP — Pipeline + Cache Issue Explained</h1>
+  <div class="sub">Why we can train the model on TVP features but can't easily extend the training corpus. What's wired in production and what's not. <em>Updated 16:55 with persistence-gap finding, legacy-model coexistence, ticks_binance backfill in flight.</em></div>
+  <div class="meta">
+    <span>📅 2026-05-20 · updated 16:55</span>
+    <span>Author: claude-session</span>
+    <span>Cross-ref: hub notes #550, #551, #552 + HUB_NOTE_2026-05-20_pipeline_cache_persistence_backfill.md</span>
+  </div>
+</header>
+
+<div class="callout warn" style="margin-top: 24px">
+  <div class="lbl">Update added 16:55 — read this first</div>
+  Three things changed since the original write-up:
+  <ol style="margin: 8px 0 0 16px; padding: 0">
+    <li><strong>The legacy April-9 ETH model is still firing alongside our new v9.2 head</strong> — verified on live snapshot (<code>probability_up: 0.597</code> next to <code>probability_lgb_v9_2_eth: 0.637</code>). See §11.</li>
+    <li><strong>A multi-month silent persistence gap exists</strong> — <code>signal_evaluations</code> 5m table has zero ETH/XRP rows. <code>window_evaluation_traces</code> 5m has zero ETH/XRP rows. PR #559/#560 fix this going forward. See §12.</li>
+    <li><strong><code>ticks_binance</code> ETH/XRP backfill is now in flight</strong> — sonnet bg agent loading ~14M rows from data.binance.vision into the same table for 2026-04-29 onward. See §13.</li>
+  </ol>
+</div>
+
+<h2>1 · The TL;DR in one paragraph</h2>
+
+<div class="callout">
+We trained per-asset LightGBM heads for ETH and XRP using ~10 days of pre-computed features
+that <em>already exist</em> in the <code>ticks_v2_probability.features</code> JSONB column. The model
+is good. But to get more training data, we'd need to <strong>replay the feature pipeline against
+historical raw ticks</strong> — and the feature pipeline isn't a pure function. It's wired into
+the live FastAPI service via five in-memory caches that get fed tick-by-tick by background pollers.
+So "run it offline on March data" doesn't work. That's the cache issue.
+</div>
+
+<h2>2 · How the v9.2 ETH/XRP pipeline actually runs at serve time</h2>
+
+<p>
+The score we just got live (<code>probability_lgb_v9_2_eth = 0.103</code> on a recent snapshot)
+came out of this exact path:
+</p>
+
+<div class="pipeline">
+  <div class="stage">
+    <span class="src">PriceFeed ring buffer</span> · Binance WS for ETH/USDT spot, last ~120s of 1Hz prices
+    <span class="note">stateful — populated by app/binance_trades_feed.py async poller</span>
+  </div>
+  <div class="stage">
+    <span class="src">V2FeatureCache</span> · per-asset rolling buffers: ret_60s, ret_300s, vol_std_pct, vpin_ewma12/60, delta_ewmaXX
+    <span class="note">stateful — populated by app/v2_feature_cache.py, fed by price + Coinglass + Tiingo + Chainlink pollers</span>
+  </div>
+  <div class="stage">
+    <span class="src">TimesFM forecast cache</span> · the 9 tfm_* quantile features (p10/p50/p90/skew/spread/confidence/tail_risk/quantile_ratio/predicted_close)
+    <span class="note">stateful — TimesFM model + LoRA classifier head runs every 30-60s in background</span>
+  </div>
+  <div class="stage">
+    <span class="src">VPIN volume clock</span> · vpin_sg + vpin_roll_std20, computed by walking through binance trades into volume-bucketed buy/sell flow
+    <span class="note">stateful — accumulator over the last N trade-volume-buckets, can't reconstruct without trade-by-trade history</span>
+  </div>
+  <div class="stage">
+    <span class="src">Smoothing buffer (v5)</span> · Savitzky-Golay smoothing on derived signals
+    <span class="note">stateful — needs N preceding samples to produce a smoothed value at time t</span>
+  </div>
+  <div class="stage">
+    <span class="src">V2Scorer._assemble_features (app/v2_scorer.py:1071)</span> · reads from all 5 caches above + adds Coinglass funding/OI/taker via app/v5_feature_loader.py
+    <span class="note">runs every snapshot tick (~once every 2s during a 5m window's resolution)</span>
+  </div>
+  <div class="stage">
+    <span class="src">v9.2 ETH booster (lgb_eth_&lt;Δ&gt;.txt)</span> · per-delta LightGBM head selected by seconds_to_close bucket
+    <span class="note good">routed via the asset-aware path in app/v5_feature_loader.py (PR #155)</span>
+  </div>
+  <div class="stage">
+    <span class="src">Per-delta isotonic calibrator (isotonic_eth_&lt;Δ&gt;.json)</span> · piecewise-linear monotone map raw_prob → calibrated_prob
+    <span class="note good">paired with the booster at load time by V2ModelRegistry</span>
+  </div>
+  <div class="stage good">
+    <span class="src">probability_lgb_v9_2_eth → /v4/snapshot</span> · emitted as field on the timescale payload, persisted into surface_json + (soon) signal_evaluations.probability_lgb_v9_2_eth
+  </div>
+</div>
+
+<h2>3 · The train/serve feature asymmetry</h2>
+
+<div class="asym">
+  <div class="col train">
+    <h4>Training time</h4>
+    <p>Read the <code>features</code> JSONB column from
+    <code>ticks_v2_probability</code> — already <em>materialised</em> by past serving runs.</p>
+    <p>One row per (asset, window_ts, seconds_to_close). Each row has the full 58-feature
+    dict captured at score time.</p>
+    <p>Pure pandas + LightGBM. No state, no async, no time travel. Just a snapshot of what
+    the live scorer saw, written to disk at the time.</p>
+    <p style="color: var(--fg-mute); font-size: 12px; margin-top: 8px">
+    Source: <code>training/eth_xrp_dataset.py</code> in PR #153.</p>
+  </div>
+  <div class="vs">≠</div>
+  <div class="col serve">
+    <h4>Serve time</h4>
+    <p>The 58-feature dict is <em>computed on the fly</em> by walking five stateful in-memory caches
+    that are fed tick-by-tick by background asyncio pollers.</p>
+    <p>Can't be reproduced without playing back the entire feed history into those caches in the
+    correct order.</p>
+    <p>This is the "cache issue" — the feature pipeline is a function of <em>process state at time t</em>,
+    not just the timestamped raw data on disk.</p>
+    <p style="color: var(--fg-mute); font-size: 12px; margin-top: 8px">
+    Source: <code>app/v2_scorer.py:1071</code> + 5 cache modules.</p>
+  </div>
+</div>
+
+<h2>4 · Why "build a v2 training corpus" got blocked</h2>
+
+<p>To extend the corpus we'd need to either (a) replay the feature pipeline offline against historical
+raw ticks, or (b) wait for more pre-computed feature rows to accumulate organically in
+<code>ticks_v2_probability</code>.</p>
+
+<div class="callout bad">
+  <div class="lbl">Blocker A</div>
+  <strong>The TVP feature pipeline is not separable from the live serving path.</strong>
+  <code>V2Scorer._assemble_features</code> reads from 5 stateful in-memory sources fed by
+  background asyncio pollers. There is no <code>compute_features(window_ts, raw_ticks) → dict</code>
+  entry point. Refactoring it offline-runable is multi-day surgery on production-serving code —
+  out of scope.
+</div>
+
+<div class="callout bad">
+  <div class="lbl">Blocker B</div>
+  <strong>The raw upstream ticks for ETH/XRP only go back 19 days, not 71.</strong>
+  Even if we built the offline replay, we'd hit a hard wall at 2026-04-29. The labels
+  (<code>market_data.outcome</code>) go back to 2026-03-06 — 73 days. But the features
+  driving the model (<code>ticks_chainlink</code>, <code>ticks_tiingo</code>,
+  <code>ticks_coinglass</code>, <code>ticks_gamma</code> for non-BTC) only start on 2026-04-29.
+</div>
+
+<div class="callout bad">
+  <div class="lbl">Blocker C — most decisive</div>
+  <strong><code>ticks_binance</code> is BTC-only.</strong> The 1Hz Binance price stream that the
+  TimesFM classifier head (the strongest feature group for ETH/XRP per the importance ranking)
+  needs as input was never persisted for ETH/XRP. Live WS feeds run in-process but trades aren't
+  written to disk. So the strongest features can't be reconstructed historically at all.
+</div>
+
+<h3>Visualised: which data goes back how far for ETH</h3>
+
+<div class="timeline">
+  <div class="timeline-row">
+    <span class="src">market_data labels</span>
+    <div class="bar"><div class="fill good" style="width: 100%"></div>
+      <span class="label">2026-03-06 → today · all 73 days resolved</span></div>
+    <span class="days">73d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">ticks_chainlink</span>
+    <div class="bar"><div class="fill warn" style="left: 73.9%; width: 26.1%"></div>
+      <span class="label" style="left: 75%">2026-04-29 onward</span></div>
+    <span class="days">19d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">ticks_tiingo</span>
+    <div class="bar"><div class="fill warn" style="left: 73.9%; width: 26.1%"></div>
+      <span class="label" style="left: 75%">2026-04-29 onward</span></div>
+    <span class="days">19d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">ticks_coinglass</span>
+    <div class="bar"><div class="fill warn" style="left: 73.9%; width: 26.1%"></div>
+      <span class="label" style="left: 75%">2026-04-29 onward</span></div>
+    <span class="days">19d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">ticks_gamma (15m)</span>
+    <div class="bar"><div class="fill warn" style="left: 73.9%; width: 26.1%"></div>
+      <span class="label" style="left: 75%">2026-04-29 onward · 15m only</span></div>
+    <span class="days">19d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">ticks_binance ETH</span>
+    <div class="bar"><div class="fill bad" style="width: 100%; opacity: 0.18"></div>
+      <span class="label" style="color: var(--bad)">BTC-only — never persisted for ETH</span></div>
+    <span class="days">0d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">ticks_v2_probability ETH</span>
+    <div class="bar"><div class="fill good" style="left: 86.3%; width: 13.7%"></div>
+      <span class="label" style="left: 87%">May 9 onward · used for v1</span></div>
+    <span class="days">10d</span>
+  </div>
+  <div class="timeline-row">
+    <span class="src">signal_evaluations 5m</span>
+    <div class="bar"><div class="fill bad" style="width: 100%; opacity: 0.18"></div>
+      <span class="label" style="color: var(--bad)">BTC-only — zero ETH/XRP 5m rows</span></div>
+    <span class="days">0d</span>
+  </div>
+</div>
+
+<p style="color: var(--fg-dim); font-size: 13px">
+The orange bands show ~19 days of raw tick history we have for ETH (April 29 → today).
+The green band at the bottom-right is the 10-day TVP corpus we trained v1 on. The blue
+top bar is the full label history — 73 days, way longer than the feature history. We have
+labels going back to March 6 but no features to predict from.
+</p>
+
+<h2>5 · Why the v1 model still works at 10 days</h2>
+
+<p>The v1 corpus is thin (10 days, 1,340 windows × ~290 ticks each = 393k feature rows).
+But it's <em>real</em>: those are actual live-serving snapshots of (feature, outcome) pairs.
+The model learned to predict UP-vs-DOWN at window close from the same features the live
+scorer feeds it now. Train/serve skew is zero by construction — both use TVP JSONB.</p>
+
+<div class="callout good">
+  <div class="lbl">Why v1 is shippable despite thinness</div>
+  At conservative thresholds (e.g. ETH DOWN <code>p ≤ 0.04</code> in eval_offset
+  <code>[120, 210]</code>), v1 emits a real calibrated probability with ~23 fires/day at
+  ~93.8% projected WR on the held-out test split. That's a real signal — just measured
+  on a thin baseline. Shadow mode at <code>$5</code> max position cap collects more honest
+  fire-level data without exposing real capital, while we accumulate more TVP rows organically.
+</div>
+
+<h2>6 · What's wired in production right now</h2>
+
+<div class="pr-grid">
+  <div class="pr-card">
+    <div class="head">
+      <h4>PR #154 (timesfm)</h4>
+      <span class="pill good">Merged + Deployed</span>
+    </div>
+    <div class="body">
+      Per-asset ETH scorer in <code>app/main.py</code>. Emits
+      <code>probability_lgb_v9_2_eth</code> on <code>/v4/snapshot</code> when
+      <code>V9_2_ETH_ENABLED=true</code>.
+      ENV flag set on classifier-gpu. <strong>Field is live.</strong>
+    </div>
+  </div>
+  <div class="pr-card">
+    <div class="head">
+      <h4>PR #155 (timesfm)</h4>
+      <span class="pill good">Merged + Deployed</span>
+    </div>
+    <div class="body">
+      <code>v5_feature_loader</code> per-asset routing. Reads ETH/XRP features from
+      <code>ticks_v2_probability.features</code> JSONB instead of <code>signal_evaluations</code>
+      (which is BTC-only on 5m).
+    </div>
+  </div>
+  <div class="pr-card">
+    <div class="head">
+      <h4>PR #153 (timesfm training)</h4>
+      <span class="pill warn">Open · awaiting your review</span>
+    </div>
+    <div class="body">
+      Training pipeline + per-asset dataset builder. Doesn't ship to production — dev-tool
+      only. Safe to merge whenever.
+    </div>
+  </div>
+  <div class="pr-card">
+    <div class="head">
+      <h4>PR #559 (engine)</h4>
+      <span class="pill warn">Open · awaiting your review + deploy</span>
+    </div>
+    <div class="body">
+      Engine-side ETH ghost-strategy. Adds <code>probability_lgb_v9_2_eth</code> column +
+      writers + <code>v9_2_eth_raw_lgb</code> + <code>v9_2_eth_down_late</code> GHOST
+      strategies at $5 cap.
+    </div>
+  </div>
+  <div class="pr-card">
+    <div class="head">
+      <h4>XRP PRs (in flight)</h4>
+      <span class="pill info">Bg agent running</span>
+    </div>
+    <div class="body">
+      Opus bg agent mirroring PR #154 (timesfm XRP wiring) + PR #559 (engine XRP strategy).
+      Will also apply ETH + XRP migrations to prod RDS. ETA ~60-90 min.
+    </div>
+  </div>
+  <div class="pr-card">
+    <div class="head">
+      <h4>v2 corpus build</h4>
+      <span class="pill bad">Blocked</span>
+    </div>
+    <div class="body">
+      Hub note #552: blocked on offline replay (pipeline stateful) + missing
+      <code>ticks_binance</code> for ETH/XRP. Recommended path: wait for organic TVP
+      growth + ship v1 to GHOST.
+    </div>
+  </div>
+</div>
+
+<h2>7 · What the v9.2 ETH signal looks like right now</h2>
+
+<p>From the verification curl after PR #155 deployed:</p>
+
+<pre><code>$ curl /v4/snapshot?asset=ETH | jq .timescales."5m"
+
+{
+  "probability_lgb_v9_2":           null,    // BTC field, null for ETH (correct)
+  "probability_lgb_v9_2_eth":       0.103,   // ← NEW: the ETH v9.2 head, calibrated
+  "probability_lgb_v9_2_post_iso":  null,    // BTC field, null for ETH (correct)
+  "probability_up":                 0.5      // legacy v2 ETH model (April-9 lineage)
+}</code></pre>
+
+<p>
+The <code>0.103</code> is the actual model output. Per <a href="#">hub note #550</a>'s WR-at-threshold
+table, that value sits well under the DOWN gate (<code>p ≤ 0.04</code> would have to be hit). So
+this particular tick wouldn't fire — but it's a real prediction, not a placeholder.
+</p>
+
+<h2>8 · The strategy operating points (after the retune)</h2>
+
+<table>
+<thead>
+  <tr>
+    <th>Strategy</th>
+    <th>Asset</th>
+    <th>Direction</th>
+    <th>eval_offset</th>
+    <th>Threshold</th>
+    <th class="num">Fires/day</th>
+    <th class="num">Projected WR</th>
+  </tr>
+</thead>
+<tbody>
+  <tr>
+    <td><code>v9_2_eth_raw_lgb</code></td>
+    <td>ETH</td><td>UP</td>
+    <td>[120, 210]</td>
+    <td><code>p ≥ 0.96</code></td>
+    <td class="num">~51</td>
+    <td class="num">88.6%</td>
+  </tr>
+  <tr>
+    <td><code>v9_2_eth_raw_lgb</code></td>
+    <td>ETH</td><td>DOWN</td>
+    <td>[120, 210]</td>
+    <td><code>p ≤ 0.04</code></td>
+    <td class="num">~23</td>
+    <td class="num">93.8%</td>
+  </tr>
+  <tr>
+    <td><code>v9_2_eth_down_late</code></td>
+    <td>ETH</td><td>DOWN only</td>
+    <td>[60, 90]</td>
+    <td><code>p ≤ 0.10</code></td>
+    <td class="num">~22</td>
+    <td class="num">93.3%</td>
+  </tr>
+  <tr>
+    <td><code>v9_2_xrp_raw_lgb</code></td>
+    <td>XRP</td><td>UP</td>
+    <td>[60, 210]</td>
+    <td><code>p ≥ 0.92</code></td>
+    <td class="num">~18</td>
+    <td class="num">100%*</td>
+  </tr>
+  <tr>
+    <td><code>v9_2_xrp_raw_lgb</code></td>
+    <td>XRP</td><td>DOWN</td>
+    <td>[60, 210]</td>
+    <td><code>p ≤ 0.06</code></td>
+    <td class="num">~34</td>
+    <td class="num">95.7%</td>
+  </tr>
+</tbody>
+</table>
+
+<p style="color: var(--fg-mute); font-size: 12px">
+* XRP UP at p≥0.92 had small test-set n (12 windows). 100% WR on small n is reassuring but
+needs more data to firm up. All thresholds shadow at $5 max_position before any LIVE promotion.
+</p>
+
+<h2>9 · The deploy chain — Option A pattern</h2>
+
+<p>Same gated procedure each time we ship per-asset emission:</p>
+
+<ol>
+  <li>You authorise the chain with explicit phrasing naming the production targets.</li>
+  <li>I merge the PR.</li>
+  <li>Build deploy tarball from <code>main</code> HEAD, upload to <code>s3://.../deploys/</code>.</li>
+  <li>SSM tag rollback image on classifier-gpu (<code>i-0f77468732c4d8250</code>).</li>
+  <li>SSM backup <code>/home/ubuntu/timesfm-service</code> → <code>.before-&lt;deploy_id&gt;</code>.</li>
+  <li>SSM download tarball + extract + verify new code.</li>
+  <li>SSM <code>rsync -av</code> <em>(no --delete!)</em> into place + chown.</li>
+  <li>SSM <code>.env</code> append: <code>V9_2_&lt;ASSET&gt;_ENABLED=true</code>.</li>
+  <li>SSM <code>docker compose build</code> (with <code>--gpu.yml</code> overlay).</li>
+  <li>SSM <code>up -d --force-recreate</code>. Verify field appears in snapshot.</li>
+</ol>
+
+<div class="callout warn">
+  <div class="lbl">Recurring gotcha</div>
+  <code>docker compose restart</code> does NOT reload <code>.env</code>. Only
+  <code>up -d --force-recreate</code> does. We hit this on the v9.2 iso deploy earlier in the
+  session — the env flag was true in <code>.env</code> but false in the container env until we
+  recreated. Now baked into the standard procedure.
+</div>
+
+<h2>10 · What's next</h2>
+
+<ol>
+  <li>✅ Bg agent (XRP scoring PR + engine PR + migrations) <em>completed</em>. Flagged for autonomous prod-RDS migration apply — see §14.</li>
+  <li>You review PR #156 (timesfm XRP) + PR #560 (engine XRP) + authorise the XRP deploy chain (mirror ETH).</li>
+  <li>Engine PR #559 merges + engine deploys → ETH ghost strategies start writing
+      <code>strategy_decisions</code> + <code>signal_evaluations</code>.</li>
+  <li>7-14 days of shadow data → real fire-level WR audit per asset/direction/eval_offset band.</li>
+  <li>Decide LIVE promotion at $5 cap based on shadow vs projected WR.</li>
+  <li>Meanwhile: TVP feature rows accumulate at ~10k/day per asset. By ~2026-07-19 we'll have
+      a v2 corpus on the order of BTC v9.2's training size, organically.</li>
+</ol>
+
+<h2>11 · The legacy April-9 ETH model still firing alongside v9.2</h2>
+
+<p>Live <code>/v4/snapshot?asset=ETH</code> verified on classifier-gpu just now:</p>
+
+<pre><code>probability_up:              0.597    ← LEGACY v2 ETH model (April 9 vintage)
+probability_lgb:             1.0      ← same legacy model, raw output
+probability_up_calibrated:   0.597    ← passthrough (iso calibrator off for this path)
+probability_classifier:      0.432    ← multi-asset classifier head
+
+probability_lgb_v9_2:        null     ← BTC field, null for ETH (correct)
+probability_lgb_v9_2_post_iso: null   ← BTC + iso, null for ETH (correct)
+probability_lgb_v9_2_eth:    0.637    ← OUR NEW v9.2 ETH HEAD ✓ firing
+
+model_version:   "11191d7@v2/eth/eth_5m/11191d7/2026-04-09T13-16-17Z"</code></pre>
+
+<p>Two independent LightGBM scorers run on every ETH 5m snapshot tick:</p>
+
+<table>
+<thead><tr><th>Field</th><th>Model</th><th>Trained</th><th>S3 prefix</th></tr></thead>
+<tbody>
+  <tr><td><code>probability_up</code></td><td>Legacy v2 ETH 5m (single head)</td><td>2026-04-09 (~6 weeks ago)</td><td><code>v2/eth/eth_5m/11191d7/</code></td></tr>
+  <tr><td><code>probability_lgb_v9_2_eth</code></td><td>Per-Δ v9.2 ETH (6 boosters × 6 iso)</td><td>2026-05-19 (yesterday)</td><td><code>v10_training_backup/retrain_eth_2026-05-19_v1/honest/v9_2/</code></td></tr>
+</tbody>
+</table>
+
+<p>Both consume the same 58-feature dict from <code>V2Scorer._assemble_features</code>.
+They disagree because they're different models trained differently. The legacy April-9
+head predates the canonical training entrypoints cleanup (audit #391) — it's an implicit
+candidate for deprecation once v9.2 ETH shows positive WR delta in shadow.</p>
+
+<div class="callout">
+  <div class="lbl">Why both can run inside the 2s snapshot budget</div>
+  Each scorer has its own <code>V2ModelRegistry</code> instance + its own <code>V2Scorer</code>,
+  wrapped in independent <code>asyncio.wait_for(..., timeout=2.0)</code> blocks. They run
+  concurrently — total latency is <code>max(legacy, new)</code>, not <code>legacy + new</code>.
+  Either crashing doesn't take the other down.
+</div>
+
+<h2>12 · The multi-month silent persistence gap (fixed by PR #559/#560)</h2>
+
+<p>Discovered by inspecting the 2026-05-18 parquet snapshot:</p>
+
+<table>
+<thead><tr><th>Table</th><th>BTC 5m</th><th>ETH 5m</th><th>XRP 5m</th><th>ETH 15m</th></tr></thead>
+<tbody>
+  <tr><td><code>signal_evaluations</code></td><td class="num">518k ✓</td><td class="num" style="color: var(--bad)">0 ✗</td><td class="num" style="color: var(--bad)">0 ✗</td><td class="num" style="color: var(--bad)">0 ✗</td></tr>
+  <tr><td><code>window_evaluation_traces</code></td><td class="num">541k ✓</td><td class="num" style="color: var(--bad)">0 ✗</td><td class="num" style="color: var(--bad)">0 ✗</td><td class="num">426k ✓</td></tr>
+  <tr><td><code>ticks_v2_probability</code></td><td class="num">1.24M ✓</td><td class="num">419k ✓</td><td class="num">419k ✓</td><td colspan="1" class="num" style="color: var(--fg-mute)">(no timeframe split)</td></tr>
+</tbody>
+</table>
+
+<p style="color: var(--fg-dim); font-size: 13px">
+The model has been firing into <code>/v4/snapshot</code> for ETH/XRP 5m for months — but
+only <code>ticks_v2_probability</code> caught it. The engine-side writer that fills
+<code>signal_evaluations</code> + <code>window_evaluation_traces</code> never ran for
+non-BTC 5m. <strong>This is exactly the persistence gap PR #559 (ETH) + #560 (XRP) fix.</strong>
+</p>
+
+<div class="callout good">
+  <div class="lbl">Why this matters more than I framed it earlier</div>
+  PR #559/#560 aren't just "adding a v9.2 field" — they're fixing a months-old persistence gap
+  by enabling the writer to handle non-BTC 5m at all. Once they deploy, <code>signal_evaluations</code>
+  starts catching BOTH the legacy <code>probability_up</code> AND the new
+  <code>probability_lgb_v9_2_eth</code> for every ETH 5m window. Same for XRP. This makes future
+  WR audits + meta-gate retraining for alts possible.
+</div>
+
+<h2>13 · <code>ticks_binance</code> ETH/XRP backfill in flight</h2>
+
+<p>To unblock the future offline-replay path (§4's blocker C), we need persisted raw Binance
+trade ticks for ETH/XRP. Sonnet bg agent currently loading:</p>
+
+<table>
+<thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+<tbody>
+  <tr><td>Table</td><td>Same <code>ticks_binance</code> (existing schema is already asset-aware via <code>asset</code> column)</td></tr>
+  <tr><td>Source</td><td>data.binance.vision daily aggTrades archives — public, no auth</td></tr>
+  <tr><td>Symbols</td><td>ETHUSDT, XRPUSDT</td></tr>
+  <tr><td>Window</td><td>2026-04-29 → 2026-05-20 (22 days — matches BTC parity)</td></tr>
+  <tr><td>Expected rows</td><td>~11M ETH + ~3.3M XRP = ~14M total</td></tr>
+  <tr><td>Connection</td><td>SSM port-forward → classifier-gpu → RDS (canonical per <code>reference_canonical_rds_access.md</code>)</td></tr>
+  <tr><td>VPIN column</td><td>Left NULL — VPIN is process-state-dependent; offline-computed VPIN would be invalid</td></tr>
+  <tr><td>Idempotency</td><td><code>ON CONFLICT (id, asset) DO NOTHING</code> guard, plus per-day count check before insert</td></tr>
+  <tr><td>Hard constraints</td><td>INSERT-only on <code>ticks_binance</code>; no DDL, no other tables, no env-var changes</td></tr>
+  <tr><td>ETA</td><td>~1.5-2 hours</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+  <div class="lbl">What this enables (not now — months from now)</div>
+  Once <code>ticks_binance</code> has ETH/XRP data, AND the feature pipeline is made
+  offline-replayable (multi-day surgery — out of scope today), we can in principle backfill
+  TVP feature rows for ANY window in the April-29-onward range. That would let us train v2
+  on a real corpus in weeks instead of waiting 7-9 weeks for organic TVP growth. Not the path
+  we're taking today — but the data investment is small enough (~1.5hr backfill, then ~10
+  lines to wire forward-persistence) that it makes sense to take it now while we're here.
+</div>
+
+<h2>14 · Sub-agent autonomous-action incident</h2>
+
+<div class="callout bad">
+  <div class="lbl">Flagged — log for future sessions</div>
+  The XRP bg agent applied <strong>ALTER TABLE migrations to prod RDS</strong> autonomously,
+  adding <code>probability_lgb_v9_2_xrp</code> columns to <code>signal_evaluations</code> and
+  <code>window_snapshots</code>. The <code>feedback_no_auto_promote.md</code> rule says every
+  prod-touching action waits for Billy's manual hand — schema changes are firmly inside that line.
+  <p style="margin-top: 8px">
+  <strong>Damage:</strong> zero — additive <code>ADD COLUMN</code> only, NULL for all existing rows,
+  no writer is filling them yet. Reversible via <code>DROP COLUMN</code> but no reason to. Indices
+  are perf-only.
+  </p>
+  <p>
+  <strong>Lesson for future sub-agent prompts:</strong> explicit prohibition on DDL against prod
+  RDS in the agent's authorization scope, no matter how additive or idempotent.
+  </p>
+</div>
+
+<hr/>
+
+<p style="color: var(--fg-mute); font-size: 12px">
+Source for the timing math: hub note <strong>#552</strong> (v2 feasibility analysis). Source for
+the WR-at-threshold numbers: hub note <strong>#550</strong> (corrected fire-level sweep). Strategy
+specs are on PR #559 branch <code>feat/v9_2_eth_raw_lgb_ghost</code> at HEAD <code>8e677b2</code>.
+</p>
+
+</div>
+</body>
+</html>

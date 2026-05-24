@@ -1,0 +1,1216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Prediction-Market AI &mdash; novakash training guide</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg-panel: #161b22;
+    --bg-elev: #1c232c;
+    --fg: #d7dde4;
+    --fg-dim: #8b96a3;
+    --fg-mute: #5c6773;
+    --rule: #232c36;
+    --rule-strong: #324052;
+    --accent: #d4a35a;          /* warm brass — the single strong accent */
+    --accent-soft: #d4a35a33;
+    --good: #6cb377;
+    --warn: #d18d57;
+    --bad: #c0656b;
+    --info: #6fa0c0;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--fg); margin: 0; padding: 0; font-family: var(--sans); line-height: 1.55; font-size: 15px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Layout ───────────────────────────────────────────────── */
+  .wrap {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: 0;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  aside.toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow-y: auto;
+    padding: 28px 18px 28px 28px;
+    border-right: 1px solid var(--rule);
+    background: var(--bg-panel);
+  }
+  aside.toc h1 { font-size: 15px; color: var(--accent); margin: 0 0 4px; letter-spacing: 0.5px; }
+  aside.toc .sub { font-size: 12px; color: var(--fg-mute); margin-bottom: 20px; }
+  aside.toc ol { padding-left: 18px; margin: 0; }
+  aside.toc li { font-size: 13px; margin: 6px 0; }
+  aside.toc a { color: var(--fg-dim); }
+  aside.toc a:hover { color: var(--fg); text-decoration: none; }
+  aside.toc .toc-section { margin-top: 18px; font-size: 11px; color: var(--fg-mute); letter-spacing: 0.8px; text-transform: uppercase; }
+
+  main { padding: 40px 56px 80px; min-width: 0; }
+  .hero { border-bottom: 1px solid var(--rule); padding-bottom: 28px; margin-bottom: 36px; }
+  .hero h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.3px; font-weight: 600; }
+  .hero .tag { color: var(--accent); font-family: var(--mono); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+  .hero p.lead { color: var(--fg-dim); max-width: 70ch; margin: 14px 0 0; }
+  .meta-bar { display: flex; gap: 22px; flex-wrap: wrap; margin-top: 18px; font-size: 12px; color: var(--fg-mute); font-family: var(--mono); }
+  .meta-bar span b { color: var(--fg); font-weight: 500; }
+
+  section { margin-bottom: 56px; scroll-margin-top: 20px; }
+  section > h2 {
+    font-size: 22px; font-weight: 600; margin: 0 0 4px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--rule);
+    letter-spacing: -0.2px;
+  }
+  section > h2 .num { color: var(--accent); font-family: var(--mono); margin-right: 10px; font-size: 14px; vertical-align: 3px; }
+  section .summary { color: var(--fg-dim); font-style: italic; margin: 14px 0 22px; max-width: 75ch; }
+  h3 { font-size: 17px; margin: 32px 0 8px; color: var(--fg); font-weight: 600; }
+  h4 { font-size: 14px; margin: 22px 0 6px; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  p { margin: 0 0 12px; max-width: 78ch; }
+
+  /* ── Callouts ─────────────────────────────────────────────── */
+  .callout {
+    border-left: 3px solid var(--rule-strong);
+    background: var(--bg-panel);
+    padding: 12px 16px;
+    margin: 16px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout.why     { border-color: var(--info); }
+  .callout.gotcha  { border-color: var(--bad);  }
+  .callout.example { border-color: var(--accent); }
+  .callout.drill   { border-color: var(--good); }
+  .callout.case    { border-color: var(--warn); }
+  .callout .lab {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: var(--fg-mute);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+  }
+  .callout.why    .lab { color: var(--info); }
+  .callout.gotcha .lab { color: var(--bad);  }
+  .callout.example .lab { color: var(--accent); }
+  .callout.drill  .lab { color: var(--good); }
+  .callout.case   .lab { color: var(--warn); }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* ── Code ─────────────────────────────────────────────────── */
+  pre, code { font-family: var(--mono); }
+  code { background: var(--bg-elev); color: var(--fg); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; border: 1px solid var(--rule); }
+  pre {
+    background: var(--bg-elev);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: #c8d3df;
+    margin: 14px 0;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; }
+  .filepath { display: inline-block; font-family: var(--mono); font-size: 11px; color: var(--fg-mute); margin-bottom: 4px; padding-left: 4px; }
+  pre + .filepath, .filepath + pre { margin-top: 4px; }
+
+  /* ── Tables ───────────────────────────────────────────────── */
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; font-size: 13px; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--rule-strong); }
+  td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+  td.mono { font-family: var(--mono); font-size: 12px; }
+  td.good { color: var(--good); }
+  td.bad { color: var(--bad); }
+
+  /* ── Badges + chips ───────────────────────────────────────── */
+  .chip { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 1px 7px; border: 1px solid var(--rule-strong); border-radius: 3px; color: var(--fg-dim); margin-right: 4px; }
+  .chip.live { color: var(--good); border-color: var(--good); }
+  .chip.ghost { color: var(--warn); border-color: var(--warn); }
+  .chip.dead { color: var(--bad); border-color: var(--bad); }
+  .ref { font-family: var(--mono); font-size: 11px; color: var(--fg-mute); }
+  .pill { background: var(--accent-soft); color: var(--accent); padding: 1px 8px; border-radius: 99px; font-size: 11px; font-family: var(--mono); }
+
+  /* ── Module cards ─────────────────────────────────────────── */
+  .modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 18px; margin: 22px 0; }
+  .module {
+    background: var(--bg-panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 18px 20px;
+  }
+  .module h3 { margin: 0 0 4px; font-size: 16px; }
+  .module .week { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: 1px; }
+  .module ul { padding-left: 20px; margin: 8px 0; font-size: 13px; }
+  .module li { margin: 3px 0; color: var(--fg-dim); }
+  .module li b { color: var(--fg); font-weight: 500; }
+  .module .check { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--rule); font-size: 12.5px; color: var(--fg-dim); }
+  .module .check b { color: var(--good); font-weight: 600; }
+
+  /* ── Diagrams (ASCII-ish) ─────────────────────────────────── */
+  .diagram {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.45;
+    background: var(--bg-panel);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 16px 20px;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--fg-dim);
+    margin: 16px 0;
+  }
+  .diagram .hl { color: var(--accent); }
+  .diagram .ok { color: var(--good); }
+  .diagram .bad { color: var(--bad); }
+
+  hr { border: none; border-top: 1px solid var(--rule); margin: 36px 0; }
+
+  /* ── Responsive ───────────────────────────────────────────── */
+  @media (max-width: 980px) {
+    .wrap { grid-template-columns: 1fr; }
+    aside.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--rule); }
+    main { padding: 30px 22px 60px; }
+    .modules { grid-template-columns: 1fr; }
+  }
+
+  details summary {
+    cursor: pointer;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  details[open] summary { color: var(--fg); }
+
+  ul.tight { margin: 4px 0 12px; padding-left: 20px; }
+  ul.tight li { margin: 2px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ──────────────────── TOC ──────────────────── -->
+<aside class="toc">
+  <h1>novakash</h1>
+  <div class="sub">prediction-market AI<br/>training guide &amp; course concept</div>
+  <div class="toc-section">PART I &mdash; Reference</div>
+  <ol>
+    <li><a href="#problem">Problem space</a></li>
+    <li><a href="#models">Model zoo</a></li>
+    <li><a href="#features">Feature engineering</a></li>
+    <li><a href="#training">Training pipeline</a></li>
+    <li><a href="#execution">Execution layer</a></li>
+    <li><a href="#gating">Decision &amp; gating</a></li>
+    <li><a href="#calibration">Calibration</a></li>
+    <li><a href="#infra">Infrastructure</a></li>
+    <li><a href="#discipline">Discipline &amp; culture</a></li>
+  </ol>
+  <div class="toc-section">PART II &mdash; Curriculum</div>
+  <ol start="10">
+    <li><a href="#curriculum">6-week course</a></li>
+  </ol>
+  <div class="toc-section">Appendix</div>
+  <ol start="11" style="list-style:none; padding-left:0;">
+    <li style="margin-left:-12px;"><a href="#glossary">Glossary</a></li>
+    <li style="margin-left:-12px;"><a href="#openq">Open questions</a></li>
+  </ol>
+</aside>
+
+<!-- ──────────────────── BODY ──────────────────── -->
+<main>
+
+<header class="hero">
+  <div class="tag">prediction-market AI &middot; internal training guide</div>
+  <h1>Trading binary outcome markets with a stacked ML pipeline.</h1>
+  <p class="lead">
+    A grounded, opinionated walkthrough of how the novakash stack predicts 5-minute Polymarket BTC binary
+    outcomes &mdash; from raw orderbook ticks through LightGBM boosters, isotonic calibration, per-strategy
+    meta-gates, and a 2-shot FAK execution ladder. Optimised for a sharp ML engineer joining the team or a
+    future self skimming this on a plane.
+  </p>
+  <div class="meta-bar">
+    <span>compiled: <b>2026-05-18</b></span>
+    <span>branch: <b>fix/gate-feature-ordering-gamma</b></span>
+    <span>host: <b>dev box (RTX 3060)</b></span>
+    <span>audience: <b>ML eng, week-0 onboard</b></span>
+    <span>read time: <b>~75 min deep, ~20 min skim</b></span>
+  </div>
+</header>
+
+<!-- ============== 1. PROBLEM SPACE ============== -->
+<section id="problem">
+  <h2><span class="num">01</span>The problem space</h2>
+  <p class="summary">Polymarket BTC 5-minute binary outcome markets: every five minutes the asset either closed up
+  or down vs the open price. You sell or buy YES/NO shares between &cent;1 and &cent;99 of payoff. The market
+  resolves in &lt; 5 minutes, you get instant PnL feedback, and the cycle starts again.</p>
+
+  <h3>What we are actually predicting</h3>
+  <p>For each 5-minute window <code>w</code> with open price <code>p<sub>open</sub></code> and close
+    <code>p<sub>close</sub></code>, the outcome is binary:</p>
+  <pre><code>UP    if p_close &gt; p_open
+DOWN  if p_close &lt; p_open
+(ties resolve per the Polymarket spec; rare on BTC 5m)</code></pre>
+  <p>The model emits <code>P(UP | features at tick t)</code>. <code>t</code> is parameterised by
+    <code>eval_offset</code>: <b>seconds remaining until the window resolves</b> &mdash; not seconds since open.
+    This is a recurring source of confusion; it matters because the signal-to-noise ratio collapses as
+    <code>eval_offset</code> grows (less recent price information; more time for the underlying to move). See
+    <span class="ref">hub note #524</span> for the verification that established this convention against the
+    actual data.</p>
+
+  <div class="callout why">
+    <div class="lab">WHY binary, 5m, crypto</div>
+    <p><b>High volume.</b> BTC/ETH 5m markets have the deepest CLOB books on Polymarket, sometimes thousands
+    of dollars of YES depth within a 3&cent; spread.<br/>
+    <b>Fast resolution.</b> Win/loss feedback in &lt; 5 min &mdash; a real PnL loop you can train against in
+    days, not months.<br/>
+    <b>Cleaner labels.</b> The outcome is exogenous (CEX last trade in resolution window). No referee, no
+    subjectivity, no dispute window.</p>
+  </div>
+
+  <h3>The market microstructure you have to budget around</h3>
+  <ul class="tight">
+    <li><b>FAK execution.</b> Fill-and-kill: take whatever exists at your cap, cancel the rest. No resting orders.
+      This is the only safe primitive on Polymarket where flicker-fills at bad prices can wreck a 90% WR signal.</li>
+    <li><b>Partial fills.</b> The CLOB book on the YES side at &cent;87 might be $40 deep when you wanted $100.
+      You record the partial, your effective stake is smaller than intended, Kelly maths needs to know.</li>
+    <li><b>Slippage budget.</b> Strategy declares <code>entry_cap</code> (price floor for fills). The execution layer
+      tries the cap, then cap + 3.14&cent;, then stops. The realized spread between mid and fill price is your
+      friction tax (~4&ndash;6pp of expected edge per <span class="ref">#526</span>).</li>
+    <li><b>Book vs Gamma propagation lag.</b> A freshly-rolled 5m market has valid Gamma metadata seconds before the
+      CLOB books are indexed. The first FAK in that race window 404s with <code>No orderbook exists</code>; we treat
+      it as a benign skip, not an error (<code>BOOK_404_MAX_RETRIES=1</code>).</li>
+  </ul>
+
+  <div class="callout example">
+    <div class="lab">EXAMPLE &mdash; a winning tick</div>
+    <p>Window <code>1779117900</code>, T-105s. Engine sees <code>probability_lgb_v9_2 = 0.81</code>, well above
+    the 0.75 UP threshold. CLOB UP-side best ask = 84&cent;. We FAK at <code>entry_cap=0.89</code> &mdash;
+    fills at the actual book price (84&cent;), not at the cap. 105 seconds later BTC closes 0.12% up vs open.
+    +$15 PnL on a $100 stake. Per <span class="ref">#527</span> this is the v9.1 win that v9_2_raw_lgb lost on
+    a stricter conviction-vs-price trade-off.</p>
+  </div>
+</section>
+
+<!-- ============== 2. MODEL ZOO ============== -->
+<section id="models">
+  <h2><span class="num">02</span>The model zoo</h2>
+  <p class="summary">Four generations of LightGBM live in production simultaneously, plus a meta-gate booster
+  per strategy that votes on whether the underlying signal&rsquo;s next call is a probable winner. Knowing
+  which model emits which probability key, where its artefact lives, and what its current operating threshold
+  is &mdash; this is half the onboarding battle.</p>
+
+  <h3>The lineage at a glance</h3>
+  <table>
+    <thead><tr>
+      <th>Generation</th>
+      <th>Probability key</th>
+      <th>Artefact (<code>models/btc_5m/</code>)</th>
+      <th>Features</th>
+      <th>Trainer</th>
+      <th>Current use</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><b>v2 / v3</b> <span class="chip">legacy</span></td>
+        <td><code>v2_probability_up</code></td>
+        <td><code>lgb_btc_{030..240}.txt</code> + per-delta iso</td>
+        <td>~50, 6 per-delta heads</td>
+        <td><code>train_lgb.py</code></td>
+        <td>Feature source for downstream (<code>v2_logit</code> consumed by v5)</td>
+      </tr>
+      <tr>
+        <td><b>v5 / v9</b></td>
+        <td><code>probability_lgb_v9</code></td>
+        <td><code>lgb_btc_v5.txt</code></td>
+        <td>78, single wide model</td>
+        <td><code>train_lgb_v5.py</code></td>
+        <td>Provider for v12; legacy LIVE</td>
+      </tr>
+      <tr>
+        <td><b>v9.1</b> <span class="chip live">LIVE</span></td>
+        <td><code>probability_lgb_v9_1</code></td>
+        <td><code>candidate_ab83564</code> (S3) &mdash; per-delta heads</td>
+        <td>78, priceToBeat-aligned deltas</td>
+        <td><code>train_lgb_v5.py</code></td>
+        <td><code>v9_1_lgb_only</code>: N=3 consec ticks, &ge;0.70 / &le;0.25</td>
+      </tr>
+      <tr>
+        <td><b>v9.2</b> <span class="chip live">LIVE</span></td>
+        <td><code>probability_lgb_v9_2</code></td>
+        <td><code>lgb_btc_v5_optuna.txt</code> + <code>isotonic_btc_v5_refit_candidate.json</code></td>
+        <td>78, Optuna-tuned (37 leaves, depth 7, l2=0.77, lr=0.057)</td>
+        <td><code>train_lgb_v5_optuna.py</code></td>
+        <td><code>v9_2_raw_lgb</code>: N=1 tick, &ge;0.75 / &le;0.20, offset 60&ndash;210</td>
+      </tr>
+      <tr>
+        <td><b>v12</b> <span class="chip live">LIVE</span></td>
+        <td><code>probability_lgb_v12</code></td>
+        <td>per-delta heads, identity-iso on 3-of-4 deltas (<span class="ref">#353 bug 2</span>)</td>
+        <td>78 + v9 score as feature</td>
+        <td><code>train_lgb_v5.py</code> (combo path)</td>
+        <td><code>v12_lgb_combo</code></td>
+      </tr>
+      <tr>
+        <td><b>meta v2</b> <span class="chip ghost">candidate</span></td>
+        <td><code>probability_*_meta_gate</code></td>
+        <td><code>models/btc_5m/meta_v2/*</code> + <code>models/gates/*.txt</code></td>
+        <td>strategy-specific, &le;30, gate_passed family BANNED</td>
+        <td><code>training/meta_v2/</code> (branch <code>feat/meta_classifier_v2</code>, commit 0f05a4e)</td>
+        <td>v9_1, v9_2, v12 strategies emit gate probs in <code>surface_json</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>v9.2 &mdash; the current high-conviction signal</h3>
+  <p>The headline strategy on the box right now. Per <span class="ref">#508</span> + <span class="ref">#528</span>:</p>
+  <ul class="tight">
+    <li>78-feature LightGBM, Optuna-tuned, isotonic-calibrated.</li>
+    <li>Fires <b>UP</b> when <code>probability_lgb_v9_2 &ge; 0.75</code>, <b>DOWN</b> when <code>&le; 0.20</code>.</li>
+    <li>One qualifying tick is enough &mdash; <code>v9_2_raw_lgb</code> intentionally does <i>not</i> use the
+      N-of-M consecutive-tick gate that v9.1 uses.</li>
+    <li><code>eval_offset</code> band: 60&ndash;210 seconds remaining. The cliff at 210 is empirically tight
+      (within-cap WR 93&ndash;98%, beyond-cap collapses to coin-flip).</li>
+    <li>Kelly sizing, <code>fraction=0.025</code>, <code>max_collateral_pct=0.025</code>.</li>
+  </ul>
+
+  <div class="filepath">strategy_configs.config_yaml (v9_2_raw_lgb &mdash; DB-resident, LIVE since 2026-05-13)</div>
+  <pre><code>gate_params:
+  up_threshold:   0.75
+  down_threshold: 0.20
+  eval_offset_min: 60
+  eval_offset_max: 210
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025</code></pre>
+
+  <div class="callout gotcha">
+    <div class="lab">GOTCHA &mdash; strategy configs live in TWO sources</div>
+    <p><code>v9_2_raw_lgb</code> does <b>not</b> exist as a YAML file in the engine repo. It lives in the
+    <code>strategy_configs</code> Postgres table. A naive grep across the sister repo finds nothing
+    &mdash; you must also check the DB. The companion YAML <code>v9_2_super_lgb_only.yaml</code> (an older
+    cohort-gated variant) is checked into git and will mislead you if you stop searching there.
+    Memory note: <code>reference_strategy_configs_two_sources.md</code>.</p>
+  </div>
+
+  <h3>v9.1 &mdash; the conservative workhorse</h3>
+  <p>Honest 7-day held-out forward pass at retrain time: <b>+5.92pp weighted accuracy</b> over v9 PROD across
+  five delta heads (<span class="ref">#313</span>). Uses Polymarket <code>priceToBeat</code> (Chainlink Streams
+  off-chain) for the open-price baseline &mdash; correcting a ~$14.68/window mean-abs drift in the legacy on-chain
+  oracle.</p>
+  <p>Live config: 0.70 UP / 0.25 DOWN, <code>min_consecutive_pass_ticks: 3</code>, <code>min_offset_sec: 45</code>,
+  <code>max_offset_sec: 200</code>. The N=3 conviction gate is the deliberate brake. <span class="ref">#523</span>
+  shows that bumping N to 4 or 5 only delays the fire by 1&ndash;2 ticks rather than blocking a loss; the wrong
+  knob to twist for fill-quality losses.</p>
+
+  <h3>v12 &mdash; v9 + v9.1 as features</h3>
+  <p>Reads v9 PROD <i>and</i> v9.1 outputs as features alongside the rest of the v5 column set. Has
+  per-delta heads. Has an open calibration bug: 3 of 4 deltas (090, 120, 180, 240) ship with identity-iso
+  (raw passthrough) per <span class="ref">#353</span>. v12_meta_gate sits on top.</p>
+
+  <h3>Meta-gates &mdash; <code>P(strategy wins this trade)</code></h3>
+  <p>For each strategy in scope (<code>v9_1_lgb_only</code>, <code>v12_lgb_combo</code>, future
+  <code>v9_2_*</code>), train a LightGBM <b>booster of the strategy&rsquo;s own gate decisions</b>. The label is
+  &ldquo;did this trade win?&rdquo;. The features explicitly <i>exclude</i> the strategy&rsquo;s own gate-pass
+  booleans (see <a href="#features">&sect;3</a>). At serve time, three meta-gate probs land in
+  <code>window_evaluation_traces.surface_json</code>:</p>
+
+  <pre><code>probability_v2_meta_gate    -- P(WIN | features) for v2-led decisions
+probability_v9_2_meta_gate  -- P(WIN | features) for v9.2-led decisions
+probability_v12_meta_gate   -- P(WIN | features) for v12-led decisions</code></pre>
+
+  <div class="callout gotcha">
+    <div class="lab">GOTCHA &mdash; meta-gate keys are full names</div>
+    <p>The shortforms <code>mg92</code>, <code>mg2</code>, <code>mg12</code> do <b>not</b> exist in the JSONB.
+    Use the full <code>probability_v9_2_meta_gate</code> form. <code>signal_evaluations</code> shows 0% for
+    these columns because of a writer bug (PR #536 fix incomplete); the source of truth is
+    <code>window_evaluation_traces.surface_json</code>. <span class="ref">memory/reference_meta_gate_data_location.md</span></p>
+  </div>
+
+  <h3>Sub-signal extractors (v3 family)</h3>
+  <p>Inside <code>app/v3_composite_scorer.py</code> live the multi-signal fusion components that emit
+  features the v5 boosters consume:</p>
+  <ul class="tight">
+    <li><code>v3_composite</code> &mdash; weighted fusion in <code>[-1, +1]</code>: ELM, cascade, taker, OI,
+      funding, VPIN, momentum. Per-timescale weight profiles (5m emphasises ELM + VPIN; weekly emphasises
+      funding + momentum).</li>
+    <li><code>v3_cascade</code> from <code>v3_cascade_estimator.py</code>: cascade FSM state in
+      <code>{CASCADE_UP, CASCADE_DOWN, NO_CASCADE}</code>, with magnitude (<code>v3_cascade_strength</code>),
+      time constant (<code>v3_cascade_tau1</code>), and exhaustion metric.</li>
+    <li><code>v3_taker</code>, <code>v3_oi</code>, <code>v3_funding</code> &mdash; Coinglass-derived flow signals
+      (see <a href="#features">&sect;3</a>).</li>
+  </ul>
+  <p>These are NaN-safe at the booster: missing source &rArr; weight redistributes to remaining signals at the
+  composite, missing column at the booster &rArr; LightGBM&rsquo;s missing-value branch. The latter is the
+  audit #391 trap when it&rsquo;s silently true rather than rare.</p>
+</section>
+
+<!-- ============== 3. FEATURES ============== -->
+<section id="features">
+  <h2><span class="num">03</span>The feature engineering pyramid</h2>
+  <p class="summary">78 features in the v5 column set, in five rough strata: raw market data, engineered
+  micro-features, Coinglass macro, time encodings, and target-encoded cell features. Plus the hard-banned
+  set the meta-gate refuses to even see.</p>
+
+  <div class="diagram">              <span class="hl">PYRAMID OF FEATURES</span>
+                  &#x25B2;
+                 / 1 \         <span class="hl">cell encoding</span>  (target-encoded, walk-fwd)
+                /-----\
+               /  5    \       <span class="hl">time</span>            (session bucket, hour, t-band)
+              /---------\
+             /   ~10     \     <span class="hl">macro</span>           (funding, OI delta, taker ratio,
+            /-------------\                       liquidations, long/short pct)
+           /     ~20       \   <span class="hl">engineered</span>      (vpin, delta_pct, delta_binance,
+          /-----------------\                    delta_chainlink, regime, v3_composite)
+         /       ~40         \ <span class="hl">raw</span>             (CLOB orderbook, binance ticks,
+        /---------------------\                 chainlink, tiingo close,
+                                                price_std_5m, n_ticks_300s)</div>
+
+  <h3>Stratum 1 &mdash; raw market data</h3>
+  <p>Sourced from four feeds and stitched in <code>training/queries.py</code> (LATERAL joins per window) or
+  <code>training/novakash_dataset.py</code> (per-tick from <code>signal_evaluations</code>):</p>
+  <table>
+    <thead><tr><th>Feed</th><th>What it gives us</th><th>Surface keys</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Polymarket CLOB</td>
+        <td>Orderbook for YES/NO sides at each evaluated tick</td>
+        <td class="mono">clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask, clob_spread, clob_mid, clob_imbalance</td>
+      </tr>
+      <tr>
+        <td>Binance futures</td>
+        <td>Reference USD price; 1s tick stream</td>
+        <td class="mono">binance_price, delta_binance, vpin, vpin_mean_60s, vpin_std_60s, vpin_range_60s</td>
+      </tr>
+      <tr>
+        <td>Chainlink (Streams + Aggregator)</td>
+        <td>Resolution oracle for Polymarket (since v9.1 uses Streams via priceToBeat)</td>
+        <td class="mono">chainlink_price, delta_chainlink</td>
+      </tr>
+      <tr>
+        <td>Tiingo</td>
+        <td>5-min OHLC fallback; cross-source disagreement signal</td>
+        <td class="mono">tiingo_close, delta_tiingo, source_delta_divergence</td>
+      </tr>
+      <tr>
+        <td>Polymarket Gamma + HTML</td>
+        <td><code>priceToBeat</code> &mdash; the canonical open price for the active window</td>
+        <td class="mono">gamma_up_price, gamma_down_price, gamma_implied_up, gamma_market_vig</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout gotcha">
+    <div class="lab">GOTCHA &mdash; <code>open_price</code> NULL train-serve skew</div>
+    <p>Between an unknown earlier date and 2026-05-16 19:25 UTC, <code>market_data.open_price</code> NULLed
+    out for the active BTC window because <code>eventMetadata.priceToBeat</code> from Gamma lags or fails to
+    publish for the current window. v9.2 silently fell back to legacy market_data deltas while the model expected
+    priceToBeat-aligned ones &mdash; permanent train-serve skew, model output flat ~0.27 (never fired).
+    Fix: PR #554 &mdash; HTML fallback against <code>__NEXT_DATA__</code> on <code>polymarket.com/event/&lt;slug&gt;</code>.
+    <span class="ref">#522</span>. <i>Any dataset cut you train on must filter to
+    <code>evaluated_at &ge; '2026-05-16 19:25 UTC'</code> for v9.2.</i></p>
+  </div>
+
+  <h3>Stratum 2 &mdash; engineered micro-features</h3>
+  <ul class="tight">
+    <li><code>vpin</code>: volume-synchronized probability of informed trading, recomputed off the binance ticks
+      in <code>app/vpin_volume_clock.py</code>. Mean / std / range over 60s windows.</li>
+    <li><code>delta_pct</code>, <code>delta_binance</code>, <code>delta_chainlink</code>, <code>delta_tiingo</code>:
+      relative move vs open price since the window opened, computed per source. <code>source_delta_divergence</code>
+      = <code>|tiingo_vs_binance - chainlink_vs_binance|</code> &mdash; flags cross-source confusion.</li>
+    <li><code>regime_num</code>: discrete state from <code>v3_regime_classifier.py</code>, one of <code>{CASCADE,
+      TRANSITION, NORMAL, CALM}</code>. v9.2 super excludes <code>CALM</code> entirely (n &lt; 15 fires).</li>
+    <li><code>twap_delta</code>: TWAP vs spot &mdash; mean-reversion / momentum proxy.</li>
+  </ul>
+
+  <h3>Stratum 3 &mdash; Coinglass macro</h3>
+  <p>From <code>app/v2_coinglass_poller.py</code> &rarr; <code>v3_macro_store.py</code> &rarr; cached at
+  <code>ticks_coinglass</code>. Funding rate, open-interest delta, taker buy/sell ratio, long/short %,
+  liquidation deltas. Slow-moving (5-10 min latency typical) &mdash; used as macro context, not entry trigger.</p>
+
+  <h3>Stratum 4 &mdash; time features</h3>
+  <p>SQL-side bucket of UTC hour from <code>training/queries.py:228-232</code>:</p>
+  <pre><code>CASE
+    WHEN EXTRACT(hour FROM window_end) BETWEEN  0 AND  3 THEN 0  -- Late Asian
+    WHEN EXTRACT(hour FROM window_end) BETWEEN  4 AND  8 THEN 1  -- Early Asian
+    WHEN EXTRACT(hour FROM window_end) BETWEEN  9 AND 11 THEN 2  -- London
+    WHEN EXTRACT(hour FROM window_end) BETWEEN 12 AND 16 THEN 3  -- US
+    ELSE 4                                                       -- Evening
+END AS session_bucket</code></pre>
+  <p>Plus raw <code>hour_of_day</code>, <code>minute_of_hour</code>, <code>day_of_week</code>, and a
+  <code>t_band</code> bucketing of <code>eval_offset</code> (30/60-buckets) consumed by the cell encoder.</p>
+
+  <h3>Stratum 5 &mdash; cell encoding</h3>
+  <p>The per-cell layer is target-encoded by walk-forward folds (no leakage) along the composite key:</p>
+  <pre><code>cell_key = direction : t_band : regime : session</code></pre>
+  <p>This is how per-cell WR and per-cell distribution ranges (<code>dist_min</code>, <code>dist_hi</code>) get
+  computed for the &ldquo;cell pause&rdquo; gate (<span class="ref">#379</span> + <span class="ref">#385</span>).
+  Per-cell overrides on <code>param_overrides_by_cell</code> live or die on whether the cell key matches
+  exactly &mdash; <i>no wildcards</i>. The 2026-05-08 audit findings (memory note
+  <code>feedback_runtime_scope_precision</code>) turned into per-cell rows, not a global gate change.</p>
+
+  <h3>The HARD-BANNED features</h3>
+  <p>Inside <code>training/meta_v2/__init__.py</code> (commit <code>0f05a4e</code>):</p>
+  <pre><code>BANNED_FEATURES = frozenset([
+    "gate_passed",
+    "gate_vpin_passed",
+    "gate_delta_passed",
+    "gate_cg_passed",
+    "gate_twap_passed",
+    "gate_timesfm_passed",
+    "gate_pass_count",
+    "v2_agrees",
+    "v2_high_conf",
+    "decision",
+])</code></pre>
+
+  <div class="callout why">
+    <div class="lab">WHY ban these</div>
+    <p>The meta-gate predicts &ldquo;will the strategy&rsquo;s call win?&rdquo;. Its training rows are <i>only</i>
+    decisions that already passed the strategy&rsquo;s gate stack. Feeding <code>gate_passed</code> as a feature
+    makes the model see the constant <code>1.0</code> on every row &mdash; useless at best, leakage when paired
+    with other gate-correlated columns. Worse, in evaluation mode the model sees a different distribution
+    (mixed pass/fail) and learns shortcuts that don&rsquo;t generalise. <code>tests/test_meta_v2_features.py</code>
+    fails-closed if any banned feature sneaks back in.</p>
+  </div>
+</section>
+
+<!-- ============== 4. TRAINING PIPELINE ============== -->
+<section id="training">
+  <h2><span class="num">04</span>The training pipeline</h2>
+  <p class="summary">Two canonical entrypoints. One dataset builder, one trainer. Everything else is the
+  audit #391 anti-pattern.</p>
+
+  <h3>Canonical entrypoints</h3>
+  <pre><code>training.build_dataset      # window-level Parquet (queries.py LATERAL joins)
+training.novakash_dataset   # per-tick from signal_evaluations
+training.train_lgb_v5       # single wide model, eval_offset as feature
+training.train_lgb_v5_optuna # v9.2's variant (37 leaves, depth 7, lr=0.057)</code></pre>
+
+  <div class="callout gotcha">
+    <div class="lab">GOTCHA &mdash; Schema A vs Schema B trainer choice</div>
+    <p>There are two trainers; they look interchangeable; they are not. Default to <code>train_lgb_v5.py</code>
+    (78 features, Schema A) for any v9.x retrain. <code>train_lgb_v5_ticks.py</code> takes the Schema-B path
+    that consumes <code>ticks_v2_probability.features</code> JSONB &mdash; only 29 features. Using it for a
+    v9.x retrain is the audit #391 trap (silently NaN-stubs the missing 49 columns). Memory note:
+    <code>feedback_schema_a_vs_b_trainer_choice</code>.</p>
+  </div>
+
+  <h3>Split discipline</h3>
+  <p><b>70 / 15 / 15 chronological.</b> Never random. The <code>prepare_training_frame</code> function in
+  <code>train_lgb_v5.py</code> sorts by <code>evaluated_at</code> and slices in row-count order. Base rate is
+  computed from train only (audit #0008). The val split is your honest validation; test is held out for
+  promotion measurement.</p>
+
+  <h3>Audit #391 anti-pattern (silent NaN stubbing)</h3>
+  <p>The old <code>train_v9_1_honest.py</code> shipped this:</p>
+  <pre><code>for f in V9_FEATURES:
+    if f not in train_pool.columns:
+        train_pool[f] = np.nan   # silent stub
+    train_pool[f] = pd.to_numeric(train_pool[f], errors="coerce")</code></pre>
+  <p>LightGBM happily trained on constant-NaN columns. <code>min_gain_to_split=0.01</code> blocked splits, the
+  feature ended up with zero importance, no error, no warning. The v9.1 +5.92pp lift was real on the
+  <i>working</i> feature subset, but ~17 declared features were silent dead weight. Fix: <code>train_lgb_v5.py</code>
+  now distinguishes <code>KNOWN_OPTIONAL_FEATURES</code> from <code>unexpectedly_missing</code> and raises
+  on the latter.</p>
+
+  <h3>Promotion bar</h3>
+  <ul class="tight">
+    <li><b>Wilson 95% lower bound</b> on the WR of the held-out test set &mdash; never just the point estimate.
+      In <code>relaxation_v12_v9_1.py</code>: <code>WILSON_FLOOR = 0.60</code>, candidate cells need
+      <code>WR &ge; 0.70 AND Wilson_LB &ge; 0.60 AND n &ge; 30</code>.</li>
+    <li><b>ECE / Brier checks</b> via <code>training/evaluate.py</code>. The iso-refit decision rule
+      (<code>iso_refit_v9_1_v12.py</code>): refit only if
+      <code>ECE improvement &ge; 30% AND Brier improvement &ge; 5%</code> on the honest split.</li>
+    <li><b>Forward-pass overlap.</b> Honest forward pass on out-of-sample windows that the model has
+      never seen, by <i>strategy</i> not by booster &mdash; e.g. v9.1 hits +5.92pp weighted across deltas
+      (60/90/120/180/240) on the 7d holdout per <span class="ref">#313</span>.</li>
+    <li><b>Manual promote.</b> Even when a candidate clears the bar, the deploy is hand-flipped by Billy.
+      See <a href="#discipline">&sect;9</a>.</li>
+  </ul>
+
+  <h3>The five training-pipeline bugs of 2026-05 (postmortem)</h3>
+  <p>From <span class="ref">#353</span>:</p>
+  <ol class="tight">
+    <li><b>Iso schema mismatch.</b> sklearn-style <code>{"x", "y"}</code> vs canonical
+      <code>{"x_thresholds", "y_thresholds", "kind", "version", "out_of_bounds"}</code>. Container boot KeyError.
+      Fixed in-flight 2026-05-02.</li>
+    <li><b>v12 identity-iso.</b> 3 of 4 delta heads ship with identity calibration in production.
+      d=120 refit drops ECE 0.166&rarr;0.020. <i>Status: open.</i></li>
+    <li><b>Sidecar feature split.</b> Engine writes <code>v3_*</code>, <code>cg_*</code>, <code>nested_5m_*</code>,
+      <code>twap_delta</code> to separate <code>ticks_*</code> tables that <code>queries.py</code> didn&rsquo;t
+      join until the fix. <code>composite_v3</code> was 0% populated in <code>window_snapshots</code> for the
+      lifetime of the table.</li>
+    <li><b>Silent NaN stubbing</b> (above).</li>
+    <li><b>v9.2 train-serve skew</b> (open_price NULL, <span class="ref">#522</span>).</li>
+  </ol>
+</section>
+
+<!-- ============== 5. EXECUTION ============== -->
+<section id="execution">
+  <h2><span class="num">05</span>The execution layer</h2>
+  <p class="summary">A model that says &ldquo;p=0.81 UP&rdquo; is a paper PnL until you actually buy YES
+  shares. The execution layer is where realized PnL diverges from theoretical &mdash; and where you can give
+  back 4&ndash;6pp of edge through bad fills.</p>
+
+  <h3>The 2-shot FAK ladder</h3>
+  <p>Code: <code>engine/execution/fok_ladder.py</code> (<code>FOKLadder</code>) wrapped by
+  <code>engine/adapters/execution/fak_ladder_executor.py</code> (<code>FAKLadderExecutor</code>). The complete
+  v9.0 algorithm:</p>
+
+  <div class="diagram">  read CLOB best_ask (one shot, with 404 retry)
+  if best_ask &lt; <span class="hl">PRICE_FLOOR</span> (default 0.30): abort_floor
+
+  <span class="ok">Attempt 1:</span> FAK at <span class="hl">entry_cap</span> (e.g. 0.89 for v13_edge, 0.65 for v9 family)
+      if filled  &rarr; record + done.
+      if zero    &rarr; wait FOK_INTERVAL_S (default 2s).
+
+  <span class="ok">Attempt 2:</span> FAK at <span class="hl">entry_cap + &pi;</span>   (&pi; = FOK_PI_BONUS_CENTS = 0.0314)
+      if filled  &rarr; record + done.
+      if zero    &rarr; <span class="bad">exhausted</span>; strategy moves to Phase 2/3.
+
+  Phase 2 RFQ: try market-maker RFQ at entry_cap (if FAK_LADDER_ENABLE_RFQ).
+  Phase 3 GTC: <span class="bad">DISABLED by default</span> since 2026-04-17 phantom-fill incident.</div>
+
+  <div class="callout case">
+    <div class="lab">CASE STUDY &mdash; 2026-04-17 phantom-fill incident</div>
+    <p>The Phase-3 GTC fallback (resting limit at <code>entry_cap + &pi;</code>) was leaving stale orders
+    that filled minutes later at terrible PnL after the signal&rsquo;s edge had decayed. WR/PnL calculations
+    poisoned. Engine globally disabled GTC: <code>FAK_LADDER_ENABLE_GTC</code> defaults to false; explicit
+    opt-in required per strategy. <code>trade_recorder.py:67</code> comment + hub note #147.</p>
+  </div>
+
+  <h3>Why &pi; cents?</h3>
+  <p>3.14&cent; is an in-joke bonus &mdash; just large enough to skip past a sub-cent flicker bid, small enough
+  not to overpay. The constant is <code>FOK_PI_BONUS_CENTS = 0.0314</code> in <code>fok_ladder.py</code> and
+  is env-overridable (<code>FOK_PI_BONUS_CENTS</code>).</p>
+
+  <h3>The proposed epsilon ladder (hub note #526)</h3>
+  <p>The 2-shot algo has known gaps: it doesn&rsquo;t re-read the book between attempts, and it pays
+  <code>entry_cap</code> on attempt 1 even when <code>best_ask</code> sits 4&ndash;6&cent; below. The proposal:</p>
+
+  <pre><code>best_ask = read_clob_best_ask()
+if best_ask &gt;= PRICE_FLOOR_MAX:  # e.g. 0.90
+    abort
+
+for attempt in 1..N:                      # N = 4-6
+    px = min(best_ask + (attempt - 1) * epsilon, PRICE_FLOOR_MAX)
+    submit FAK at px
+    if filled: record + break
+    sleep(FOK_INTERVAL_S)
+    best_ask = read_clob_best_ask()        # re-anchor to live book</code></pre>
+  <p>Epsilon = Polymarket tick size (0.005 or 0.01 &mdash; TBD against exchange spec). Lifts ALL strategies
+  uniformly; no per-strategy retune required. Estimated value: 4pp realized fill improvement on the v9.x family
+  &asymp; $4 saved per $1 risked per fill (<span class="ref">#526</span>).</p>
+
+  <h3>Wallet truth vs <code>trades.pnl_usd</code></h3>
+  <p>The <code>trades</code> table has a <code>pnl_usd</code> column that the strategy scorecard reads. That
+  column is computed at trade-resolution time. There is a separate <code>scripts/ops/wallet_truth.py</code>
+  that hits the actual Polymarket wallet endpoint and reconciles cleared positions. When they disagree the
+  wallet wins &mdash; partial fills can land between recording boundaries, and the v9_1_lgb_only scorecard
+  in <span class="ref">#523</span> showed 32W/5L while <code>trades.pnl_usd</code> showed 31W/5L for the same
+  trade set (one WIN row carried a negative <code>pnl_usd</code>).</p>
+
+  <div class="callout drill">
+    <div class="lab">DRILL &mdash; reconcile a day</div>
+    <p>Pick a single day. Run <code>scripts/ops/wallet_truth.py --hours 24</code>. Pull
+    <code>SELECT strategy_id, SUM(pnl_usd) FROM trades WHERE executed_at::date = X GROUP BY 1</code>. They
+    should agree within rounding. If they don&rsquo;t, the partial-fill accounting path is the likely culprit
+    (<code>trade_recorder.py</code>). Document the gap.</p>
+  </div>
+</section>
+
+<!-- ============== 6. GATING ============== -->
+<section id="gating">
+  <h2><span class="num">06</span>The decision &amp; gating architecture</h2>
+  <p class="summary">A strategy is not its model. It&rsquo;s a model + a stack of gates that decide whether the
+  model&rsquo;s confident call gets to fire. The novakash stack has six layers of these, and turning the wrong
+  knob is the most common way to lose money slowly.</p>
+
+  <h3>The gate stack &mdash; six layers, in order</h3>
+  <table>
+    <thead><tr><th>#</th><th>Gate</th><th>What it checks</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><code>chainlink_freshness</code></td>
+        <td>Resolution oracle has updated within ~60s. Audit #374.</td>
+        <td>declarative gate in <code>gates</code> YAML</td></tr>
+      <tr><td>2</td><td><b>Conviction</b></td>
+        <td><code>probability_lgb_v9_2 &ge; 0.75</code> (or per-strategy threshold)</td>
+        <td><code>pre_gate_hook</code></td></tr>
+      <tr><td>3</td><td><b>N consecutive ticks</b></td>
+        <td><code>min_consecutive_pass_ticks</code>: v9.1 uses 3, v9_2_raw_lgb uses 1</td>
+        <td><code>gate_params</code></td></tr>
+      <tr><td>4</td><td><b>Cohort gate</b></td>
+        <td>Per-(vpin_regime &times; direction) <code>conviction_x</code> and <code>ticks_n</code> thresholds. v9.2 super uses 8 ticks @0.85 conviction in TRANSITION_UP. <i>v9_2_raw_lgb drops this entirely.</i></td>
+        <td><code>gate_params.conviction_x_thresholds</code></td></tr>
+      <tr><td>5</td><td><b>Sister-pair veto</b></td>
+        <td>Veto when both members of a pair (e.g. <code>v9_1_cascade_fade_late</code> + <code>v9_cascade_fade_late</code>) oppose, within a 20s agreement window. PR #504.</td>
+        <td><code>sister_pair_veto</code> in YAML</td></tr>
+      <tr><td>6</td><td><b>Cell pause</b></td>
+        <td>Per-cell rolling-WR auto-pause. Audits #379 + #385.</td>
+        <td><code>cell_pause</code> declarative gate</td></tr>
+      <tr><td>7</td><td><b>min/max offset</b></td>
+        <td><code>min_offset_sec=45</code>, <code>max_offset_sec=200</code> (v9.1) &mdash; the
+          <code>eval_offset</code> cap. v9.2 is 60&ndash;210.</td>
+        <td><code>gate_params</code></td></tr>
+      <tr><td>8</td><td><b>Entry cap</b></td>
+        <td>Price floor for fills. Strategies declare; execution enforces (see <a href="#execution">&sect;5</a>).</td>
+        <td><code>StrategyDecision.entry_cap</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>v9_2_raw_lgb &mdash; minimum-gate baseline</h3>
+  <p>By design <code>v9_2_raw_lgb</code> uses only <code>chainlink_freshness</code> + conviction + offset.
+  The point is to isolate the model&rsquo;s raw alpha &mdash; if it survives without the gate stack, the gates
+  are friction; if it doesn&rsquo;t, the gates are doing real work. <span class="ref">#508</span> introduced
+  it; <span class="ref">#537</span> recommends keeping it (don&rsquo;t put a meta-gate on top yet &mdash; v9.2&rsquo;s
+  ungated WR is already 99% post-fix, gating only adds cost).</p>
+
+  <h3>Per-cell overrides</h3>
+  <p>Audit findings frequently surface as &ldquo;cell X has degraded WR&rdquo;. The disciplined fix is
+  <i>not</i> a global threshold change &mdash; it&rsquo;s a per-cell override on
+  <code>param_overrides_by_cell</code>, enumerating cell keys exactly. No wildcards. Pair with
+  <code>block_cells dist_min</code> guards. Memory note: <code>feedback_runtime_scope_precision</code>.</p>
+
+  <div class="callout case">
+    <div class="lab">CASE STUDY &mdash; tiered thresholds (#531) falsified</div>
+    <p>Tempting idea from the 6&ndash;90s vs 151&ndash;210s band asymmetry: lower the threshold on
+    late-window ticks (where v9.2 calibrates better) but keep it strict early. Initial scan: <code>.60/.65/.72</code>
+    by band &rarr; <b>+98% volume at -0.9pp WR</b>. Headline-grabbing. Then a wider baseline:
+    falsified. Lesson: never promote a tier scheme off a 2-day window of post-fix data, no matter how
+    pretty the table. <span class="ref">#531 correction block</span>.</p>
+  </div>
+</section>
+
+<!-- ============== 7. CALIBRATION ============== -->
+<section id="calibration">
+  <h2><span class="num">07</span>Calibration as a first-class concern</h2>
+  <p class="summary">A LightGBM booster trained with <code>objective=binary</code> emits something
+  close-but-not-equal to <code>P(y=1)</code>. Closing that gap is the highest-leverage trick in this stack
+  short of feature engineering. Three methods live in <code>training/calibration.py</code>; pick the right
+  one and you unlock honest staking, honest threshold tuning, and meta-gate inputs that don&rsquo;t require
+  the meta to relearn the distortion.</p>
+
+  <h3>Why raw LGB output is not a probability</h3>
+  <p>Boosted-tree binary classifiers tend to be <i>over-confident in the tails and under-confident in the
+  middle</i> when trained with logistic loss + early stopping. The decision-boundary calibration is fine; the
+  per-bin probability calibration is not. v9.2 is currently <b>under-confident</b>: raw <code>p92 = 0.75</code>
+  maps to realized WR <code>&asymp; 0.95</code>; raw <code>0.65</code> maps to realized <code>0.90</code>.
+  Without calibration, Kelly under-bets every confident trade.</p>
+
+  <h3>Three methods, one serving format</h3>
+  <p>All three produce <code>{x_thresholds, y_thresholds, kind, version, out_of_bounds}</code> and are consumed
+  via <code>np.interp(raw, x, y)</code> at serve time. The booster doesn&rsquo;t know which method calibrated
+  it &mdash; that&rsquo;s the abstraction win.</p>
+
+  <table>
+    <thead><tr><th>Method</th><th>Mechanism</th><th>Params</th><th>Best for</th><th>Failure mode</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>isotonic</code></td>
+        <td>Non-parametric monotone step function (sklearn <code>IsotonicRegression</code>)</td>
+        <td>~K breakpoints</td>
+        <td>Big val sets (&gt;5k), arbitrary curve shape</td>
+        <td>Bimodal with small val sets &lt; 1k</td>
+      </tr>
+      <tr>
+        <td><code>platt</code></td>
+        <td>Logistic on raw: <code>P_cal = &sigma;(a&middot;raw + b)</code></td>
+        <td>2 (a, b)</td>
+        <td>Small data, smooth curve</td>
+        <td>Can&rsquo;t fit S-curves outside sigmoid family</td>
+      </tr>
+      <tr>
+        <td><code>temperature</code></td>
+        <td><code>P_cal = &sigma;(logit(raw) / T)</code></td>
+        <td>1 (T)</td>
+        <td>Fixing systematic over-/under-confidence</td>
+        <td>Can&rsquo;t fix non-monotone miscal</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Rank-preserving &mdash; what iso can and cannot do</h3>
+  <p>Isotonic is monotone non-decreasing. It will <i>never</i> change the order of two predictions:
+  if <code>raw(a) &lt; raw(b)</code> then <code>cal(a) &le; cal(b)</code>. Implications:</p>
+  <ul class="tight">
+    <li><b>It cannot manufacture signal.</b> If the model has no edge in a band, iso preserves that. The
+      211&ndash;240s extension zone has WR ~50% &mdash; iso would map every raw value there to ~0.5
+      regardless. That&rsquo;s why the 210s cap is provably correct, not an artefact of the threshold.
+      <span class="ref">#528</span>.</li>
+    <li><b>It can&rsquo;t unlock more trades at a fixed threshold.</b> Same rank order &rArr; same fire set.</li>
+    <li><b>It DOES enable honest threshold-as-WR-target.</b> If <code>cal(p) = WR(p)</code>, then setting
+      threshold = 0.85 means &ldquo;fire when WR &ge; 85%&rdquo;.</li>
+    <li><b>It DOES improve Kelly sizing.</b> Honest probabilities &rarr; correct optimal stake.</li>
+  </ul>
+
+  <h3>v9.2 iso candidate &mdash; the headline number</h3>
+  <p>Per <span class="ref">#536</span> (NOT promoted &mdash; candidate only):</p>
+  <table>
+    <thead><tr><th>Metric</th><th>Pre-cal (test)</th><th>Post-cal (test)</th><th>&Delta;</th></tr></thead>
+    <tbody>
+      <tr><td>ECE</td><td class="r">0.1644</td><td class="r">0.0216</td><td class="r good">-87% (bar: -30%)</td></tr>
+      <tr><td>Brier</td><td class="r">0.2613</td><td class="r">0.2335</td><td class="r good">-10.6% (bar: -5%)</td></tr>
+      <tr><td>log-loss</td><td class="r">0.7217</td><td class="r">0.6577</td><td class="r good">-8.9%</td></tr>
+    </tbody>
+  </table>
+  <p>Both promotion bars cleared. Candidate sits at <code>/tmp/v92_iso_candidate_2026-05-18.json</code>
+  (200-breakpoint piecewise-linear). Not in <code>models/btc_5m/</code>. Not in S3. Manual promote pending
+  more clean post-fix data per Billy&rsquo;s no-auto-promote rule.</p>
+
+  <div class="callout gotcha">
+    <div class="lab">GOTCHA &mdash; identity-iso footgun</div>
+    <p>If the iso JSON file is missing or malformed, the loader (<code>app/isotonic_calibrator.py</code>) falls
+    back to identity (raw = calibrated). This is <i>silent</i> &mdash; no exception, just a warning log line
+    like <code>v12 iso not found at &lt;path&gt; &mdash; will use identity</code>. The 2026-05 audit found
+    v12&rsquo;s d=090/120/180/240 boosters all running identity-iso in production
+    (<span class="ref">#353 bug 2</span>). When you load a candidate iso, <i>read the warning lines</i> and
+    confirm the file actually parsed. Test: sample some raw probs through it and verify the output differs
+    from the input.</p>
+  </div>
+
+  <h3>The promotion-bar arithmetic</h3>
+  <p>From <code>training/iso_refit_v9_1_v12.py</code>:</p>
+  <pre><code>BRIER_THRESHOLD_PCT = 5.0    # split-test honest-mode threshold for refit
+# Decision logic:
+#   Refit if ECE improvement >= 30% AND Brier improvement >= 5%
+#   WAIT if split-test Brier improvement < 5%
+#   Do NOT refit if new iso degrades anything</code></pre>
+</section>
+
+<!-- ============== 8. INFRA ============== -->
+<section id="infra">
+  <h2><span class="num">08</span>The infrastructure</h2>
+  <p class="summary">Three production boxes, one analytical pipeline, and a hub that doubles as the
+  team&rsquo;s long-term memory. Don&rsquo;t touch the engine box; do all your reading via the
+  Parquet&nbsp;&rarr;&nbsp;DuckDB pipe.</p>
+
+  <h3>The boxes</h3>
+  <table>
+    <thead><tr><th>Box</th><th>Role</th><th>Touch rule</th></tr></thead>
+    <tbody>
+      <tr><td>engine (Montreal)</td><td>Runs the trading engine. Connects to Polymarket CLOB / Gamma / RDS / S3.</td>
+        <td><b>NEVER touch.</b> Deploys via tagged docker image only.</td></tr>
+      <tr><td>v2 box (i-0125675acf0e486e7)</td><td>timesfm-service model server. Emits all
+        <code>probability_lgb_*</code> keys via <code>/v4/snapshot</code>.</td>
+        <td>Rsync via SSM to <code>/home/ubuntu/timesfm-service/</code>, then docker rebuild. <b>Never
+        <code>--delete</code>.</b> Memory: <code>reference_v2_box_deploy</code>.</td></tr>
+      <tr><td>hub (Montreal small)</td><td>Currently hosed. Hub API used to route here.</td>
+        <td>Use classifier-gpu port-forward instead. Memory: <code>reference_canonical_rds_access</code>.</td></tr>
+      <tr><td>this dev box (RTX 3060)</td><td>Approved for training. 31GB RAM / 16 cores / 438GB free.</td>
+        <td>Run any retrain here. Manual promote.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Data access &mdash; the canonical paths</h3>
+  <ul class="tight">
+    <li><b>Local PG snapshot</b> &mdash; <code>127.0.0.1:5433</code>, pgdata-novakash.
+      Has <code>signal_evaluations</code>, <code>ticks_v2_probability</code>, sidecars.
+      Does NOT have <code>trades</code>, <code>strategy_decisions</code>, <code>window_snapshots</code>.
+      Memory: <code>reference_local_pg_snapshot</code>.</li>
+    <li><b>Prod RDS via port-forward</b> &mdash; <code>localhost:15432</code>, port-forward via
+      classifier-gpu. Direct psql. Use for SQL applies + <code>pg_dump</code> pulls. <i>Not for multi-day
+      analytical scans.</i></li>
+    <li><b>RDS &rarr; S3 Parquet &rarr; DuckDB</b> &mdash; the new analytical pipeline (<span class="ref">#525</span>).
+      AWS RDS native snapshot &rarr; S3 export, KMS CMK
+      <code>arn:aws:kms:ca-central-1:267815793130:key/abbc977d-4ad4-4410-80db-7107c05dbed8</code>, IAM role
+      <code>novakash-rds-export</code>, prefix
+      <code>s3://bbrnovakash-models-do-not-delete/parquet/...</code>. 104 GB raw &rarr; 6.8 GB Parquet,
+      8,998 files. ~$17/mo. Query via <code>scripts/duckdb_parquet.py</code>:</li>
+  </ul>
+
+  <pre><code>from scripts.duckdb_parquet import con, parquet_path
+
+con.sql(f"""
+  SELECT window_ts, asset, timeframe, eval_offset,
+         v2_probability_up, probability_lgb_v9_2
+  FROM read_parquet('{parquet_path('signal_evaluations')}')
+  WHERE asset = 'BTC' AND timeframe = '5m'
+  LIMIT 100
+""").df()</code></pre>
+
+  <ul class="tight">
+    <li><b>Hub API</b> &mdash; was <code>http://16.54.141.121:8091</code>, currently hosed. The
+      <code>notes</code> Postgres table on prod RDS is the durable source. Use the port-forward.</li>
+  </ul>
+
+  <div class="callout gotcha">
+    <div class="lab">GOTCHA &mdash; &ldquo;local&rdquo; means LOCAL</div>
+    <p>When the team says &ldquo;the local DB&rdquo; / &ldquo;novakash_local&rdquo; / &ldquo;the data we have&rdquo;,
+    that&rsquo;s <code>127.0.0.1:5433</code> &mdash; the dev-box pgdata-novakash snapshot. <b>Never
+    <code>localhost:15432</code></b> (prod). Background agents have repeatedly violated this; firm rule.
+    Memory: <code>feedback_local_db_means_local</code>.</p>
+  </div>
+
+  <h3>S3 paths you&rsquo;ll need</h3>
+  <pre><code>s3://bbrnovakash-models-do-not-delete/
+  current.json                                    # active model manifest
+  parquet/&lt;EXPORT_DATE&gt;/&lt;EXPORT_ID&gt;/...           # analytical pipeline
+  lineage/v9_1/...                                # v9.1 boosters + iso
+  lineage/v12/...                                 # v12 boosters
+  retrain_backups/...                             # date-stamped pre-retrain snapshots
+  staging/pr_b/...                                # canonical-pipeline output staging</code></pre>
+</section>
+
+<!-- ============== 9. DISCIPLINE ============== -->
+<section id="discipline">
+  <h2><span class="num">09</span>The discipline &amp; culture</h2>
+  <p class="summary">Half the technique here is what you <i>don&rsquo;t</i> do. The rules below are scar tissue
+  from real incidents, and the deploy pipeline is structured to make the rules enforceable from outside.</p>
+
+  <h3>The five rules</h3>
+  <ol class="tight">
+    <li><b>Manual promote.</b> Every <code>--promote</code> flag is hand-flipped by Billy. Post-2026-04-17
+      rule. No exceptions, no auto-promote on ECE bar, no &ldquo;CI promoted it because the test passed&rdquo;.</li>
+    <li><b>Trust code over docs.</b> RUNBOOK and README still reference Railway after the AWS RDS migration.
+      Verify infra by grepping env-var reads, not by quoting docs.</li>
+    <li><b>Canonical training entrypoints only.</b> <code>training.build_dataset</code> +
+      <code>training.train_lgb_v5</code>. Everything else is the audit #391 anti-pattern.</li>
+    <li><b>Read-only for prod artefacts.</b> No <code>--delete</code> on rsync to v2 box, no S3 key overwrite
+      without a backup, no <code>strategy_configs</code> writes without a journal entry.</li>
+    <li><b>Hub notes as long-term memory.</b> Every non-trivial finding goes into the <code>notes</code>
+      table with an ID. Future-self references by ID (#NNN), not by &ldquo;that thing we figured out last
+      Tuesday&rdquo;.</li>
+  </ol>
+
+  <h3>The bg-agent pattern</h3>
+  <p>The novakash workflow leans hard on background Claude agents to do bounded research/analysis tasks
+  while the human focuses on decisions. The patterns that work:</p>
+  <ul class="tight">
+    <li><b>Bounded scope.</b> One DB to read, one file to write. No commit, no S3 write, no model touch.</li>
+    <li><b>Verifiable claims.</b> Every claim is grounded in either a file path + line, a SQL query that
+      reproduces, or a hub note ID. Memory snippets are point-in-time observations &mdash; verify against
+      current code.</li>
+    <li><b>Hub notes as deliverable.</b> Findings land in <code>notes</code> with companion HTML/markdown in
+      <code>docs/</code>. The ID is the long-term reference.</li>
+    <li><b>Falsifiability.</b> If a scan produces a headline-grabbing result, the next step is the longer
+      baseline &mdash; not promotion. See #531 (tiered thresholds) for the canonical example.</li>
+  </ul>
+
+  <div class="callout why">
+    <div class="lab">WHY the no-auto-promote rule</div>
+    <p>2026-04-17. An auto-promote based on a passing ECE bar pushed a v12 calibration that triggered the
+    GTC phantom-fill incident. The chain was: candidate cleared the offline bar &rarr; CI deployed &rarr;
+    GTC fallback paid stale prices for hours before anyone noticed &rarr; WR/PnL calculations poisoned.
+    Two manual interventions later (rule + GTC default-off), the engine is more boring and the WR is real.</p>
+  </div>
+</section>
+
+<hr />
+
+<!-- ============== 10. CURRICULUM ============== -->
+<section id="curriculum">
+  <h2><span class="num">10</span>The 6-week curriculum</h2>
+  <p class="summary">A structured onboarding course built around the stack above. Each week has reading,
+  hands-on drills against the local PG snapshot or the DuckDB Parquet pipeline, and a checkpoint
+  you should be able to clear before moving on. By end of week 6 the trainee proposes a new strategy
+  variant offline-verified against real data &mdash; the capstone.</p>
+
+  <div class="modules">
+
+    <!-- Module 1 -->
+    <article class="module">
+      <div class="week">WEEK 01</div>
+      <h3>Polymarket primer + math foundations</h3>
+      <p>The mental model: binary outcome markets, CLOB microstructure, FAK execution, slippage budget.
+        The math: Wilson lower bound, ECE, Brier, log-loss. Probability vs payoff vs Kelly.</p>
+      <ul>
+        <li><b>Read:</b> &sect;1 (problem space) of this guide. <code>engine/execution/fok_ladder.py</code> docstring.
+          Hub notes #508 + #524.</li>
+        <li><b>Drill:</b> compute Wilson LB by hand for (k=27, n=30) and (k=270, n=300). Why are they different
+          at the same point estimate? Reproduce against <code>relaxation_v12_v9_1.py:wilson_lb</code>.</li>
+        <li><b>Drill:</b> on the local PG, find the most recent BTC 5m window. Pull every
+          <code>signal_evaluations</code> row for that window. Plot <code>probability_lgb_v9_2</code> vs
+          <code>eval_offset</code>. Confirm the &ldquo;remaining seconds&rdquo; convention.</li>
+      </ul>
+      <div class="check"><b>Checkpoint:</b> you can explain why <code>eval_offset</code> is &ldquo;seconds
+        remaining&rdquo;, not &ldquo;seconds since open&rdquo;, and what breaks if you confuse them.</div>
+    </article>
+
+    <!-- Module 2 -->
+    <article class="module">
+      <div class="week">WEEK 02</div>
+      <h3>Feature engineering on this stack</h3>
+      <p>The 78-feature pyramid. Where each feature comes from, where it&rsquo;s written, how to inspect it.
+        The sidecar-table trap (#391). The banned-feature list and why.</p>
+      <ul>
+        <li><b>Read:</b> &sect;3 + &sect;4 (training pipeline) of this guide.
+          <code>training/queries.py</code> top-to-bottom. <code>training/train_lgb_v5.py:106-215</code>
+          (the FEATURE_COLUMNS_V5 list). <code>training/meta_v2/__init__.py</code>.</li>
+        <li><b>Drill:</b> for each of the five strata, identify one feature, trace its full path from raw
+          source through Postgres to LightGBM input. For <code>vpin</code>: binance ticks &rarr;
+          <code>vpin_volume_clock.py</code> &rarr; <code>signal_evaluations.vpin</code> &rarr;
+          training query &rarr; booster input.</li>
+        <li><b>Drill:</b> run <code>tests/test_meta_v2_features.py</code> locally. Add a banned feature to
+          a draft meta_v2 dataframe and confirm it fails-closed.</li>
+      </ul>
+      <div class="check"><b>Checkpoint:</b> given a feature name from the v5 set, you can name its source feed,
+        Postgres column, and likely failure mode (NaN, drift, sidecar split).</div>
+    </article>
+
+    <!-- Module 3 -->
+    <article class="module">
+      <div class="week">WEEK 03</div>
+      <h3>LightGBM + the canonical training pipeline</h3>
+      <p>End-to-end retrain on the dev box. 70/15/15 chrono split. Honest forward pass. Wilson bar.
+        The audit #391 anti-pattern in detail.</p>
+      <ul>
+        <li><b>Read:</b> &sect;4 of this guide. <code>training/train_lgb_v5.py</code> full file. Hub notes
+          #313, #353, #522.</li>
+        <li><b>Drill:</b> run <code>python -m training.train_lgb_v5 --asset BTC --hours 48 --dry-run</code>.
+          Inspect the printed feature-importance list. Identify any feature with importance = 0; trace
+          why (legitimate optional vs silent stub).</li>
+        <li><b>Drill:</b> intentionally break a column upstream (rename in your local dataset). Verify
+          that the unexpectedly-missing check raises.</li>
+        <li><b>Drill:</b> reproduce v9.1&rsquo;s honest forward-pass on a 7d window. Aim within 0.5pp of
+          #313&rsquo;s +5.92pp number; explain any gap.</li>
+      </ul>
+      <div class="check"><b>Checkpoint:</b> you can articulate the difference between
+        <code>train_lgb_v5.py</code> and <code>train_lgb_v5_ticks.py</code> and pick the right one for
+        a given task without reading the docstring.</div>
+    </article>
+
+    <!-- Module 4 -->
+    <article class="module">
+      <div class="week">WEEK 04</div>
+      <h3>Calibration, isotonic, ECE/Brier</h3>
+      <p>Why raw LGB isn&rsquo;t a probability. Isotonic vs Platt vs temperature. The identity-iso footgun.
+        Why iso can&rsquo;t unlock more trades but can fix staking.</p>
+      <ul>
+        <li><b>Read:</b> &sect;7 of this guide. <code>training/calibration.py</code> full file.
+          <code>training/iso_refit_v9_1_v12.py</code>. Hub notes #353, #392, #528, #536.</li>
+        <li><b>Drill:</b> fit all three calibrators (iso, platt, temperature) on the same v9.2 raw probs.
+          Compare reliability curves and ECE. Which one would you ship for a small val set (~500 rows)?
+          For 50,000?</li>
+        <li><b>Drill:</b> simulate the identity-iso footgun. Hand-edit an iso JSON to invalid form,
+          watch <code>isotonic_calibrator.py</code> fall back to identity, confirm the warning log.</li>
+        <li><b>Drill:</b> with the v9.2 iso candidate (<code>/tmp/v92_iso_candidate_2026-05-18.json</code>),
+          re-stake the last 7 days of v9.2 fires under fractional-Kelly with raw vs calibrated probs.
+          Report the PnL delta.</li>
+      </ul>
+      <div class="check"><b>Checkpoint:</b> you can explain in two sentences why isotonic is rank-preserving
+        and what that implies for &ldquo;more trades, same WR&rdquo; (it doesn&rsquo;t; threshold tuning does).</div>
+    </article>
+
+    <!-- Module 5 -->
+    <article class="module">
+      <div class="week">WEEK 05</div>
+      <h3>Execution + FAK economics</h3>
+      <p>The 2-shot ladder. Why &pi; cents. The proposed epsilon ladder. The 2026-04-17 GTC incident.
+        Wallet truth vs trades.pnl_usd. Partial-fill accounting.</p>
+      <ul>
+        <li><b>Read:</b> &sect;5 of this guide. <code>engine/execution/fok_ladder.py</code> +
+          <code>engine/adapters/execution/fak_ladder_executor.py</code>. Hub notes #147, #526.</li>
+        <li><b>Drill:</b> pick a day. Pull all <code>v9_2_raw_lgb</code> trades. For each, compute the
+          gap between best_ask at fire time (from <code>strategy_decisions.metadata_json</code>) and
+          the realized fill price. Histogram. Estimate the dollar value the proposed epsilon ladder
+          would have saved.</li>
+        <li><b>Drill:</b> run <code>scripts/ops/wallet_truth.py --hours 24</code> for the same day. Compare
+          to <code>SELECT SUM(pnl_usd) FROM trades WHERE strategy_id='v9_2_raw_lgb' AND ...</code>.
+          Reconcile any gap.</li>
+      </ul>
+      <div class="check"><b>Checkpoint:</b> you can write the epsilon-ladder pseudocode from memory and
+        defend each parameter choice against the alternative.</div>
+    </article>
+
+    <!-- Module 6 -->
+    <article class="module">
+      <div class="week">WEEK 06</div>
+      <h3>Capstone &mdash; propose a new strategy variant</h3>
+      <p>Apply everything. Pick a hypothesis (e.g. &ldquo;v9.2 late-window calibrated&rdquo; or &ldquo;v12
+      with cell-specific overrides for the under-performing US-session DOWN cell&rdquo;). Verify offline.
+      Write a hub note. Ship to GHOST.</p>
+      <ul>
+        <li><b>Hypothesis:</b> stated in one sentence with a measurable claim.</li>
+        <li><b>Offline verification:</b> DuckDB scan against Parquet. Wilson LB &ge; 0.60 on
+          n &ge; 30 fires. ECE not worse by &gt; 0.02 vs the comparison strategy.</li>
+        <li><b>Hub note:</b> ID-tagged, methodology + data + verdict. Include the contamination check (clean
+          post-fix window only).</li>
+        <li><b>GHOST deploy:</b> YAML in repo OR <code>strategy_configs</code> row, <code>mode: GHOST</code>,
+          PR open. <i>No LIVE flip.</i></li>
+        <li><b>Promotion criteria:</b> stated up-front, in the hub note. &ldquo;n &ge; 5,000 across 7+ days
+          shadow, &Delta;WR &ge; +2.0pp vs LIVE comparison, ECE_max not worse by &gt; 0.02&rdquo; (the
+          v9.1 template per its YAML).</li>
+      </ul>
+      <div class="check"><b>Checkpoint:</b> Billy reviews the hub note, says &ldquo;yes flip GHOST&rdquo;,
+        and you flip it &mdash; <i>by hand</i>.</div>
+    </article>
+  </div>
+</section>
+
+<!-- ============== APPENDIX ============== -->
+<section id="glossary">
+  <h2><span class="num">A1</span>Glossary</h2>
+  <table>
+    <thead><tr><th>Term</th><th>Definition</th></tr></thead>
+    <tbody>
+      <tr><td><code>eval_offset</code></td><td>Seconds remaining until the 5-minute window resolves.
+        Not seconds since open.</td></tr>
+      <tr><td><code>priceToBeat</code></td><td>The Polymarket-canonical open price for the active window.
+        Sourced from Chainlink Streams off-chain. Gamma primary, HTML fallback.</td></tr>
+      <tr><td>FAK / FOK</td><td>Fill-And-Kill / Fill-Or-Kill. Both cancel any unfilled portion;
+        FAK accepts partials, FOK doesn&rsquo;t.</td></tr>
+      <tr><td>Wilson LB</td><td>Lower bound of the 95% Wilson score interval on a binomial proportion.
+        The honest WR for a small-n claim.</td></tr>
+      <tr><td>ECE</td><td>Expected Calibration Error. Bin predicted probs, compare mean predicted to
+        realized rate per bin, weighted average of the gap.</td></tr>
+      <tr><td>Brier score</td><td>Mean squared error of predicted prob vs realized 0/1 outcome.</td></tr>
+      <tr><td>VPIN</td><td>Volume-synchronised Probability of INformed trading. Order-flow toxicity proxy.</td></tr>
+      <tr><td>regime</td><td>One of <code>CASCADE</code> / <code>TRANSITION</code> / <code>NORMAL</code> /
+        <code>CALM</code> per <code>v3_regime_classifier.py</code>.</td></tr>
+      <tr><td>cell</td><td><code>direction:t_band:regime:session</code>. The per-cell encoder targets this key.</td></tr>
+      <tr><td>cohort</td><td><code>vpin_regime &times; direction</code>. Per-cohort thresholds in v9.2 super.</td></tr>
+      <tr><td>sister-pair veto</td><td>Veto a trade when both members of a configured pair oppose,
+        within an agreement window (PR #504).</td></tr>
+      <tr><td>meta-gate</td><td>Per-strategy LightGBM booster that predicts <code>P(strategy_call WINs)</code>.
+        Output keys: <code>probability_*_meta_gate</code> in <code>surface_json</code>.</td></tr>
+      <tr><td>GHOST</td><td>Strategy mode: signals computed, decisions recorded, no orders placed.</td></tr>
+      <tr><td>LIVE</td><td>Strategy mode: orders placed.</td></tr>
+      <tr><td>identity-iso</td><td>Calibration JSON missing/malformed &rarr; loader silently falls back to
+        raw passthrough. The 2026-05 v12 production state per #353.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="openq">
+  <h2><span class="num">A2</span>Open questions</h2>
+  <p class="summary">Honest list of things this document touches but couldn&rsquo;t fully resolve from
+  code + hub notes at compile time. Sharp readers should chase these down.</p>
+  <ul class="tight">
+    <li><b>v12 identity-iso bug status.</b> <span class="ref">#353 bug 2</span> says 3-of-4 v12 deltas ship
+      with identity calibration. As of 2026-05-18 the audit task isn&rsquo;t filed and the production state
+      hasn&rsquo;t been re-confirmed since the original discovery. Verify with a fresh <code>iso_refit_v9_1_v12.py</code>
+      run before relying on v12 probs.</li>
+    <li><b>v9.2 live UP threshold.</b> <span class="ref">#531</span> notes <code>config_yaml</code> says 0.75
+      but Billy says runtime is 0.72. Either a <code>strategy_runtime_overrides</code> entry or a metadata_json
+      probe of a recent fired trade will resolve this. The DB-resident config_yaml read in this guide says 0.75.</li>
+    <li><b>Polymarket epsilon tick size.</b> <span class="ref">#526</span>&rsquo;s proposal needs the exact
+      tick (0.005 or 0.01). Confirm against exchange spec before any epsilon-ladder implementation.</li>
+    <li><b>Sister-pair veto for non-cascade pairs.</b> Currently only configured for
+      <code>(v9_1_cascade_fade_late, v9_cascade_fade_late)</code>. Is there a similar pair for v9.2?
+      Not in any YAML or DB row checked.</li>
+    <li><b>Per-strategy meta-gate threshold defaults.</b> <span class="ref">#537</span> recommends raising
+      <code>v12_meta_gate</code> threshold from 0.6 to 0.85. <code>strategy_configs.gates_json</code> shows the
+      gate object but not the threshold &mdash; the engine reads it from elsewhere on every evaluation.
+      Confirm with a fresh engine-side trace.</li>
+  </ul>
+</section>
+
+<footer style="border-top:1px solid var(--rule); padding-top: 24px; margin-top: 50px; color: var(--fg-mute); font-size: 12px;">
+  Compiled 2026-05-18 against branch <code>fix/gate-feature-ordering-gamma</code>.
+  All claims grounded in <code>app/</code>, <code>training/</code>, <code>engine/</code> source files at HEAD
+  or in <code>notes</code> table entries (cited by #ID). Self-contained, no external assets.
+  Read-only deliverable; no commits or model touches involved in producing it.
+</footer>
+
+</main>
+</div>
+</body>
+</html>

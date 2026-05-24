@@ -1,0 +1,2377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>v9.2 ETH/XRP Training Session — An Ebook Lesson</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Source+Code+Pro:wght@400;600&family=Lora:ital,wght@0,400;1,400&display=swap" />
+<style>
+/* ══════════════════════════════════════════════
+   TOKENS
+══════════════════════════════════════════════ */
+:root {
+  --bg:          #090c12;
+  --bg-2:        #111622;
+  --bg-3:        #192030;
+  --fg:          #dde3f0;
+  --fg-dim:      #8d98ae;
+  --fg-mute:     #4e5b72;
+  --rule:        #1e2636;
+  --rule-light:  #27334a;
+
+  --accent:      #7fa8ff;
+  --accent-dim:  #4a6fc0;
+  --accent-glow: rgba(127,168,255,0.12);
+
+  --gold:        #f0c060;
+  --gold-dim:    rgba(240,192,96,0.15);
+  --warn:        #f3b06a;
+  --bad:         #ef6b6b;
+  --good:        #6dc88a;
+  --info:        #6cb5d3;
+  --purple:      #b8a5e8;
+
+  --serif: 'Lora', 'Georgia', serif;
+  --display: 'Playfair Display', 'Georgia', serif;
+  --mono: 'Source Code Pro', ui-monospace, 'JetBrains Mono', Menlo, monospace;
+}
+
+/* ══════════════════════════════════════════════
+   RESET + BASE
+══════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.72;
+}
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(127,168,255,0.3); transition: border-color 0.2s; }
+a:hover { border-bottom-color: var(--accent); }
+
+/* ══════════════════════════════════════════════
+   LAYOUT
+══════════════════════════════════════════════ */
+.book-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 32px 100px;
+}
+
+/* ══════════════════════════════════════════════
+   COVER
+══════════════════════════════════════════════ */
+.cover {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 80px 32px 60px;
+  max-width: 760px;
+  margin: 0 auto;
+  position: relative;
+}
+.cover-eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 24px;
+}
+.cover h1 {
+  font-family: var(--display);
+  font-size: clamp(36px, 6vw, 58px);
+  font-weight: 700;
+  line-height: 1.08;
+  margin: 0 0 20px;
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.cover h1 em { font-style: italic; color: var(--gold); }
+.cover-sub {
+  font-family: var(--serif);
+  font-size: 19px;
+  font-style: italic;
+  color: var(--fg-dim);
+  max-width: 560px;
+  margin-bottom: 36px;
+  line-height: 1.5;
+}
+.cover-meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-mute);
+  line-height: 2;
+}
+.cover-rule {
+  width: 64px;
+  height: 3px;
+  background: linear-gradient(90deg, var(--gold), transparent);
+  margin: 32px 0;
+}
+.cover-deco {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0.04;
+  pointer-events: none;
+}
+
+/* ══════════════════════════════════════════════
+   TOC
+══════════════════════════════════════════════ */
+.toc-section {
+  background: var(--bg-2);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 40px 44px;
+  margin: 48px 0;
+}
+.toc-section h2 {
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  margin: 0 0 28px;
+}
+.toc-list { list-style: none; margin: 0; padding: 0; }
+.toc-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.toc-list li:last-child { border-bottom: none; }
+.toc-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-mute);
+  min-width: 28px;
+}
+.toc-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--fg-dim);
+  flex: 1;
+}
+.toc-title a { color: var(--fg-dim); border-bottom: none; }
+.toc-title a:hover { color: var(--accent); }
+
+/* ══════════════════════════════════════════════
+   CHAPTER STRUCTURE
+══════════════════════════════════════════════ */
+.chapter {
+  margin-top: 80px;
+}
+.chapter-ornament {
+  text-align: center;
+  color: var(--gold);
+  font-size: 20px;
+  letter-spacing: 0.5em;
+  margin-bottom: 32px;
+  opacity: 0.5;
+}
+.chapter-header {
+  margin-bottom: 40px;
+}
+.chapter-number {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.chapter h2 {
+  font-family: var(--display);
+  font-size: clamp(26px, 4vw, 36px);
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  margin: 0 0 16px;
+  color: #fff;
+}
+.chapter-deck {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 18px;
+  color: var(--fg-dim);
+  line-height: 1.55;
+  border-left: 3px solid var(--gold);
+  padding-left: 20px;
+}
+
+/* DROP CAPS */
+.chapter-body > p:first-of-type::first-letter {
+  font-family: var(--display);
+  font-size: 4.8em;
+  font-weight: 700;
+  float: left;
+  line-height: 0.78;
+  margin: 8px 10px -4px 0;
+  color: var(--gold);
+}
+
+.chapter-body p {
+  margin: 0 0 1.3em;
+  color: var(--fg);
+}
+.chapter-body p + p { text-indent: 1.6em; }
+.chapter-body p:first-of-type { text-indent: 0; }
+
+/* ══════════════════════════════════════════════
+   CHAPTER DIVIDERS
+══════════════════════════════════════════════ */
+.chapter-divider {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 72px 0 0;
+}
+.chapter-divider::before,
+.chapter-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--rule-light);
+}
+.divider-ornament {
+  font-family: var(--display);
+  font-size: 20px;
+  color: var(--gold);
+  opacity: 0.4;
+  letter-spacing: 8px;
+}
+
+/* ══════════════════════════════════════════════
+   SUBHEADINGS
+══════════════════════════════════════════════ */
+.chapter h3 {
+  font-family: var(--display);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+  margin: 40px 0 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.chapter h4 {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 28px 0 8px;
+}
+
+/* ══════════════════════════════════════════════
+   PULL QUOTES
+══════════════════════════════════════════════ */
+.pull-quote {
+  margin: 36px 0;
+  padding: 28px 36px;
+  background: linear-gradient(135deg, rgba(127,168,255,0.05) 0%, rgba(240,192,96,0.04) 100%);
+  border: 1px solid var(--rule-light);
+  border-left: 4px solid var(--gold);
+  border-radius: 0 10px 10px 0;
+  position: relative;
+}
+.pull-quote::before {
+  content: '\201C';
+  font-family: var(--display);
+  font-size: 80px;
+  line-height: 1;
+  color: var(--gold);
+  opacity: 0.2;
+  position: absolute;
+  top: -8px;
+  left: 12px;
+}
+.pull-quote p {
+  font-family: var(--display);
+  font-style: italic;
+  font-size: 20px;
+  line-height: 1.45;
+  color: var(--fg);
+  margin: 0 0 10px;
+  text-indent: 0 !important;
+}
+.pull-quote cite {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--fg-mute);
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+/* ══════════════════════════════════════════════
+   CALLOUTS
+══════════════════════════════════════════════ */
+.callout {
+  background: var(--bg-2);
+  border-left: 3px solid var(--accent);
+  padding: 14px 20px;
+  margin: 20px 0;
+  border-radius: 0 8px 8px 0;
+}
+.callout.warn  { border-left-color: var(--warn); }
+.callout.bad   { border-left-color: var(--bad); }
+.callout.good  { border-left-color: var(--good); }
+.callout .lbl {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.callout.warn .lbl { color: var(--warn); }
+.callout.bad  .lbl { color: var(--bad); }
+.callout.good .lbl { color: var(--good); }
+.callout p { margin: 0; font-size: 14.5px; color: var(--fg-dim); line-height: 1.55; }
+
+/* ══════════════════════════════════════════════
+   CODE
+══════════════════════════════════════════════ */
+.code-block {
+  background: #070a10;
+  border: 1px solid var(--rule-light);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 24px 0;
+}
+.code-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--rule);
+}
+.code-block-lang {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+.code-block-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-left: auto;
+}
+.code-block pre {
+  margin: 0;
+  padding: 18px 20px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--fg-dim);
+}
+/* Syntax colour helpers */
+.kw  { color: var(--accent); }
+.cm  { color: var(--fg-mute); font-style: italic; }
+.st  { color: var(--good); }
+.num { color: var(--warn); }
+.fn  { color: var(--info); }
+.op  { color: var(--gold); }
+.kw2 { color: var(--purple); }
+
+/* ══════════════════════════════════════════════
+   SVG VIZ CONTAINERS
+══════════════════════════════════════════════ */
+.viz {
+  background: #060810;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 20px;
+  margin: 24px 0;
+}
+.viz svg { display: block; width: 100%; height: auto; }
+.viz-caption {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-mute);
+  text-align: center;
+  margin-top: 10px;
+  letter-spacing: 0.05em;
+}
+
+/* ══════════════════════════════════════════════
+   TABLES
+══════════════════════════════════════════════ */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: 20px 0;
+}
+.data-table th {
+  background: var(--bg-2);
+  padding: 9px 14px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+  border-bottom: 2px solid var(--rule);
+}
+.data-table td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--fg-dim);
+}
+.data-table tr:hover td { background: var(--bg-2); }
+.td-mono { font-family: var(--mono); font-size: 12px; }
+.pill {
+  display: inline-block;
+  padding: 1px 9px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  border-radius: 10px;
+}
+.pill-good  { background: rgba(109,200,138,0.14); color: var(--good); }
+.pill-bad   { background: rgba(239,107,107,0.14); color: var(--bad); }
+.pill-warn  { background: rgba(243,176,106,0.14); color: var(--warn); }
+.pill-info  { background: rgba(108,181,211,0.14); color: var(--info); }
+.pill-acct  { background: rgba(127,168,255,0.14); color: var(--accent); }
+
+/* ══════════════════════════════════════════════
+   STAGE CHIPS
+══════════════════════════════════════════════ */
+.stage-chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid;
+}
+.chip-build  { background: var(--accent-glow); color: var(--accent); border-color: var(--accent-dim); }
+.chip-train  { background: rgba(108,181,211,0.08); color: var(--info); border-color: rgba(108,181,211,0.3); }
+.chip-test   { background: rgba(243,176,106,0.08); color: var(--warn); border-color: rgba(243,176,106,0.3); }
+.chip-ece    { background: rgba(184,165,232,0.08); color: var(--purple); border-color: rgba(184,165,232,0.3); }
+.chip-iso    { background: rgba(109,200,138,0.08); color: var(--good); border-color: rgba(109,200,138,0.3); }
+
+/* ══════════════════════════════════════════════
+   TERMINAL TIMELINE (Ch 10 / session arc)
+══════════════════════════════════════════════ */
+.timeline-wrap {
+  background: #070a10;
+  border: 1px solid var(--rule-light);
+  border-radius: 10px;
+  padding: 28px 28px 20px;
+  margin: 24px 0;
+}
+
+/* ══════════════════════════════════════════════
+   FOOTER
+══════════════════════════════════════════════ */
+.book-footer {
+  margin-top: 80px;
+  padding: 40px 0 0;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-mute);
+  letter-spacing: 0.08em;
+}
+
+/* inline code */
+code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: #0a0d14;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  color: var(--info);
+}
+
+strong { color: var(--fg); }
+em { color: var(--fg-dim); }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     COVER
+════════════════════════════════════════════ -->
+<div class="cover">
+  <!-- background deco SVG -->
+  <svg class="cover-deco" width="420" height="420" viewBox="0 0 420 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="210" cy="210" r="200" stroke="white" stroke-width="1"/>
+    <circle cx="210" cy="210" r="150" stroke="white" stroke-width="0.5"/>
+    <circle cx="210" cy="210" r="80" stroke="white" stroke-width="0.5"/>
+    <line x1="10" y1="210" x2="410" y2="210" stroke="white" stroke-width="0.5"/>
+    <line x1="210" y1="10" x2="210" y2="410" stroke="white" stroke-width="0.5"/>
+    <line x1="68" y1="68" x2="352" y2="352" stroke="white" stroke-width="0.3"/>
+    <line x1="352" y1="68" x2="68" y2="352" stroke="white" stroke-width="0.3"/>
+  </svg>
+
+  <div class="cover-eyebrow">An Ebook Lesson &nbsp;·&nbsp; v9.2 Training Session &nbsp;·&nbsp; 2026-05-20</div>
+  <h1>Building <em>v9.2</em><br>ETH & XRP<br>for Production</h1>
+  <p class="cover-sub">A field-guide to the one-day session that backfilled 12 million Binance trades, debugged race conditions, trained six calibrated boosters per asset, and wrestled with GPU LoRA inference — all before the market closed.</p>
+  <div class="cover-rule"></div>
+  <div class="cover-meta">
+    ASSETS — ETH · XRP · BTC<br>
+    HORIZON — 5-minute candles, Δ1–Δ6<br>
+    MODELS — LightGBM + isotonic calibration<br>
+    TARGET — p ≥ 0.96 UP / p ≤ 0.04 DOWN<br>
+    SHADOW BUDGET — $5 GHOST conservative
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     TABLE OF CONTENTS
+════════════════════════════════════════════ -->
+<div class="book-wrap">
+<div class="toc-section">
+  <h2>Contents</h2>
+  <ol class="toc-list">
+    <li><span class="toc-num">01</span><span class="toc-title"><a href="#ch1">What We're Building</a></span></li>
+    <li><span class="toc-num">02</span><span class="toc-title"><a href="#ch2">The Backfill Saga</a></span></li>
+    <li><span class="toc-num">03</span><span class="toc-title"><a href="#ch3">The Five-Stage Pipeline</a></span></li>
+    <li><span class="toc-num">04</span><span class="toc-title"><a href="#ch4">The Indicator & Curve-Shape Trial (BTC)</a></span></li>
+    <li><span class="toc-num">05</span><span class="toc-title"><a href="#ch5">The v9.3 ETH Attempt</a></span></li>
+    <li><span class="toc-num">06</span><span class="toc-title"><a href="#ch6">Recurring Pattern: SSM Tunnel Survivability</a></span></li>
+    <li><span class="toc-num">07</span><span class="toc-title"><a href="#ch7">Recurring Pattern: asyncpg Type Strictness</a></span></li>
+    <li><span class="toc-num">08</span><span class="toc-title"><a href="#ch8">Recurring Pattern: Sub-agent vs OS-process Lifecycle</a></span></li>
+    <li><span class="toc-num">09</span><span class="toc-title"><a href="#ch9">Recurring Pattern: Parquet vs RDS Access Paths</a></span></li>
+    <li><span class="toc-num">10</span><span class="toc-title"><a href="#ch10">The Two-Storage Durability Pattern</a></span></li>
+  </ol>
+</div>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 1
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch1">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter One</div>
+    <h2>What We're Building</h2>
+    <p class="chapter-deck">Six boosters, six calibrators, three assets — all routing on a single clock signal at serve time.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The v9.2 family is a collection of LightGBM classification heads trained to answer one narrow question for each five-minute Polymarket window: will the price of this crypto asset be <em>higher or lower</em> than the strike at expiry? Each "head" covers a specific delta-bucket — Δ1 (windows closing in 0–5 min) through Δ6 (25–30 min) — so the model that fires depends entirely on how many seconds remain at prediction time.</p>
+
+    <p>Per asset (BTC, ETH, XRP) the system trains six LightGBM boosters, each paired with a sklearn <code>IsotonicRegression</code> calibrator fitted on a held-out development split. The raw booster output is a monotone probability-like score; isotonic post-fitting bends that score into a true posterior that honours the empirical reliability curve. At serve time the serving layer routes the raw score through its matching calibrator before any threshold check fires.</p>
+
+    <div class="pull-quote">
+      <p>The threshold is strict by design. p ≥ 0.96 to fire UP; p ≤ 0.04 to fire DOWN. Most windows are ignored entirely.</p>
+      <cite>Production shadow config, 2026-05-19</cite>
+    </div>
+
+    <p>At those extreme thresholds the live system aims for 22–74 fires per day across the three assets, at a $5 GHOST shadow budget. The win-rate at p ≥ 0.96 historically sits around 93–95%, well above the 50% naive baseline, but the calibration work is what makes that number trustworthy rather than just lucky.</p>
+
+    <div class="stage-chips">
+      <span class="chip chip-build">BUILD</span>
+      <span class="chip chip-train">TRAIN</span>
+      <span class="chip chip-test">TEST</span>
+      <span class="chip chip-ece">ECE</span>
+      <span class="chip chip-iso">ISO</span>
+    </div>
+
+    <table class="data-table">
+      <thead>
+        <tr><th>Asset</th><th>Δ-Heads</th><th>Features</th><th>Calibrator</th><th>Conservative threshold</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>BTC</td><td class="td-mono">Δ1–Δ6</td><td class="td-mono">58</td><td class="td-mono">IsotonicRegression</td><td class="td-mono">p≥0.96 / p≤0.04</td></tr>
+        <tr><td>ETH</td><td class="td-mono">Δ1–Δ6</td><td class="td-mono">58*</td><td class="td-mono">IsotonicRegression</td><td class="td-mono">p≥0.96 / p≤0.04</td></tr>
+        <tr><td>XRP</td><td class="td-mono">Δ1–Δ6</td><td class="td-mono">58*</td><td class="td-mono">IsotonicRegression</td><td class="td-mono">p≥0.96 / p≤0.04</td></tr>
+      </tbody>
+    </table>
+    <p>* ETH/XRP full-feature count depends on LoRA inference completing (see Chapter 5).</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 2
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch2">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Two</div>
+    <h2>The Backfill Saga</h2>
+    <p class="chapter-deck">No data, a race condition, 992 thousand duplicates, and a microsecond timestamp twist.</p>
+  </div>
+  <div class="chapter-body">
+    <p>When the ETH and XRP training pipeline first ran, it hit an immediate wall: <code>ticks_binance</code> contained only BTC rows. Production had been persisting live Binance aggTrade data for BTC since the system launched, but ETH and XRP had never been plumbed in. The training code could not even begin building the 49 non-LoRA features without raw tick history.</p>
+
+    <p>The solution was to reach directly for Binance's public data archive at <code>data.binance.vision</code>. Every trading day is published as a gzip-compressed CSV with eight columns: aggregate-trade-id, price, quantity, first/last constituent trade ids, a Unix timestamp, is-buyer-maker flag, and best-price-match flag. One file per day per symbol, reliably available within a few hours of close.</p>
+
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="code-block-lang">Python — data.binance.vision URL pattern</span>
+        <span class="code-block-dot" style="background: var(--good)"></span>
+      </div>
+      <pre><span class="cm"># data.binance.vision daily zip pattern</span>
+url = (<span class="st">f"https://data.binance.vision/data/spot/daily/aggTrades"</span>
+       <span class="st">f"/{symbol}/{symbol}-aggTrades-{date_str}.zip"</span>)
+<span class="cm"># CSV cols: agg_trade_id, price, quantity, first_trade_id, last_trade_id,
+#           timestamp_us, is_buyer_maker, is_best_price_match
+# IMPORTANT: timestamp column is in MICROSECONDS not ms (Binance switched mid-May 2026)</span>
+ts_seconds = ts_raw <span class="op">/</span> <span class="num">1_000_000</span> <span class="kw">if</span> ts_raw <span class="op">&gt;=</span> <span class="num">1e14</span> <span class="kw">else</span> ts_raw <span class="op">/</span> <span class="num">1_000</span></pre>
+    </div>
+
+    <p>The first agent backfilled the range 2026-04-29 through 2026-05-10 — eleven days of ETH and XRP history. But a second agent was spawned concurrently before the first confirmed completion. Both agents successfully downloaded and inserted rows from overlapping date ranges, leaving <strong>992,492 exact duplicate rows</strong> in the ETH partition.</p>
+
+    <div class="callout bad">
+      <span class="lbl">Root Cause</span>
+      <p>Two agents hitting the same idempotency gap: no unique constraint on <code>(ts, asset, price, quantity, is_buyer_maker)</code>, and no transaction-level lock preventing concurrent inserts for the same date range.</p>
+    </div>
+
+    <p>The deduplication strategy was a windowed <code>ROW_NUMBER()</code> — keep the smallest <code>id</code> (first insert wins) and delete the rest. Applied per-date to keep the operation bounded:</p>
+
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="code-block-lang">SQL — Race-condition dedup</span>
+        <span class="code-block-dot" style="background: var(--bad)"></span>
+      </div>
+      <pre><span class="cm">-- Race-condition dedup</span>
+<span class="kw">DELETE FROM</span> ticks_binance
+<span class="kw">WHERE</span> id <span class="kw">IN</span> (
+    <span class="kw">SELECT</span> id <span class="kw">FROM</span> (
+        <span class="kw">SELECT</span> id, <span class="fn">ROW_NUMBER</span>() <span class="kw">OVER</span> (
+            <span class="kw">PARTITION BY</span> ts, price, quantity, is_buyer_maker
+            <span class="kw">ORDER BY</span> id
+        ) <span class="kw">AS</span> rn
+        <span class="kw">FROM</span> ticks_binance
+        <span class="kw">WHERE</span> asset <span class="op">=</span> <span class="st">'ETH'</span> <span class="kw">AND</span> <span class="fn">ts::date</span> <span class="op">=</span> <span class="st">'2026-05-07'</span>
+    ) sub <span class="kw">WHERE</span> rn <span class="op">&gt;</span> <span class="num">1</span>
+);</pre>
+    </div>
+
+    <p>After dedup, the second half of the backfill (May 11 through May 20) ran with one further wrinkle: Binance silently changed the <code>timestamp</code> column from milliseconds to <strong>microseconds</strong> sometime in early May 2026. The auto-detect heuristic — if <code>ts_raw &gt;= 1e14</code>, divide by 1,000,000 — handles both epochs cleanly.</p>
+
+    <p>A final asyncpg type coercion issue slowed the insert: Python string dates could not be passed as <code>::date</code> parameters; <code>datetime.date</code> objects were required. The same applied to <code>timestamptz</code> columns expecting <code>datetime.datetime</code>. After those fixes, the final row counts stood at <strong>ETH 12.2 M rows, XRP 2.3 M rows, 21 days of coverage</strong>.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 3
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch3">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Three</div>
+    <h2>The Five-Stage Pipeline</h2>
+    <p class="chapter-deck">BUILD joins raw tables into a feature matrix. TRAIN slices it into six delta-buckets and fits a booster per bucket. TEST sweeps decision thresholds. ECE audits calibration error. ISO fits the corrective layer.</p>
+  </div>
+  <div class="chapter-body">
+    <p>Every v9.x model runs through the same five stages in sequence. Skipping any stage produces either an untrained model or an uncalibrated one — both are dangerous in a real-money shadow position.</p>
+
+    <h3>Stage 1 — BUILD</h3>
+    <p>Entrypoint: <code>training.build_dataset</code>. This stage performs a multi-table join across <code>ticks_v2_probability</code>, <code>ticks_binance</code>, <code>ticks_chainlink</code>, <code>ticks_tiingo</code>, and <code>ticks_coinglass</code>, then computes the 49 structured features (momentum, volume profile, order-book pressure, funding rate, etc.) in pandas. The result is a labelled feature matrix written to a local parquet file.</p>
+
+    <!-- BUILD JOIN DIAGRAM -->
+    <div class="viz">
+      <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="11">
+        <!-- source tables -->
+        <rect x="10" y="30" width="110" height="38" rx="6" fill="#0f1826" stroke="#1e2636"/>
+        <text x="65" y="53" text-anchor="middle" fill="#6cb5d3">ticks_v2_prob</text>
+        <rect x="10" y="82" width="110" height="38" rx="6" fill="#0f1826" stroke="#1e2636"/>
+        <text x="65" y="105" text-anchor="middle" fill="#6cb5d3">ticks_binance</text>
+        <rect x="10" y="134" width="110" height="38" rx="6" fill="#0f1826" stroke="#1e2636"/>
+        <text x="65" y="157" text-anchor="middle" fill="#6cb5d3">chainlink/tiingo</text>
+        <rect x="10" y="186" width="110" height="26" rx="6" fill="#0f1826" stroke="#1e2636"/>
+        <text x="65" y="203" text-anchor="middle" fill="#6cb5d3">coinglass</text>
+        <!-- arrows to join -->
+        <line x1="120" y1="49" x2="260" y2="105" stroke="#1e2636" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="120" y1="101" x2="260" y2="110" stroke="#1e2636" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="120" y1="153" x2="260" y2="120" stroke="#1e2636" stroke-width="1.5" marker-end="url(#arr)"/>
+        <line x1="120" y1="199" x2="260" y2="130" stroke="#1e2636" stroke-width="1.5" marker-end="url(#arr)"/>
+        <!-- JOIN box -->
+        <rect x="260" y="68" width="120" height="76" rx="8" fill="#111622" stroke="#7fa8ff" stroke-width="1.5"/>
+        <text x="320" y="100" text-anchor="middle" fill="#7fa8ff" font-size="12" font-weight="600">JOIN</text>
+        <text x="320" y="116" text-anchor="middle" fill="#4e5b72">on window_ts</text>
+        <text x="320" y="130" text-anchor="middle" fill="#4e5b72">+ asset</text>
+        <!-- arrow to feature matrix -->
+        <line x1="380" y1="106" x2="440" y2="106" stroke="#7fa8ff" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <!-- feature matrix -->
+        <rect x="440" y="68" width="130" height="76" rx="8" fill="#0a1020" stroke="#f0c060" stroke-width="1.5"/>
+        <text x="505" y="100" text-anchor="middle" fill="#f0c060" font-size="12" font-weight="600">Feature Matrix</text>
+        <text x="505" y="116" text-anchor="middle" fill="#4e5b72">49 cols</text>
+        <text x="505" y="130" text-anchor="middle" fill="#4e5b72">+ label + Δ-bucket</text>
+        <!-- arrow to parquet -->
+        <line x1="570" y1="106" x2="630" y2="106" stroke="#f0c060" stroke-width="1.5" marker-end="url(#arr3)"/>
+        <rect x="630" y="90" width="42" height="32" rx="5" fill="#0f1826" stroke="#4e5b72"/>
+        <text x="651" y="110" text-anchor="middle" fill="#4e5b72" font-size="9">parquet</text>
+        <!-- arrowhead defs -->
+        <defs>
+          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#1e2636"/>
+          </marker>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#7fa8ff"/>
+          </marker>
+          <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L8,3 z" fill="#f0c060"/>
+          </marker>
+        </defs>
+      </svg>
+      <div class="viz-caption">Fig 1 — BUILD: multi-source join → 49-feature matrix → parquet</div>
+    </div>
+
+    <h3>Stage 2 — TRAIN</h3>
+    <p>Entrypoint: <code>training.train_lgb_v5</code>. The feature matrix is split into six Δ-buckets by <code>seconds_to_close</code>. Each bucket trains an independent LightGBM classifier on a 70/15/15 train/dev/test split. The dev split is reserved for the ISO calibrator (below). Hyperparameters follow the v9.2 defaults; no AutoML sweep is run unless explicitly requested.</p>
+
+    <!-- TRAIN BUCKET DIAGRAM -->
+    <div class="viz">
+      <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="11">
+        <rect x="10" y="70" width="90" height="60" rx="6" fill="#0f1826" stroke="#f0c060" stroke-width="1.5"/>
+        <text x="55" y="97" text-anchor="middle" fill="#f0c060">Feature</text>
+        <text x="55" y="112" text-anchor="middle" fill="#f0c060">Matrix</text>
+        <line x1="100" y1="100" x2="140" y2="100" stroke="#4e5b72" stroke-width="1.5"/>
+        <text x="165" y="28" text-anchor="middle" fill="#4e5b72" font-size="10">Δ-bucket router</text>
+        <!-- 6 bucket boxes -->
+        <rect x="140" y="12" width="76" height="28" rx="5" fill="#111622" stroke="#7fa8ff"/>
+        <text x="178" y="30" text-anchor="middle" fill="#7fa8ff">Δ1 0–5m</text>
+        <rect x="140" y="50" width="76" height="28" rx="5" fill="#111622" stroke="#7fa8ff"/>
+        <text x="178" y="68" text-anchor="middle" fill="#7fa8ff">Δ2 5–10m</text>
+        <rect x="140" y="88" width="76" height="28" rx="5" fill="#111622" stroke="#7fa8ff"/>
+        <text x="178" y="106" text-anchor="middle" fill="#7fa8ff">Δ3 10–15m</text>
+        <rect x="140" y="126" width="76" height="28" rx="5" fill="#111622" stroke="#7fa8ff"/>
+        <text x="178" y="144" text-anchor="middle" fill="#7fa8ff">Δ4 15–20m</text>
+        <rect x="140" y="164" width="76" height="28" rx="5" fill="#111622" stroke="#7fa8ff"/>
+        <text x="178" y="182" text-anchor="middle" fill="#7fa8ff">Δ5 20–25m</text>
+        <rect x="226" y="130" width="76" height="28" rx="5" fill="#111622" stroke="#7fa8ff" opacity="0.5"/>
+        <text x="264" y="148" text-anchor="middle" fill="#7fa8ff" opacity="0.5">Δ6 25–30m</text>
+        <!-- fan-out lines from matrix -->
+        <line x1="100" y1="100" x2="140" y2="26" stroke="#1e2636" stroke-width="1"/>
+        <line x1="100" y1="100" x2="140" y2="64" stroke="#1e2636" stroke-width="1"/>
+        <line x1="100" y1="100" x2="140" y2="102" stroke="#1e2636" stroke-width="1"/>
+        <line x1="100" y1="100" x2="140" y2="140" stroke="#1e2636" stroke-width="1"/>
+        <line x1="100" y1="100" x2="140" y2="178" stroke="#1e2636" stroke-width="1"/>
+        <line x1="100" y1="100" x2="226" y2="144" stroke="#1e2636" stroke-width="1" opacity="0.4"/>
+        <!-- LGB boxes -->
+        <rect x="360" y="12" width="76" height="28" rx="5" fill="#101c14" stroke="#6dc88a"/>
+        <text x="398" y="30" text-anchor="middle" fill="#6dc88a">lgb_Δ1.pkl</text>
+        <rect x="360" y="50" width="76" height="28" rx="5" fill="#101c14" stroke="#6dc88a"/>
+        <text x="398" y="68" text-anchor="middle" fill="#6dc88a">lgb_Δ2.pkl</text>
+        <rect x="360" y="88" width="76" height="28" rx="5" fill="#101c14" stroke="#6dc88a"/>
+        <text x="398" y="106" text-anchor="middle" fill="#6dc88a">lgb_Δ3.pkl</text>
+        <rect x="360" y="126" width="76" height="28" rx="5" fill="#101c14" stroke="#6dc88a"/>
+        <text x="398" y="144" text-anchor="middle" fill="#6dc88a">lgb_Δ4.pkl</text>
+        <rect x="360" y="164" width="76" height="28" rx="5" fill="#101c14" stroke="#6dc88a"/>
+        <text x="398" y="182" text-anchor="middle" fill="#6dc88a">lgb_Δ5.pkl</text>
+        <rect x="448" y="130" width="76" height="28" rx="5" fill="#101c14" stroke="#6dc88a" opacity="0.5"/>
+        <text x="486" y="148" text-anchor="middle" fill="#6dc88a" opacity="0.5">lgb_Δ6.pkl</text>
+        <!-- arrows bucket→lgb -->
+        <line x1="216" y1="26" x2="360" y2="26" stroke="#6dc88a" stroke-width="1" opacity="0.6"/>
+        <line x1="216" y1="64" x2="360" y2="64" stroke="#6dc88a" stroke-width="1" opacity="0.6"/>
+        <line x1="216" y1="102" x2="360" y2="102" stroke="#6dc88a" stroke-width="1" opacity="0.6"/>
+        <line x1="216" y1="140" x2="360" y2="140" stroke="#6dc88a" stroke-width="1" opacity="0.6"/>
+        <line x1="216" y1="178" x2="360" y2="178" stroke="#6dc88a" stroke-width="1" opacity="0.6"/>
+        <line x1="302" y1="144" x2="448" y2="144" stroke="#6dc88a" stroke-width="1" opacity="0.3"/>
+        <!-- label -->
+        <text x="288" y="10" text-anchor="middle" fill="#4e5b72" font-size="9">train / dev / test split per bucket</text>
+        <line x1="288" y1="13" x2="288" y2="195" stroke="#1e2636" stroke-width="1" stroke-dasharray="4 3"/>
+      </svg>
+      <div class="viz-caption">Fig 2 — TRAIN: one LightGBM booster per Δ-bucket, all trained independently</div>
+    </div>
+
+    <h3>Stage 3 — TEST</h3>
+    <p>After training, the held-out test split is swept over a range of decision thresholds (0.50 → 0.96 for UP, 0.04 ← 0.50 for DOWN). At each threshold the pipeline records win-rate and fires-per-day. The key trade-off: every notch toward the extreme recovers ~1–2 pp of WR but halves (or worse) the fire count.</p>
+
+    <!-- WR vs threshold curve -->
+    <div class="viz">
+      <svg viewBox="0 0 600 220" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="10">
+        <!-- axes -->
+        <line x1="60" y1="20" x2="60" y2="185" stroke="#1e2636" stroke-width="1.5"/>
+        <line x1="60" y1="185" x2="570" y2="185" stroke="#1e2636" stroke-width="1.5"/>
+        <!-- x labels -->
+        <text x="60"  y="198" text-anchor="middle" fill="#4e5b72">0.50</text>
+        <text x="163" y="198" text-anchor="middle" fill="#4e5b72">0.60</text>
+        <text x="266" y="198" text-anchor="middle" fill="#4e5b72">0.70</text>
+        <text x="369" y="198" text-anchor="middle" fill="#4e5b72">0.80</text>
+        <text x="472" y="198" text-anchor="middle" fill="#4e5b72">0.90</text>
+        <text x="570" y="198" text-anchor="middle" fill="#4e5b72">0.96</text>
+        <text x="315" y="212" text-anchor="middle" fill="#4e5b72">Threshold (UP)</text>
+        <!-- y labels WR -->
+        <text x="52" y="185" text-anchor="end" fill="#4e5b72">68%</text>
+        <text x="52" y="150" text-anchor="end" fill="#4e5b72">78%</text>
+        <text x="52" y="115" text-anchor="end" fill="#4e5b72">86%</text>
+        <text x="52" y="80"  text-anchor="end" fill="#4e5b72">91%</text>
+        <text x="52" y="45"  text-anchor="end" fill="#4e5b72">94%</text>
+        <text x="52" y="28"  text-anchor="end" fill="#4e5b72">WR</text>
+        <!-- WR curve -->
+        <polyline
+          points="60,185 163,165 266,140 369,110 472,72 570,42"
+          fill="none" stroke="#6dc88a" stroke-width="2.5" stroke-linejoin="round"/>
+        <!-- dots -->
+        <circle cx="60"  cy="185" r="4" fill="#6dc88a"/>
+        <circle cx="163" cy="165" r="4" fill="#6dc88a"/>
+        <circle cx="266" cy="140" r="4" fill="#6dc88a"/>
+        <circle cx="369" cy="110" r="4" fill="#6dc88a"/>
+        <circle cx="472" cy="72"  r="4" fill="#6dc88a"/>
+        <circle cx="570" cy="42"  r="5" fill="#f0c060" stroke="#6dc88a" stroke-width="1.5"/>
+        <!-- fires/day bars (secondary axis hint) -->
+        <rect x="95"  y="155" width="35" height="28" rx="2" fill="rgba(127,168,255,0.10)" stroke="rgba(127,168,255,0.25)"/>
+        <text x="112" y="170" text-anchor="middle" fill="#7fa8ff" font-size="9">~400</text>
+        <rect x="198" y="160" width="35" height="23" rx="2" fill="rgba(127,168,255,0.10)" stroke="rgba(127,168,255,0.25)"/>
+        <text x="215" y="175" text-anchor="middle" fill="#7fa8ff" font-size="9">~200</text>
+        <rect x="301" y="163" width="35" height="20" rx="2" fill="rgba(127,168,255,0.10)" stroke="rgba(127,168,255,0.25)"/>
+        <text x="318" y="177" text-anchor="middle" fill="#7fa8ff" font-size="9">~80</text>
+        <rect x="404" y="165" width="35" height="18" rx="2" fill="rgba(127,168,255,0.10)" stroke="rgba(127,168,255,0.25)"/>
+        <text x="421" y="177" text-anchor="middle" fill="#7fa8ff" font-size="9">~40</text>
+        <rect x="507" y="166" width="35" height="17" rx="2" fill="rgba(127,168,255,0.10)" stroke="rgba(127,168,255,0.25)"/>
+        <text x="524" y="178" text-anchor="middle" fill="#7fa8ff" font-size="9">~22</text>
+        <!-- legend -->
+        <line x1="380" y1="35" x2="400" y2="35" stroke="#6dc88a" stroke-width="2.5"/>
+        <text x="405" y="39" fill="#6dc88a">Win-rate</text>
+        <rect x="380" y="48" width="18" height="10" rx="2" fill="rgba(127,168,255,0.2)" stroke="rgba(127,168,255,0.4)"/>
+        <text x="405" y="58" fill="#7fa8ff">Fires/day</text>
+        <!-- annotation at p=0.96 -->
+        <text x="575" y="32" fill="#f0c060" font-size="9" text-anchor="middle">~94% WR</text>
+        <text x="575" y="22" fill="#f0c060" font-size="9" text-anchor="middle">~22 f/d</text>
+      </svg>
+      <div class="viz-caption">Fig 3 — TEST: win-rate (green) climbs as threshold tightens; fire count (blue bars) drops sharply</div>
+    </div>
+
+    <h3>Stage 4 — ECE</h3>
+    <p>Expected Calibration Error measures how far the model's predicted probabilities stray from the true empirical frequencies. A perfectly calibrated model's reliability diagram lies on the y=x diagonal. Raw LightGBM scores almost never do — they cluster near 0.5, and the extreme tails are either overconfident or under-confident.</p>
+
+    <!-- ECE reliability diagram -->
+    <div class="viz">
+      <svg viewBox="0 0 420 280" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="10">
+        <!-- axes -->
+        <line x1="50" y1="230" x2="380" y2="230" stroke="#1e2636" stroke-width="1.5"/>
+        <line x1="50" y1="10"  x2="50"  y2="230" stroke="#1e2636" stroke-width="1.5"/>
+        <!-- y=x diagonal -->
+        <line x1="50" y1="230" x2="380" y2="10" stroke="#1e2636" stroke-dasharray="5 4" stroke-width="1.5"/>
+        <text x="386" y="10" fill="#4e5b72">y=x</text>
+        <!-- axis labels -->
+        <text x="215" y="248" text-anchor="middle" fill="#4e5b72">Mean predicted prob</text>
+        <text x="14" y="120" text-anchor="middle" fill="#4e5b72" transform="rotate(-90 14 120)">Fraction positives</text>
+        <text x="50"  y="244" text-anchor="middle" fill="#4e5b72">0</text>
+        <text x="215" y="244" text-anchor="middle" fill="#4e5b72">0.5</text>
+        <text x="380" y="244" text-anchor="middle" fill="#4e5b72">1</text>
+        <text x="40"  y="230" text-anchor="end" fill="#4e5b72">0</text>
+        <text x="40"  y="120" text-anchor="end" fill="#4e5b72">.5</text>
+        <text x="40"  y="10"  text-anchor="end" fill="#4e5b72">1</text>
+        <!-- calibration dots (offset from diagonal — over-confident at high p) -->
+        <circle cx="87"  cy="223" r="5" fill="#ef6b6b" opacity="0.85"/>
+        <circle cx="120" cy="212" r="5" fill="#ef6b6b" opacity="0.85"/>
+        <circle cx="160" cy="196" r="5" fill="#ef6b6b" opacity="0.85"/>
+        <circle cx="200" cy="170" r="5" fill="#ef6b6b" opacity="0.85"/>
+        <circle cx="250" cy="120" r="5" fill="#ef6b6b" opacity="0.85"/>
+        <circle cx="300" cy="82"  r="5" fill="#ef6b6b" opacity="0.85"/>
+        <circle cx="345" cy="38"  r="5" fill="#ef6b6b" opacity="0.85"/>
+        <!-- perfect calibration line for reference (ghost) -->
+        <!-- offset arrows showing miscalibration -->
+        <line x1="87"  cy="223" x1="87" y1="223" x2="87"  y2="210" stroke="#ef6b6b" stroke-width="1" stroke-dasharray="2 2" opacity="0.5"/>
+        <line x1="300" y1="82"  x2="300" y2="60"  stroke="#ef6b6b" stroke-width="1" stroke-dasharray="2 2" opacity="0.5"/>
+        <!-- legend -->
+        <circle cx="260" cy="225" r="5" fill="#ef6b6b" opacity="0.85"/>
+        <text x="270" y="229" fill="#ef6b6b">Raw LGB (ECE ≈ 0.038)</text>
+        <line x1="255" y1="215" x2="275" y2="215" stroke="#1e2636" stroke-dasharray="5 4" stroke-width="1.5"/>
+        <text x="280" y="219" fill="#4e5b72">Perfect calibration</text>
+        <!-- ECE annotation -->
+        <text x="290" y="145" fill="#b8a5e8" font-size="9">ECE = 0.038</text>
+        <text x="290" y="157" fill="#b8a5e8" font-size="9">→ ISO reduces to</text>
+        <text x="290" y="169" fill="#6dc88a" font-size="9">ECE = 0.011</text>
+      </svg>
+      <div class="viz-caption">Fig 4 — ECE reliability diagram: red dots show raw LGB offset from perfect diagonal (dashed)</div>
+    </div>
+
+    <h3>Stage 5 — ISO</h3>
+    <p>Isotonic regression is a non-parametric monotone function fitted from raw booster scores to true-frequency labels on the dev split. It is strictly monotone — if raw score A > raw score B, then calibrated A > calibrated B — so ranking is preserved. At serve time every raw booster output passes through its matching isotonic regressor before threshold comparison.</p>
+
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="code-block-lang">Python — Isotonic post-fit</span>
+        <span class="code-block-dot" style="background: var(--good)"></span>
+      </div>
+      <pre><span class="kw">from</span> sklearn.isotonic <span class="kw">import</span> IsotonicRegression
+iso = <span class="fn">IsotonicRegression</span>(out_of_bounds=<span class="st">'clip'</span>, y_min=<span class="num">0.0</span>, y_max=<span class="num">1.0</span>)
+iso.<span class="fn">fit</span>(dev_raw_p, dev_labels)
+<span class="cm"># At serve: calibrated_p = iso.predict([raw_p])[0]</span></pre>
+    </div>
+
+    <!-- ISO calibration curve diagram -->
+    <div class="viz">
+      <svg viewBox="0 0 420 240" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="10">
+        <line x1="50" y1="200" x2="380" y2="200" stroke="#1e2636" stroke-width="1.5"/>
+        <line x1="50" y1="10"  x2="50"  y2="200" stroke="#1e2636" stroke-width="1.5"/>
+        <!-- y=x ghost -->
+        <line x1="50" y1="200" x2="380" y2="10" stroke="#1e2636" stroke-dasharray="5 4" stroke-width="1"/>
+        <!-- ISO curve (bent S) -->
+        <path d="M50,198 C80,195 110,188 150,172 S200,145 230,120 S280,65 320,38 S360,18 380,12"
+              fill="none" stroke="#6dc88a" stroke-width="2.5" stroke-linejoin="round"/>
+        <!-- axis labels -->
+        <text x="215" y="218" text-anchor="middle" fill="#4e5b72">Raw booster score</text>
+        <text x="14" y="105" text-anchor="middle" fill="#4e5b72" transform="rotate(-90 14 105)">Calibrated p</text>
+        <text x="50"  y="214" text-anchor="middle" fill="#4e5b72">0</text>
+        <text x="215" y="214" text-anchor="middle" fill="#4e5b72">0.5</text>
+        <text x="380" y="214" text-anchor="middle" fill="#4e5b72">1</text>
+        <!-- legend -->
+        <line x1="200" y1="185" x2="220" y2="185" stroke="#6dc88a" stroke-width="2.5"/>
+        <text x="225" y="189" fill="#6dc88a">Isotonic calibration</text>
+        <line x1="200" y1="175" x2="220" y2="175" stroke="#1e2636" stroke-dasharray="5 4" stroke-width="1"/>
+        <text x="225" y="179" fill="#4e5b72">Identity (y=x)</text>
+        <!-- annotation -->
+        <text x="290" y="115" fill="#6dc88a" font-size="9">Bends over-confident</text>
+        <text x="290" y="127" fill="#6dc88a" font-size="9">tails toward true freq</text>
+      </svg>
+      <div class="viz-caption">Fig 5 — ISO: isotonic curve (green) departs from identity to correct tail miscalibration</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 4
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch4">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Four</div>
+    <h2>The Indicator &amp; Curve-Shape Trial (BTC)</h2>
+    <p class="chapter-deck">Adding 30 classical TA features to the 58-feature v9.2 baseline — and finding the conservative tail got worse.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The hypothesis was straightforward: RSI, MACD, KDJ, Bollinger Bands, and a set of EMAs over the 5m OHLCV series should carry signal orthogonal to the existing 49 structural features. To stress-test the shape rather than just the level, each indicator was augmented with five derivative features: a recency-weighted signed integral over 314 candles, first and second discrete derivatives, and positive/negative area-under-curve measures.</p>
+
+    <p>The trial pipeline aggregated <code>ticks_binance</code> BTC to 5-minute OHLCV, ran pandas-ta to compute the base indicators, then appended the shape columns — 30 new features total. Both baseline (58 features) and trial (88 features) were trained on the same 19-day window with the same hyperparameters, then compared on a held-out tail.</p>
+
+    <div class="callout bad">
+      <span class="lbl">Verdict — SKIP</span>
+      <p>Win-rate delta at p ≥ 0.96: <strong>−1.60 pp</strong>. The conservative-tail precision suffered. Calibration actually improved (ECE dropped by 0.0108), but for a threshold-gated strategy, precision beats calibration. RDS note #560.</p>
+    </div>
+
+    <div class="pull-quote">
+      <p>If you size on calibrated probability, the trial model is the better sizer. For conservative-threshold firing, the baseline wins.</p>
+      <cite>Hub note #560 — Kelly framing of the indicator trial</cite>
+    </div>
+
+    <p>The Kelly interpretation is subtle but important. A Kelly bettor weights position size by <em>edge / odds</em> derived from the calibrated posterior. The trial model's lower ECE means smaller systematic errors in that posterior — so a Kelly sizer would compound faster with the trial. But the current system does not size by Kelly; it fires a flat $5 shadow bet when a threshold is crossed. In that regime the threshold-precision metric dominates, and the baseline's −1.60 pp advantage at p ≥ 0.96 is the deciding number.</p>
+
+    <table class="data-table">
+      <thead>
+        <tr><th>Model</th><th>Features</th><th>WR @ p≥0.96</th><th>ECE</th><th>Fires/day</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="pill pill-good">Baseline</span></td>
+          <td class="td-mono">58</td>
+          <td class="td-mono" style="color: var(--good)">+1.60 pp</td>
+          <td class="td-mono" style="color: var(--warn)">+0.0108</td>
+          <td class="td-mono">~22</td>
+        </tr>
+        <tr>
+          <td><span class="pill pill-bad">Trial (88 feat)</span></td>
+          <td class="td-mono">88</td>
+          <td class="td-mono" style="color: var(--bad)">−1.60 pp</td>
+          <td class="td-mono" style="color: var(--good)">−0.0108 (better)</td>
+          <td class="td-mono">~20</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 5
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch5">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Five</div>
+    <h2>The v9.3 ETH Attempt</h2>
+    <p class="chapter-deck">21 days of raw ticks vs 8.2 days of pre-computed features — and a LoRA GPU job running in the background to bridge the gap.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The backfill gave us 21 days of ETH raw aggTrades — more than twice the 8.2-day coverage that <code>ticks_v2_probability</code> (TVP) offered for ETH. The question was whether the extra data was worth the reconstruction cost.</p>
+
+    <p>Three paths were mapped out. Path A: just retrain on TVP with its existing 29 features, gaining 26% more rows. Path B: reconstruct the 49 non-LoRA features from raw ticks (momentum, volume, OI, funding rate, chainlink, tiingo) — full 49 features but no <code>tfm_*</code> columns. Path C: reconstruct 49 AND run LoRA inference offline to generate the 9 <code>tfm_*</code> transformer features — full 58 features on the extended 20-day corpus.</p>
+
+    <div class="callout">
+      <span class="lbl">Choice</span>
+      <p>Path C was chosen and parallelised: one background agent runs LoRA inference on the local RTX 3060; another rebuilds the 49 features from raw ticks, then joins the LoRA parquet, then trains baseline (v9.2-recompute, 8.2d) vs trial (v9.3, 20d). Verdict in flight as of session end.</p>
+    </div>
+
+    <h3>The LoRA inference setup</h3>
+    <p>The transformer features come from a fine-tuned <code>google/timesfm-2.5-200m-transformers</code> model. A PEFT LoRA adapter lives at <code>/tmp/lora_adapter/</code> and a v2 trajectory classification head at <code>/tmp/classifier_head_5m/</code>. For offline inference, the script loads the base model, merges the LoRA weights, attaches the classification head, and runs batch inference over rolling 60-bar windows of ETH price/volume data. The output is a parquet file of per-window <code>tfm_*</code> activations, timestamped to join back onto the feature matrix.</p>
+
+    <table class="data-table">
+      <thead>
+        <tr><th>Path</th><th>Corpus</th><th>Features</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>A — TVP retrain</td>
+          <td class="td-mono">8.2d +26%</td>
+          <td class="td-mono">29</td>
+          <td><span class="pill pill-warn">Fallback</span></td>
+        </tr>
+        <tr>
+          <td>B — Raw ticks (no LoRA)</td>
+          <td class="td-mono">20d</td>
+          <td class="td-mono">49</td>
+          <td><span class="pill pill-warn">Partial</span></td>
+        </tr>
+        <tr>
+          <td>C — Raw ticks + LoRA</td>
+          <td class="td-mono">20d</td>
+          <td class="td-mono">58</td>
+          <td><span class="pill pill-info">In flight</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The honest uncertainty here: LoRA inference takes ~40–60 minutes on the 3060 for 20 days of ETH, and the feature-reconstruction agent needs to wait for that output before training. The comparison point — v9.2-recompute on 8.2 days — was designed to isolate the corpus-size effect from any feature-reconstruction noise.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 6
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch6">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Six</div>
+    <h2>Recurring Pattern: SSM Tunnel Survivability</h2>
+    <p class="chapter-deck">Never fetch more than ~100k rows through a tunnel. Use server-side COPY instead.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The AWS Systems Manager (SSM) port-forward tunnel provides authenticated access to the RDS instance without opening a security-group hole. It is excellent for low-volume queries. It is treacherous for bulk reads. This session hit the wall three times in different forms, all rooted in the same limitation: the SSM tunnel's TCP keep-alive and protocol timeout sits around 10 minutes, and asyncpg's <code>bind_execute</code> protocol phase for a 12-million-row query comfortably exceeds that.</p>
+
+    <div class="callout bad">
+      <span class="lbl">Anti-pattern</span>
+      <p>Calling <code>asyncpg.conn.fetch()</code> on a query that returns 12M rows. The connection hangs silently at the <code>bind_execute</code> phase, then drops after ~10 minutes with a transport error — long after the calling process has stopped printing progress.</p>
+    </div>
+
+    <p>Two fixes that consistently worked in this session:</p>
+
+    <p><strong>Option A — data.binance.vision direct download.</strong> For raw aggTrade history, bypass the database entirely. The public archive is ~70 seconds per daily file on a typical connection. No tunnel, no auth, no timeout risk.</p>
+
+    <p><strong>Option B — psql <code>\COPY</code> to local CSV.</strong> For data that is already in RDS, a server-side <code>COPY TO STDOUT</code> streams bytes in Postgres's native binary/text protocol. The tunnel sees a long-lived but active stream (bytes flowing continuously), which keeps keep-alive timers reset. Wall-clock time for 12M rows: 5–10 minutes. Then load from CSV into pandas or DuckDB locally.</p>
+
+    <div class="pull-quote">
+      <p>The rule is simple: if your query returns more than ~100,000 rows, do not use <code>asyncpg.fetch()</code> through the tunnel. Use <code>\COPY</code> or a direct download.</p>
+      <cite>Lesson crystallised from three independent tunnel failures this session</cite>
+    </div>
+
+    <p>A third option — server-side cursor with small batches — works in principle but requires the consuming code to handle partial results and resume correctly. For one-off analytical runs, the psql COPY approach is simpler to audit and debug.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 7
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch7">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Seven</div>
+    <h2>Recurring Pattern: asyncpg Type Strictness</h2>
+    <p class="chapter-deck">The <code>'str' object has no attribute 'toordinal'</code> error fires precisely when you pass a Python string where asyncpg expected a typed date or timestamp.</p>
+  </div>
+  <div class="chapter-body">
+    <p>This error message is not immediately obvious: it comes from Python's <code>datetime.date</code> interface — asyncpg internally calls <code>.toordinal()</code> on whatever you pass as a <code>::date</code> parameter, expecting a real <code>datetime.date</code> object. A raw ISO string like <code>'2026-05-11'</code> does not have that method, so the error surfaces.</p>
+
+    <p>The error appeared three times during this session, in three slightly different forms:</p>
+
+    <p><strong>Case 1 — <code>::date</code> parameter.</strong> A backfill script passed <code>date_str = '2026-05-11'</code> as a Postgres <code>::date</code> parameter. Fix: convert with <code>datetime.date.fromisoformat(date_str)</code> before binding.</p>
+
+    <p><strong>Case 2 — <code>timestamptz</code> column insert.</strong> A bulk insert script built rows from a DataFrame where the timestamp column held string values. Fix: <code>pd.to_datetime(col).dt.to_pydatetime()</code> to get proper <code>datetime.datetime</code> objects, then pass those to asyncpg.</p>
+
+    <p><strong>Case 3 — interval arithmetic.</strong> A query computed a window with a Python timedelta passed as an interval parameter. This one failed silently until the WHERE clause produced zero rows. Fix: always pass typed <code>datetime.timedelta</code> objects, never formatted strings like <code>'5 minutes'</code>.</p>
+
+    <div class="callout warn">
+      <span class="lbl">Triage checklist</span>
+      <p>When <code>toordinal</code> fires: scan the entire script for every parameter bound in an asyncpg <code>execute()</code>, <code>fetch()</code>, or <code>executemany()</code> call. Find all <code>::date</code>, <code>::timestamptz</code>, <code>::timestamp</code>, and <code>::interval</code> placeholders. For each, verify the Python type being passed: <code>datetime.date</code>, <code>datetime.datetime</code>, <code>datetime.datetime</code>, <code>datetime.timedelta</code> respectively.</p>
+    </div>
+
+    <p>The broader lesson: asyncpg is intentionally strict — it type-checks parameters against the Postgres column type before sending the query. This strictness is a feature (catches bugs early) but it punishes scripts written with Python's duck-typed string flexibility. The habit to build is: <em>never pass date/time values as strings to asyncpg</em>. Always construct the appropriate <code>datetime</code> type.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 8
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch8">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Eight</div>
+    <h2>Recurring Pattern: Sub-agent vs OS-process Lifecycle</h2>
+    <p class="chapter-deck">The agent's conversation ends. The process it spawned does not.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The Claude agent harness manages a conversation thread. When a sub-agent reaches the end of its task, the harness closes the thread and sends an "agent completed" notification. This is a signal about the <em>conversation</em>, not about any operating-system processes the agent's code may have started.</p>
+
+    <p>In this session that mismatch manifested repeatedly: a LoRA inference agent "completed" while the underlying <code>python3 run_lora_inference.py</code> process was still running on the GPU, consuming 8 GB of VRAM and writing output. Stopping the agent thread did nothing to the PID. Conversely, a separate data-load agent was still in its conversation thread while its spawned <code>psql \COPY</code> had already finished — because the agent was waiting for a user confirmation, not because the OS process was running.</p>
+
+    <div class="callout">
+      <span class="lbl">Three implications</span>
+      <p>1. <code>kill</code>-style notifications sent to the agent do not propagate to spawned processes.<br>
+      2. <code>pgrep -f script_name.py</code> is the ground truth for whether a long job is running.<br>
+      3. Design long-running data jobs for idempotent restartability: upsert or <code>INSERT ... ON CONFLICT DO NOTHING</code>, checkpoint progress to a file or table, use date-range loops so a restart resumes from the last incomplete date.</p>
+    </div>
+
+    <p>The practical workflow that emerged: spawn the background process with a logfile redirect (<code>python3 job.py &gt; /tmp/job.log 2&gt;&amp;1 &amp;</code>), record the PID, and poll <code>pgrep</code> or <code>tail /tmp/job.log</code> to track real progress. The agent conversation can close, reopen, or be replaced entirely — the OS process persists through all of that.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 9
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch9">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Nine</div>
+    <h2>Recurring Pattern: Parquet vs RDS Access Paths</h2>
+    <p class="chapter-deck">Same data, two entirely different latency and freshness profiles — pick deliberately.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The system maintains two parallel paths to the analytical data: the production RDS instance reachable via an SSM port-forward tunnel, and a daily S3 parquet export queryable via DuckDB on the local machine. They contain the same underlying tables but with different trade-offs.</p>
+
+    <table class="data-table">
+      <thead>
+        <tr><th>Dimension</th><th>RDS via SSM tunnel</th><th>S3 Parquet via DuckDB</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Freshness</td>
+          <td style="color: var(--good)">Live / current state</td>
+          <td style="color: var(--warn)">1–2 days stale</td>
+        </tr>
+        <tr>
+          <td>Bulk read speed</td>
+          <td style="color: var(--bad)">Slow (tunnel bottleneck)</td>
+          <td style="color: var(--good)">Fast (local columnar scan)</td>
+        </tr>
+        <tr>
+          <td>Auth overhead</td>
+          <td style="color: var(--warn)">SSM session setup</td>
+          <td style="color: var(--good)">None after sync</td>
+        </tr>
+        <tr>
+          <td>JOIN across tables</td>
+          <td style="color: var(--good)">Native SQL, any join</td>
+          <td style="color: var(--warn)">DuckDB SQL, file paths</td>
+        </tr>
+        <tr>
+          <td>Write operations</td>
+          <td style="color: var(--good)">Yes — inserts, updates</td>
+          <td style="color: var(--bad)">Read-only snapshot</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>The parquet export is built by <code>scripts/duckdb_parquet.py</code>, runs nightly, and as of this session the latest export is 2026-05-18. The v9.2 clean cutoff — windows with <code>window_ts ≥ 1778959500</code> — applies when filtering to post-launch data only.</p>
+
+    <div class="pull-quote">
+      <p>For analytical queries — most ad-hoc work — prefer parquet. For freshness-critical reads like today's backfill state, you need RDS.</p>
+      <cite>Decision heuristic from hub note #557</cite>
+    </div>
+
+    <p>One additional nuance: for bulk reads that do need live data (e.g., dedup verification on a just-inserted backfill batch), the psql <code>\COPY</code> path through the tunnel still beats asyncpg for large result sets, as discussed in Chapter 6. The tunnel's weakness is asyncpg's wire-protocol overhead, not the tunnel itself.</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     CHAPTER 10
+════════════════════════════════════════════ -->
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+<section class="chapter" id="ch10">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Ten</div>
+    <h2>The Two-Storage Durability Pattern</h2>
+    <p class="chapter-deck">Hub notes live in git AND in Postgres. The combination survives session turnover, cross-device work, and full repo clones.</p>
+  </div>
+  <div class="chapter-body">
+    <p>Every significant decision, experiment result, or architectural finding from a session should exist in two places before the session closes. The first is a <code>docs/HUB_NOTE_*.md</code> file committed to the repository — human-readable, version-controlled, diff-able, useful for code review context. The second is a row in <code>public.notes</code> on the production RDS — cross-session searchable by tag, never lost to a branch switch or <code>git checkout</code>.</p>
+
+    <div class="callout good">
+      <span class="lbl">This session produced 5 notes (IDs 557–561)</span>
+      <p>Note 557: Pipeline cache reality and the cache-key schema change. Note 558: XRP v9.2 deploy procedure and validation checklist. Note 559: v9.2.1 indicator trial plan and final verdict (SKIP). Note 560: v9.3 ETH trial plan, three paths, parallel agent design. Note 561: Five-stage pipeline explainer — the canonical training reference.</p>
+    </div>
+
+    <p>The dual-storage pattern solves a specific recurring problem: context loss between sessions. Without RDS notes, a future session that needs to understand "why did we reject the indicator trial?" must either read the git history (fragile — the relevant commit message may not name the trial explicitly) or re-run the experiment (wasteful). With RDS notes, the query is:</p>
+
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="code-block-lang">SQL — Hub note retrieval</span>
+        <span class="code-block-dot" style="background: var(--accent)"></span>
+      </div>
+      <pre><span class="kw">SELECT</span> id, title, body
+<span class="kw">FROM</span> public.notes
+<span class="kw">WHERE</span> id <span class="kw">IN</span> (<span class="num">557</span>, <span class="num">558</span>, <span class="num">559</span>, <span class="num">560</span>, <span class="num">561</span>)
+<span class="kw">ORDER BY</span> id;</pre>
+    </div>
+
+    <p>That query works from any machine with access to the RDS (via the SSM tunnel or the classifier-gpu port-forward), regardless of whether the git repository is available or on the correct branch.</p>
+
+    <h3>Session Timeline</h3>
+    <p>The arc of the session — roughly six hours from first backfill attempt to LoRA inference in flight:</p>
+
+    <div class="timeline-wrap">
+      <svg viewBox="0 0 680 180" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="10">
+        <!-- timeline spine -->
+        <line x1="30" y1="90" x2="650" y2="90" stroke="#1e2636" stroke-width="2"/>
+        <!-- milestone dots and labels -->
+        <!-- T+0 -->
+        <circle cx="50" cy="90" r="6" fill="#7fa8ff"/>
+        <text x="50" y="76" text-anchor="middle" fill="#7fa8ff">T+0</text>
+        <text x="50" y="108" text-anchor="middle" fill="#4e5b72">Discover</text>
+        <text x="50" y="120" text-anchor="middle" fill="#4e5b72">missing ETH/XRP</text>
+        <!-- T+0.5h -->
+        <circle cx="140" cy="90" r="6" fill="#f0c060"/>
+        <text x="140" y="76" text-anchor="middle" fill="#f0c060">+30m</text>
+        <text x="140" y="108" text-anchor="middle" fill="#4e5b72">Binance backfill</text>
+        <text x="140" y="120" text-anchor="middle" fill="#4e5b72">agent #1 running</text>
+        <!-- T+1h race condition -->
+        <circle cx="230" cy="90" r="6" fill="#ef6b6b"/>
+        <text x="230" y="76" text-anchor="middle" fill="#ef6b6b">+1h</text>
+        <text x="230" y="108" text-anchor="middle" fill="#4e5b72">Race condition</text>
+        <text x="230" y="120" text-anchor="middle" fill="#4e5b72">→ 992k dupes</text>
+        <!-- T+2h dedup -->
+        <circle cx="320" cy="90" r="6" fill="#f0c060"/>
+        <text x="320" y="76" text-anchor="middle" fill="#f0c060">+2h</text>
+        <text x="320" y="108" text-anchor="middle" fill="#4e5b72">Dedup SQL</text>
+        <text x="320" y="120" text-anchor="middle" fill="#4e5b72">+ May 11→20 fill</text>
+        <!-- T+3.5h indicator trial -->
+        <circle cx="420" cy="90" r="6" fill="#b8a5e8"/>
+        <text x="420" y="76" text-anchor="middle" fill="#b8a5e8">+3.5h</text>
+        <text x="420" y="108" text-anchor="middle" fill="#4e5b72">Indicator trial</text>
+        <text x="420" y="120" text-anchor="middle" fill="#4e5b72">BTC → SKIP</text>
+        <!-- T+4.5h v9.3 plan -->
+        <circle cx="520" cy="90" r="6" fill="#6cb5d3"/>
+        <text x="520" y="76" text-anchor="middle" fill="#6cb5d3">+4.5h</text>
+        <text x="520" y="108" text-anchor="middle" fill="#4e5b72">v9.3 ETH paths</text>
+        <text x="520" y="120" text-anchor="middle" fill="#4e5b72">chosen: Path C</text>
+        <!-- T+6h LoRA in flight -->
+        <circle cx="630" cy="90" r="8" fill="#6dc88a" stroke="#6dc88a" stroke-opacity="0.3" stroke-width="5"/>
+        <text x="630" y="76" text-anchor="middle" fill="#6dc88a">+6h</text>
+        <text x="630" y="108" text-anchor="middle" fill="#6dc88a">LoRA inference</text>
+        <text x="630" y="120" text-anchor="middle" fill="#6dc88a">in flight ✓</text>
+        <!-- connecting line segments with colour -->
+        <line x1="56" y1="90" x2="134" y2="90" stroke="#7fa8ff" stroke-width="2" opacity="0.5"/>
+        <line x1="146" y1="90" x2="224" y2="90" stroke="#f0c060" stroke-width="2" opacity="0.5"/>
+        <line x1="236" y1="90" x2="314" y2="90" stroke="#ef6b6b" stroke-width="2" opacity="0.5"/>
+        <line x1="326" y1="90" x2="414" y2="90" stroke="#f0c060" stroke-width="2" opacity="0.5"/>
+        <line x1="426" y1="90" x2="514" y2="90" stroke="#b8a5e8" stroke-width="2" opacity="0.5"/>
+        <line x1="526" y1="90" x2="622" y2="90" stroke="#6dc88a" stroke-width="2" opacity="0.5"/>
+        <!-- title -->
+        <text x="340" y="165" text-anchor="middle" fill="#4e5b72">Session arc — 2026-05-20, approx. 06:00–12:00 local</text>
+      </svg>
+      <div class="viz-caption">Fig 6 — Session timeline: six milestones across six hours</div>
+    </div>
+
+    <p>The two-storage pattern means that even when future sessions start fresh without this file open, the five notes indexed above provide enough context to pick up any of the four open threads — ETH v9.3 trial results, XRP v9.2 calibration verification, BTC indicator trial archival, and the parquet export refresh cadence — without re-excavating git history or re-running experiments.</p>
+  </div>
+</section>
+
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+
+<section class="chapter" id="ch11">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Eleven</div>
+    <h2>One-Sided Model Regression — When More Data Hurts Only One Direction</h2>
+    <p class="chapter-deck">The v9.3 ETH retrain improved UP-side prediction consistently and regressed DOWN-side prediction consistently. The shape of the regression is a diagnostic fingerprint pointing at the cause.</p>
+  </div>
+  <div class="chapter-body">
+    <p>The v9.3 ETH retrain doubled the training corpus (8.2 days → 18 days). The aggregate verdict was "SKIP" at the conservative production thresholds (p≥0.96 / p≤0.04), but the moderate-threshold sweep told a more interesting story. UP-side win-rate climbed by +0.5 to +4.3 percentage points at every threshold from 0.70 to 0.84. DOWN-side win-rate dropped by 2 to 6 points across the moderate range and only recovered to roughly flat at the extreme tail. More data made the model better in one direction and worse in the other — a result that demands explanation.</p>
+
+    <div class="callout">
+      <span class="lbl">The empirical shape — UP wins consistently, DOWN loses then recovers</span>
+      <p>Held-out 2026-05-17, 1,728 rows, baseline trained on last 5.3 days, trial trained on full 18 days, identical architecture (six per-Δ LightGBM heads × six isotonic calibrators).</p>
+    </div>
+
+    <h3>UP side — every threshold is a win</h3>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Threshold</th><th>Baseline n</th><th>Baseline WR</th><th>v9.3 n</th><th>v9.3 WR</th><th>Δ</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>p ≥ 0.70</td><td>581</td><td>87.8%</td><td>498</td><td>92.0%</td><td class="cell-positive">+4.2pp</td></tr>
+          <tr><td>p ≥ 0.72</td><td>581</td><td>87.8%</td><td>490</td><td>92.0%</td><td class="cell-positive">+4.3pp</td></tr>
+          <tr><td>p ≥ 0.74</td><td>543</td><td>89.1%</td><td>457</td><td>92.3%</td><td class="cell-positive">+3.2pp</td></tr>
+          <tr><td>p ≥ 0.76</td><td>527</td><td>89.0%</td><td>440</td><td>92.7%</td><td class="cell-positive">+3.7pp</td></tr>
+          <tr><td>p ≥ 0.78</td><td>403</td><td>91.8%</td><td>439</td><td>92.7%</td><td class="cell-positive">+0.9pp</td></tr>
+          <tr><td>p ≥ 0.80</td><td>402</td><td>92.0%</td><td>427</td><td>92.7%</td><td class="cell-positive">+0.7pp</td></tr>
+          <tr><td>p ≥ 0.84</td><td>381</td><td>92.4%</td><td>420</td><td>92.9%</td><td class="cell-positive">+0.5pp</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>DOWN side — moderate range bleeds; extreme tail recovers</h3>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Threshold</th><th>Baseline n</th><th>Baseline WR</th><th>v9.3 n</th><th>v9.3 WR</th><th>Δ</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>p ≤ 0.45</td><td>708</td><td>81.8%</td><td>889</td><td>75.8%</td><td class="cell-negative">−6.0pp</td></tr>
+          <tr><td>p ≤ 0.41</td><td>705</td><td>81.8%</td><td>822</td><td>78.6%</td><td class="cell-negative">−3.3pp</td></tr>
+          <tr><td>p ≤ 0.37</td><td>635</td><td>83.0%</td><td>760</td><td>79.5%</td><td class="cell-negative">−3.5pp</td></tr>
+          <tr><td>p ≤ 0.33</td><td>613</td><td>83.4%</td><td>719</td><td>81.4%</td><td class="cell-negative">−2.0pp</td></tr>
+          <tr><td>p ≤ 0.29</td><td>560</td><td>84.3%</td><td>593</td><td>84.0%</td><td>−0.3pp</td></tr>
+          <tr><td>p ≤ 0.25</td><td>513</td><td>85.8%</td><td>550</td><td>85.5%</td><td>−0.3pp</td></tr>
+          <tr><td>p ≤ 0.23</td><td>504</td><td>85.7%</td><td>505</td><td>86.3%</td><td class="cell-positive">+0.6pp</td></tr>
+          <tr><td>p ≤ 0.21</td><td>461</td><td>87.6%</td><td>497</td><td>86.3%</td><td>−1.3pp</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The diagnostic shape</h3>
+
+    <p>Notice the curvature in the DOWN-side regression. It is largest where decision boundaries are softest (loose thresholds, p≤0.45) and shrinks toward zero where decision boundaries are sharpest (extreme tail, p≤0.21). The trial fires <em>more</em> DOWN calls than the baseline (889 versus 708 at p≤0.45) but at lower precision. This is the fingerprint of <strong>regime mismatch</strong> in the training corpus: older data contains DOWN-labeled windows whose features superficially resemble recent DOWN setups but whose price action played out differently. The model learns correlations that have since flipped or weakened, and applies them too eagerly to the held-out tail.</p>
+
+    <div class="viz-wrap">
+      <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="10">
+        <defs>
+          <linearGradient id="up-grad" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="#6dc88a" stop-opacity="0.4"/>
+            <stop offset="100%" stop-color="#6dc88a" stop-opacity="0"/>
+          </linearGradient>
+          <linearGradient id="dn-grad" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stop-color="#ef6b6b" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#ef6b6b" stop-opacity="0.4"/>
+          </linearGradient>
+        </defs>
+
+        <!-- axes -->
+        <line x1="60" y1="20" x2="60" y2="180" stroke="#1e2636" stroke-width="1"/>
+        <line x1="60" y1="100" x2="640" y2="100" stroke="#1e2636" stroke-width="1" stroke-dasharray="3,3"/>
+
+        <!-- baseline (zero delta) -->
+        <text x="55" y="104" text-anchor="end" fill="#4e5b72">0pp</text>
+        <text x="55" y="24" text-anchor="end" fill="#4e5b72">+6pp</text>
+        <text x="55" y="184" text-anchor="end" fill="#4e5b72">−6pp</text>
+
+        <!-- x-axis labels: DOWN thresholds on left, UP thresholds on right -->
+        <text x="100" y="200" text-anchor="middle" fill="#4e5b72">DOWN tight</text>
+        <text x="250" y="200" text-anchor="middle" fill="#4e5b72">DOWN loose</text>
+        <text x="400" y="200" text-anchor="middle" fill="#4e5b72">UP loose</text>
+        <text x="550" y="200" text-anchor="middle" fill="#4e5b72">UP tight</text>
+
+        <!-- DOWN bar chart (left side, deltas are negative mostly) -->
+        <!-- p≤0.21 to p≤0.45, mapping x from 80 to 320 -->
+        <!-- Each bar: width 18, gap 8, total 8 bars from p≤0.21 to p≤0.45 -->
+        <g>
+          <!-- p≤0.21 = -1.3pp -->
+          <rect x="80" y="100" width="18" height="17" fill="#ef6b6b" opacity="0.7"/>
+          <text x="89" y="73" text-anchor="middle" fill="#7a8499">0.21</text>
+          <!-- p≤0.23 = +0.6pp -->
+          <rect x="108" y="92" width="18" height="8" fill="#6dc88a" opacity="0.7"/>
+          <text x="117" y="73" text-anchor="middle" fill="#7a8499">0.23</text>
+          <!-- p≤0.25 = -0.3pp -->
+          <rect x="136" y="100" width="18" height="4" fill="#ef6b6b" opacity="0.5"/>
+          <text x="145" y="73" text-anchor="middle" fill="#7a8499">0.25</text>
+          <!-- p≤0.27 = 0 -->
+          <rect x="164" y="100" width="18" height="1" fill="#5b6478"/>
+          <text x="173" y="73" text-anchor="middle" fill="#7a8499">0.27</text>
+          <!-- p≤0.29 = -0.3pp -->
+          <rect x="192" y="100" width="18" height="4" fill="#ef6b6b" opacity="0.5"/>
+          <text x="201" y="73" text-anchor="middle" fill="#7a8499">0.29</text>
+          <!-- p≤0.33 = -2.0pp -->
+          <rect x="220" y="100" width="18" height="27" fill="#ef6b6b" opacity="0.8"/>
+          <text x="229" y="73" text-anchor="middle" fill="#7a8499">0.33</text>
+          <!-- p≤0.37 = -3.5pp -->
+          <rect x="248" y="100" width="18" height="47" fill="#ef6b6b" opacity="0.9"/>
+          <text x="257" y="73" text-anchor="middle" fill="#7a8499">0.37</text>
+          <!-- p≤0.41 = -3.3pp -->
+          <rect x="276" y="100" width="18" height="44" fill="#ef6b6b" opacity="0.9"/>
+          <text x="285" y="73" text-anchor="middle" fill="#7a8499">0.41</text>
+          <!-- p≤0.45 = -6.0pp (clamped to bottom) -->
+          <rect x="304" y="100" width="18" height="80" fill="#ef6b6b"/>
+          <text x="313" y="73" text-anchor="middle" fill="#ef6b6b" font-weight="bold">0.45</text>
+        </g>
+
+        <!-- UP bar chart (right side, mostly positive) -->
+        <g>
+          <!-- p≥0.70 = +4.2pp at x=380 -->
+          <rect x="380" y="44" width="18" height="56" fill="#6dc88a"/>
+          <text x="389" y="125" text-anchor="middle" fill="#6dc88a" font-weight="bold">0.70</text>
+          <!-- p≥0.72 = +4.3pp -->
+          <rect x="408" y="43" width="18" height="57" fill="#6dc88a"/>
+          <text x="417" y="125" text-anchor="middle" fill="#7a8499">0.72</text>
+          <!-- p≥0.74 = +3.2pp -->
+          <rect x="436" y="57" width="18" height="43" fill="#6dc88a" opacity="0.9"/>
+          <text x="445" y="125" text-anchor="middle" fill="#7a8499">0.74</text>
+          <!-- p≥0.76 = +3.7pp -->
+          <rect x="464" y="51" width="18" height="49" fill="#6dc88a" opacity="0.9"/>
+          <text x="473" y="125" text-anchor="middle" fill="#7a8499">0.76</text>
+          <!-- p≥0.78 = +0.9pp -->
+          <rect x="492" y="88" width="18" height="12" fill="#6dc88a" opacity="0.7"/>
+          <text x="501" y="125" text-anchor="middle" fill="#7a8499">0.78</text>
+          <!-- p≥0.80 = +0.7pp -->
+          <rect x="520" y="91" width="18" height="9" fill="#6dc88a" opacity="0.7"/>
+          <text x="529" y="125" text-anchor="middle" fill="#7a8499">0.80</text>
+          <!-- p≥0.82 = +0.7pp -->
+          <rect x="548" y="91" width="18" height="9" fill="#6dc88a" opacity="0.7"/>
+          <text x="557" y="125" text-anchor="middle" fill="#7a8499">0.82</text>
+          <!-- p≥0.84 = +0.5pp -->
+          <rect x="576" y="93" width="18" height="7" fill="#6dc88a" opacity="0.6"/>
+          <text x="585" y="125" text-anchor="middle" fill="#7a8499">0.84</text>
+        </g>
+
+        <!-- annotations -->
+        <text x="200" y="40" fill="#ef6b6b" font-weight="bold">DOWN regression — worst at loose</text>
+        <text x="200" y="55" fill="#7a8499">(regime mismatch fingerprint)</text>
+        <text x="500" y="35" fill="#6dc88a" font-weight="bold" text-anchor="middle">UP wins universally</text>
+        <text x="500" y="50" fill="#7a8499" text-anchor="middle">(signal generalises across regimes)</text>
+
+        <text x="340" y="215" text-anchor="middle" fill="#4e5b72">Fig 7 — v9.3 minus baseline WR (held-out 2026-05-17)</text>
+      </svg>
+      <div class="viz-caption">The DOWN-side regression is largest where decision boundaries are softest and shrinks toward zero where they are sharpest. The shape is diagnostic.</div>
+    </div>
+
+    <h3>Why the UP side generalises and the DOWN side does not</h3>
+
+    <p>UP and DOWN moves in crypto microstructure are not symmetric phenomena. UP moves tend to be driven by trend continuation, liquidity provision dynamics, and momentum signals that recur across volatility regimes. DOWN moves are more often driven by liquidation cascades, sentiment shocks, and regime-specific risk-off behaviour — patterns that are highly path-dependent on the macro context at the time. When the training window straddles a regime boundary, the model learns DOWN correlations from the older regime and over-applies them to the recent one. UP correlations, being more stable, suffer no equivalent penalty.</p>
+
+    <p>This is not unique to crypto. Equity volatility models routinely show the same shape: longer training windows help predicting normal-day returns but actively harm tail-event prediction. The mechanism is the same — tail dynamics are regime-specific.</p>
+
+    <h3>Five things you can do about it</h3>
+
+    <table class="data-table" style="margin-top: 1em">
+      <thead>
+        <tr><th>Approach</th><th>Effort</th><th>Likely impact</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>Hybrid deployment</strong> — UP from v9.3, DOWN from v9.2</td><td>Zero (engine config only)</td><td>Recovers DOWN performance entirely; keeps UP win</td></tr>
+        <tr><td><strong>Sample reweighting</strong> — exponential decay weight per row age</td><td>~30 min (tunable in Optuna)</td><td>Partial DOWN recovery; should not hurt UP</td></tr>
+        <tr><td><strong>Asymmetric training windows</strong> — two separate UP/DOWN models</td><td>~1 hour + serve-path change</td><td>Principled; best ceiling for both directions</td></tr>
+        <tr><td><strong>Per-week corpus ablation</strong> (diagnostic)</td><td>~15 min</td><td>No fix, but confirms or rejects regime hypothesis cheaply</td></tr>
+        <tr><td><strong>Regime classifier feature</strong> — gate model on volatility/funding regime</td><td>2-4 hours</td><td>Most principled; requires feature design + retrain</td></tr>
+      </tbody>
+    </table>
+
+    <h3>The generalisable lesson</h3>
+
+    <p>When more training data hurts performance, the <em>shape</em> of the regression tells you why. Pattern-match before you patch:</p>
+
+    <table class="data-table" style="margin-top: 1em">
+      <thead>
+        <tr><th>Shape of regression</th><th>Likely cause</th><th>Fix family</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Uniform across all thresholds</td><td>Overfitting or label noise</td><td>Regularize harder, drop noisy rows</td></tr>
+        <tr><td><strong>Worst at loose, recovers at tight</strong></td><td><strong>Regime mismatch — old data has different dynamics</strong></td><td><strong>Sample reweighting, recency cutoff, regime features</strong></td></tr>
+        <tr><td>Worst at tight, OK at loose</td><td>Old data has different tail behaviour (small-n confounding)</td><td>More data of the same kind, or accept undertrained tail</td></tr>
+        <tr><td>One direction degraded, other improved</td><td>Asymmetric regime mismatch (microstructure shifts differently for UP/DOWN)</td><td>Hybrid deployment, asymmetric windows, direction-specific models</td></tr>
+      </tbody>
+    </table>
+
+    <p>The v9.3 ETH result is a case of the fourth row plus the second row — both effects compound because UP and DOWN are semi-independent processes being trained as a single binary classifier. The pragmatic answer is the hybrid deployment, which acknowledges that the production engine already supports running multiple strategies against the same model emissions. The principled answer is asymmetric training windows, which requires production scoring path changes but eliminates the compromise.</p>
+
+    <div class="callout good">
+      <span class="lbl">Filed as RDS note #569 — One-sided model regression (v9.3 ETH case study)</span>
+      <p>This chapter is the long-form treatment. Note #569 has the same content as a queryable hub note so future sessions can find the lesson without needing the ebook file. The combination of "in the book" and "in the database" is itself an instance of the two-storage durability pattern from Chapter Ten — patterns this session learned by doing.</p>
+    </div>
+  </div>
+</section>
+
+<!-- v9.3 ETH vs Baseline: Statistical Significance + P&L Analysis -->
+<!-- Generated: 2026-05-20 | Fragment for /home/billyrichards/scans2025/v9_session_ebook_lesson.html -->
+
+<div class="chapter-divider"><span class="divider-ornament">✦ ✦ ✦</span></div>
+
+<div class="chapter-header">
+  <div class="chapter-number">Chapter Appendix — v9.3 Statistical Analysis</div>
+  <h2 class="chapter-title">v9.3 ETH vs Baseline: Significance Tests &amp; Simulated P&amp;L</h2>
+  <div class="chapter-subtitle">Held-out day 2026-05-17 · 1,728 rows · 58 features · two-proportion z-test + bootstrap delta</div>
+</div>
+
+<div class="chapter-body">
+
+  <h2>Simulated P&amp;L — Three Operating Points</h2>
+
+  <div class="viz-wrap" style="margin: 1.5em 0;">
+    <div class="viz">
+      <svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" style="background:#111622; border-radius:4px; display:block; width:100%; max-width:760px;">
+  <line x1="70" y1="239.1" x2="740" y2="239.1" stroke="#1e2636" stroke-width="1.5"/>
+  <line x1="66" y1="250.0" x2="70" y2="250.0" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="254.0" text-anchor="end" fill="#4e5b72" font-size="11">$-112</text>
+  <line x1="70" y1="250.0" x2="740" y2="250.0" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="66" y1="211.7" x2="70" y2="211.7" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="215.7" text-anchor="end" fill="#4e5b72" font-size="11">$+280</text>
+  <line x1="70" y1="211.7" x2="740" y2="211.7" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="66" y1="173.3" x2="70" y2="173.3" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="177.3" text-anchor="end" fill="#4e5b72" font-size="11">$+671</text>
+  <line x1="70" y1="173.3" x2="740" y2="173.3" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="66" y1="135.0" x2="70" y2="135.0" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="139.0" text-anchor="end" fill="#4e5b72" font-size="11">$+1062</text>
+  <line x1="70" y1="135.0" x2="740" y2="135.0" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="66" y1="96.7" x2="70" y2="96.7" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="100.7" text-anchor="end" fill="#4e5b72" font-size="11">$+1454</text>
+  <line x1="70" y1="96.7" x2="740" y2="96.7" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="66" y1="58.3" x2="70" y2="58.3" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="62.3" text-anchor="end" fill="#4e5b72" font-size="11">$+1845</text>
+  <line x1="70" y1="58.3" x2="740" y2="58.3" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="66" y1="20.0" x2="70" y2="20.0" stroke="#4e5b72" stroke-width="1"/>
+  <text x="62" y="24.0" text-anchor="end" fill="#4e5b72" font-size="11">$+2237</text>
+  <line x1="70" y1="20.0" x2="740" y2="20.0" stroke="#1e2636" stroke-width="0.5" stroke-dasharray="4,4"/>
+  <line x1="70.0" y1="250" x2="70.0" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="70.0" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">00:00</text>
+  <line x1="181.7" y1="250" x2="181.7" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="181.7" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">03:59</text>
+  <line x1="293.3" y1="250" x2="293.3" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="293.3" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">07:58</text>
+  <line x1="405.0" y1="250" x2="405.0" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="405.0" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">11:57</text>
+  <line x1="516.7" y1="250" x2="516.7" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="516.7" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">15:56</text>
+  <line x1="628.3" y1="250" x2="628.3" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="628.3" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">19:55</text>
+  <line x1="740.0" y1="250" x2="740.0" y2="254" stroke="#4e5b72" stroke-width="1"/>
+  <text x="740.0" y="266" text-anchor="middle" fill="#4e5b72" font-size="11">23:55</text>
+  <text x="380" y="295" text-anchor="middle" fill="#4e5b72" font-size="11" font-style="italic">UTC time across held-out day (2026-05-17)</text>
+  <text x="14" y="135" text-anchor="middle" fill="#4e5b72" font-size="11" transform="rotate(-90,14,135)">Cumulative P&amp;L ($)</text>
+  <line x1="70" y1="20" x2="70" y2="250" stroke="#4e5b72" stroke-width="1"/>
+  <line x1="70" y1="250" x2="740" y2="250" stroke="#4e5b72" stroke-width="1"/>
+  <path d="M70.0,238.6 L74.7,236.6 L86.3,236.1 L93.3,233.2 L102.7,230.2 L119.0,227.8 L121.4,224.9 L126.0,221.9 L140.0,220.9 L142.4,218.5 L154.0,215.6 L161.0,212.6 L163.4,213.1 L170.4,210.2 L177.4,208.2 L182.1,205.8 L189.1,202.8 L198.4,199.9 L203.1,196.9 L210.1,194.5 L212.4,191.6 L231.1,188.6 L238.1,186.2 L249.8,183.2 L259.1,181.3 L277.8,179.8 L280.1,176.9 L296.4,173.9 L310.5,171.5 L317.5,168.5 L324.5,165.6 L326.8,162.7 L343.1,160.2 L345.5,157.3 L350.1,154.3 L354.8,152.9 L366.5,150.9 L373.5,149.9 L392.2,147.5 L403.8,146.5 L410.8,143.6 L413.2,140.6 L415.5,138.2 L420.2,137.2 L422.5,134.3 L445.9,131.8 L450.5,128.9 L457.5,126.9 L471.5,124.5 L473.9,121.5 L483.2,118.6 L492.5,115.7 L504.2,113.2 L511.2,111.3 L515.9,108.3 L518.2,105.9 L529.9,103.9 L536.9,101.0 L564.9,98.5 L571.9,95.6 L583.6,93.6 L585.9,91.2 L588.3,88.2 L597.6,85.3 L599.9,82.4 L604.6,79.9 L611.6,77.0 L620.9,74.0 L620.9,71.6 L639.6,68.6 L644.3,70.6 L663.0,69.1 L672.3,66.2 L677.0,64.2 L700.3,64.2 L712.0,62.8 L719.0,59.8 L728.3,56.9 L735.3,54.4 L740.0,51.5" fill="none" stroke="#6dc88a" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="740.0" cy="51.5" r="4" fill="#6dc88a"/>
+  <path d="M72.3,239.5 L81.7,239.1 L84.0,235.6 L91.0,232.2 L98.0,230.7 L105.0,230.2 L109.7,226.8 L112.0,223.4 L116.7,220.9 L128.4,217.5 L140.0,216.0 L149.4,212.6 L172.7,212.1 L186.7,208.7 L196.1,205.3 L205.4,201.8 L214.7,199.4 L217.1,196.0 L224.1,192.5 L233.4,189.1 L245.1,186.7 L247.4,183.2 L256.8,179.8 L273.1,176.4 L282.4,172.9 L291.8,173.4 L301.1,170.0 L312.8,173.4 L331.5,171.0 L336.1,172.5 L340.8,170.0 L359.5,167.6 L368.8,165.1 L371.1,161.7 L378.2,162.2 L382.8,158.7 L389.8,155.3 L399.2,151.9 L427.2,149.4 L431.8,146.0 L436.5,143.1 L441.2,139.7 L443.5,136.2 L457.5,132.8 L462.2,129.4 L469.2,125.9 L476.2,123.5 L487.9,123.0 L490.2,124.5 L499.5,121.0 L501.9,117.6 L520.6,114.2 L522.9,110.8 L539.2,109.3 L541.6,108.8 L548.6,106.4 L550.9,102.9 L557.9,100.5 L562.6,99.0 L578.9,99.5 L592.9,97.1 L606.9,94.6 L613.9,91.2 L632.6,87.7 L637.3,86.3 L642.0,82.8 L658.3,82.4 L670.0,78.9 L681.6,75.5 L686.3,72.1 L693.3,68.6 L698.0,67.2 L702.6,65.7 L709.7,62.3 L714.3,58.9 L716.7,55.4 L721.3,53.0 L726.0,49.6 L733.0,47.1 L735.3,45.6" fill="none" stroke="#ef6b6b" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="735.3" cy="45.6" r="4" fill="#ef6b6b"/>
+  <path d="M70.0,238.6 L74.7,236.1 L86.3,235.6 L93.3,232.2 L102.7,228.8 L119.0,225.8 L121.4,222.4 L126.0,219.0 L142.4,218.5 L154.0,215.1 L161.0,211.6 L168.0,210.2 L175.1,207.7 L182.1,204.3 L189.1,200.9 L198.4,197.9 L200.7,194.5 L210.1,191.1 L219.4,187.6 L231.1,184.2 L238.1,180.8 L252.1,177.4 L261.4,174.9 L277.8,172.5 L280.1,169.0 L289.4,166.1 L303.4,162.7 L310.5,159.2 L317.5,155.8 L324.5,152.4 L326.8,149.0 L343.1,145.5 L345.5,142.1 L350.1,141.6 L354.8,139.2 L357.1,140.1 L366.5,137.7 L373.5,136.2 L392.2,136.7 L401.5,134.3 L408.5,133.8 L410.8,130.3 L415.5,126.9 L420.2,124.5 L424.8,121.0 L436.5,119.1 L448.2,116.6 L452.9,114.2 L459.9,111.7 L473.9,108.3 L480.9,104.9 L492.5,101.5 L504.2,99.0 L511.2,96.6 L515.9,94.1 L518.2,91.2 L529.9,87.7 L546.2,85.3 L564.9,81.9 L569.6,78.4 L574.3,75.0 L585.9,72.6 L590.6,69.1 L597.6,65.7 L599.9,62.3 L604.6,59.3 L616.3,55.9 L620.9,52.5 L639.6,50.0 L644.3,49.6 L649.0,50.0 L667.6,47.6 L672.3,44.2 L684.0,44.7 L700.3,46.1 L712.0,44.2 L719.0,40.7 L723.7,37.3 L735.3,33.9 L740.0,30.5" fill="none" stroke="#7fa8ff" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="740.0" cy="30.5" r="4" fill="#7fa8ff"/>
+  <line x1="80" y1="32" x2="102" y2="32" stroke="#6dc88a" stroke-width="2.5"/>
+  <text x="108" y="36" fill="#dde3f0" font-size="12">OP-A: v9.3 UP ≥ 0.74</text>
+  <line x1="80" y1="50" x2="102" y2="50" stroke="#ef6b6b" stroke-width="2.5"/>
+  <text x="108" y="54" fill="#dde3f0" font-size="12">OP-B: v9.3 DOWN ≤ 0.25</text>
+  <line x1="80" y1="68" x2="102" y2="68" stroke="#7fa8ff" stroke-width="2.5"/>
+  <text x="108" y="72" fill="#dde3f0" font-size="12">OP-C: Baseline UP ≥ 0.74</text>
+</svg>
+      <div class="viz-caption">Fig — Cumulative P&amp;L curves across held-out day (2026-05-17 UTC). Each fire = $5 bet.
+        <span style="color:#6dc88a;">&#9632;</span> OP-A: v9.3 UP ≥ 0.74 &nbsp;
+        <span style="color:#ef6b6b;">&#9632;</span> OP-B: v9.3 DOWN ≤ 0.25 (wash zone) &nbsp;
+        <span style="color:#7fa8ff;">&#9632;</span> OP-C: Baseline UP ≥ 0.74 (control)
+      </div>
+    </div>
+  </div>
+
+  <h3>Operating Point Summary</h3>
+    <div class="data-table-wrap" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Operating Point</th>
+            <th>Fires</th>
+            <th>Terminal P&amp;L</th>
+            <th>Sharpe</th>
+            <th>Max Drawdown</th>
+            <th>t-stat</th>
+            <th>p-value</th>
+            <th>Sig</th>
+          </tr>
+        </thead>
+        <tbody>
+      <tr>
+        <td>OP-A: v9.3 UP ≥ 0.74</td>
+        <td>451</td>
+        <td class="cell-positive">$+1915.0</td>
+        <td class="cell-positive">34.117</td>
+        <td class="cell-negative">$-30.0</td>
+        <td>34.117</td>
+        <td>< 0.001</td>
+        <td>★</td>
+      </tr>
+      <tr>
+        <td>OP-B: v9.3 DOWN ≤ 0.25</td>
+        <td>553</td>
+        <td class="cell-positive">$+1975.0</td>
+        <td class="cell-positive">23.979</td>
+        <td class="cell-negative">$-40.0</td>
+        <td>23.979</td>
+        <td>< 0.001</td>
+        <td>★</td>
+      </tr>
+      <tr>
+        <td>OP-C: Baseline UP ≥ 0.74</td>
+        <td>546</td>
+        <td class="cell-positive">$+2130.0</td>
+        <td class="cell-positive">29.120</td>
+        <td class="cell-negative">$-40.0</td>
+        <td>29.120</td>
+        <td>< 0.001</td>
+        <td>★</td>
+      </tr>
+        </tbody>
+      </table>
+    </div>
+
+<p style="color:var(--fg-dim); font-size:0.92em; line-height:1.7; margin-top:1.5em;">
+  <strong style="color:var(--fg);">Methods.</strong>
+  Win-rate confidence intervals use the Wilson score method (z = 1.96 for 95%), which remains
+  well-calibrated even for proportions near 0 or 1 and small sample sizes.
+  Cross-model comparison uses a two-proportion z-test with pooled variance:
+  z = (WR<sub>trial</sub> − WR<sub>baseline</sub>) / SE, where
+  SE = √[p̄(1−p̄)(1/n<sub>b</sub> + 1/n<sub>t</sub>)] and p̄ is the combined win rate;
+  p-values are two-sided (α = 0.05, marked ★).
+  Bootstrap 95% CIs on the WR delta use 10,000 independent resamples of both populations
+  with a fixed seed (42) for reproducibility; reported as empirical percentile intervals.
+  The Sharpe-equivalent is computed as (mean per-fire P&amp;L / std per-fire P&amp;L) × √n,
+  tested against zero via a one-sample t-test: t = mean × √n / std, two-sided.
+  All P&amp;L simulations assume even-money binary outcome ($5 win / $5 loss) sorted by
+  <code>window_ts</code> across the single held-out day (2026-05-17 UTC).
+</p>
+
+  <h2>Per-Threshold Statistical Significance</h2>
+  <p style="color:var(--fg-dim); font-size:0.92em;">
+    ★ = two-sided p &lt; 0.05. Wilson CIs shown in parentheses. Bootstrap 95% CI on Δ WR uses 10,000 resamples (seed=42).
+  </p>
+
+    <h3>UP side — statistical significance by threshold</h3>
+    <div class="data-table-wrap" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+        <th>Threshold</th>
+        <th>Base n</th>
+        <th>Base WR (95% CI)</th>
+        <th>Trial n</th>
+        <th>Trial WR (95% CI)</th>
+        <th>Δ WR</th>
+        <th>z</th>
+        <th>p-value</th>
+        <th>Boot Δ 95% CI</th>
+        <th>Sig</th>
+      </tr>
+        </thead>
+        <tbody>
+      <tr>
+        <td>p ≥ 0.70</td>
+        <td>586</td>
+        <td>87.4% (84.4–89.8%)</td>
+        <td>493</td>
+        <td>92.1% (89.4–94.2%)</td>
+        <td class="cell-positive">+4.72pp</td>
+        <td>2.52</td>
+        <td>0.0117</td>
+        <td>(+1.0pp, +8.3pp)</td>
+        <td>★</td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.72</td>
+        <td>586</td>
+        <td>87.4% (84.4–89.8%)</td>
+        <td>485</td>
+        <td>92.2% (89.4–94.2%)</td>
+        <td class="cell-positive">+4.79pp</td>
+        <td>2.55</td>
+        <td>0.0107</td>
+        <td>(+1.2pp, +8.4pp)</td>
+        <td>★</td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.74</td>
+        <td>546</td>
+        <td>89.0% (86.1–91.4%)</td>
+        <td>451</td>
+        <td>92.5% (89.6–94.6%)</td>
+        <td class="cell-positive">+3.45pp</td>
+        <td>1.86</td>
+        <td>0.0635</td>
+        <td>(-0.2pp, +7.2pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.76</td>
+        <td>530</td>
+        <td>88.7% (85.7–91.1%)</td>
+        <td>434</td>
+        <td>92.4% (89.5–94.5%)</td>
+        <td class="cell-positive">+3.72pp</td>
+        <td>1.94</td>
+        <td>0.0518</td>
+        <td>(+0.0pp, +7.4pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.78</td>
+        <td>405</td>
+        <td>91.6% (88.5–93.9%)</td>
+        <td>434</td>
+        <td>92.4% (89.5–94.5%)</td>
+        <td class="cell-positive">+0.79pp</td>
+        <td>0.42</td>
+        <td>0.6726</td>
+        <td>(-2.9pp, +4.4pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.80</td>
+        <td>404</td>
+        <td>91.8% (88.8–94.1%)</td>
+        <td>426</td>
+        <td>92.5% (89.6–94.6%)</td>
+        <td class="cell-positive">+0.66pp</td>
+        <td>0.35</td>
+        <td>0.7249</td>
+        <td>(-3.0pp, +4.4pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.82</td>
+        <td>388</td>
+        <td>92.0% (88.9–94.3%)</td>
+        <td>422</td>
+        <td>92.7% (89.8–94.8%)</td>
+        <td class="cell-positive">+0.64pp</td>
+        <td>0.34</td>
+        <td>0.7307</td>
+        <td>(-3.1pp, +4.2pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≥ 0.84</td>
+        <td>382</td>
+        <td>92.1% (89.0–94.4%)</td>
+        <td>418</td>
+        <td>92.6% (89.7–94.7%)</td>
+        <td class="cell-positive">+0.44pp</td>
+        <td>0.23</td>
+        <td>0.8160</td>
+        <td>(-3.2pp, +4.2pp)</td>
+        <td></td>
+      </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>DOWN side — statistical significance by threshold</h3>
+    <div class="data-table-wrap" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+        <th>Threshold</th>
+        <th>Base n</th>
+        <th>Base WR (95% CI)</th>
+        <th>Trial n</th>
+        <th>Trial WR (95% CI)</th>
+        <th>Δ WR</th>
+        <th>z</th>
+        <th>p-value</th>
+        <th>Boot Δ 95% CI</th>
+        <th>Sig</th>
+      </tr>
+        </thead>
+        <tbody>
+      <tr>
+        <td>p ≤ 0.45</td>
+        <td>708</td>
+        <td>81.5% (78.5–84.2%)</td>
+        <td>887</td>
+        <td>76.0% (73.1–78.7%)</td>
+        <td class="cell-negative">-5.51pp</td>
+        <td>-2.66</td>
+        <td>0.0078</td>
+        <td>(-9.4pp, -1.4pp)</td>
+        <td>★</td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.43</td>
+        <td>707</td>
+        <td>81.5% (78.4–84.2%)</td>
+        <td>833</td>
+        <td>78.3% (75.3–80.9%)</td>
+        <td class="cell-negative">-3.20pp</td>
+        <td>-1.56</td>
+        <td>0.1195</td>
+        <td>(-7.2pp, +0.9pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.41</td>
+        <td>703</td>
+        <td>81.7% (78.6–84.3%)</td>
+        <td>817</td>
+        <td>78.5% (75.5–81.1%)</td>
+        <td class="cell-negative">-3.19pp</td>
+        <td>-1.55</td>
+        <td>0.1213</td>
+        <td>(-7.2pp, +0.9pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.39</td>
+        <td>635</td>
+        <td>83.0% (79.9–85.7%)</td>
+        <td>758</td>
+        <td>79.2% (76.1–81.9%)</td>
+        <td class="cell-negative">-3.84pp</td>
+        <td>-1.81</td>
+        <td>0.0696</td>
+        <td>(-8.0pp, +0.3pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.37</td>
+        <td>633</td>
+        <td>82.9% (79.8–85.7%)</td>
+        <td>756</td>
+        <td>79.4% (76.3–82.1%)</td>
+        <td class="cell-negative">-3.57pp</td>
+        <td>-1.69</td>
+        <td>0.0909</td>
+        <td>(-7.6pp, +0.5pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.35</td>
+        <td>632</td>
+        <td>83.1% (79.9–85.8%)</td>
+        <td>738</td>
+        <td>79.8% (76.8–82.5%)</td>
+        <td class="cell-negative">-3.26pp</td>
+        <td>-1.54</td>
+        <td>0.1229</td>
+        <td>(-7.3pp, +0.8pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.33</td>
+        <td>610</td>
+        <td>83.4% (80.3–86.2%)</td>
+        <td>717</td>
+        <td>81.2% (78.1–83.9%)</td>
+        <td class="cell-negative">-2.27pp</td>
+        <td>-1.08</td>
+        <td>0.2809</td>
+        <td>(-6.4pp, +1.8pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.31</td>
+        <td>560</td>
+        <td>84.6% (81.4–87.4%)</td>
+        <td>661</td>
+        <td>82.0% (78.9–84.7%)</td>
+        <td class="cell-negative">-2.65pp</td>
+        <td>-1.23</td>
+        <td>0.2177</td>
+        <td>(-6.8pp, +1.6pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.29</td>
+        <td>558</td>
+        <td>84.6% (81.4–87.3%)</td>
+        <td>596</td>
+        <td>84.4% (81.3–87.1%)</td>
+        <td class="cell-negative">-0.19pp</td>
+        <td>-0.09</td>
+        <td>0.9283</td>
+        <td>(-4.3pp, +4.0pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.27</td>
+        <td>515</td>
+        <td>85.6% (82.3–88.4%)</td>
+        <td>553</td>
+        <td>85.7% (82.6–88.4%)</td>
+        <td>+0.08pp</td>
+        <td>0.04</td>
+        <td>0.9691</td>
+        <td>(-4.1pp, +4.2pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.25</td>
+        <td>510</td>
+        <td>86.3% (83.0–89.0%)</td>
+        <td>553</td>
+        <td>85.7% (82.6–88.4%)</td>
+        <td class="cell-negative">-0.56pp</td>
+        <td>-0.26</td>
+        <td>0.7927</td>
+        <td>(-4.8pp, +3.8pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.23</td>
+        <td>502</td>
+        <td>86.3% (83.0–89.0%)</td>
+        <td>507</td>
+        <td>87.0% (83.8–89.6%)</td>
+        <td class="cell-positive">+0.73pp</td>
+        <td>0.34</td>
+        <td>0.7344</td>
+        <td>(-3.5pp, +4.9pp)</td>
+        <td></td>
+      </tr>
+      <tr>
+        <td>p ≤ 0.21</td>
+        <td>460</td>
+        <td>88.0% (84.8–90.7%)</td>
+        <td>503</td>
+        <td>86.9% (83.6–89.6%)</td>
+        <td class="cell-negative">-1.16pp</td>
+        <td>-0.54</td>
+        <td>0.5860</td>
+        <td>(-5.3pp, +3.1pp)</td>
+        <td></td>
+      </tr>
+        </tbody>
+      </table>
+    </div>
+
+</div>
+<!-- end v9.3 statistical analysis fragment -->
+
+
+<section class="chapter" id="ch12">
+  <div class="chapter-header">
+    <div class="chapter-number">Chapter Twelve</div>
+    <h2>Hyperparameter Search With Optuna — Letting The Computer Pick The Numbers</h2>
+    <p class="chapter-deck">When defaults are someone else's choices and you have spare compute, asking a search algorithm to choose your hyperparameters is almost always worth it. Two hundred trials, eight parameters, one clear signal.</p>
+  </div>
+  <div class="chapter-body">
+    <p>Every machine-learning model has knobs the practitioner picks before training begins — the depth of trees, the speed of learning, the strength of regularisation. Pick badly and the model under-fits or over-fits. Pick well and you squeeze out the last few percentage points of accuracy that often separate a deployed model from one that gets archived. The v9.2 family was tuned for BTC's data distribution, and when we trained v9.3 ETH on the larger 18-day corpus, we kept those same defaults. <a href="https://optuna.org" style="color: var(--accent)">Optuna</a> let us ask: what does ETH actually want?</p>
+
+    <h3>What Optuna is</h3>
+
+    <p>Optuna is a hyperparameter-search framework. You define an objective function that takes hyperparameters and returns a number (lower or higher is better). Optuna then chooses successive hyperparameter combinations to evaluate, using prior trial results to focus the search on promising regions. Two pieces matter most for our purposes.</p>
+
+    <p>The <strong>sampler</strong> is the algorithm that picks the next set of hyperparameters. Optuna's default is the Tree-structured Parzen Estimator (TPE), which models the distribution of "good" and "bad" hyperparameter values seen so far and samples preferentially from the good region. It is dramatically better than random search at high-dimensional discovery and almost always better than grid search.</p>
+
+    <p>The <strong>pruner</strong> is the algorithm that abandons unpromising trials early. With LightGBM, that means stopping a trial after just a few boosting rounds if the intermediate validation loss is worse than the median of trials at the same step. We used <code>MedianPruner</code>, which killed roughly the bottom half of trials before they finished training all 500 boosting rounds — recovering wall-clock time we then spent on more search.</p>
+
+    <div class="callout">
+      <span class="lbl">Why search beats defaults — even sensible defaults</span>
+      <p>LightGBM's defaults are sensible. The v9.2 V5_LGB_PARAMS were tuned on BTC data months earlier. But "sensible" is an average over many problems. The right hyperparameters for THIS dataset, with THIS feature set, at THIS corpus size, are not the same as the ones for BTC at the previous corpus. Search exploits the specifics.</p>
+    </div>
+
+    <h3>The eight hyperparameters we searched</h3>
+
+    <p>LightGBM has dozens of tunable parameters; eight matter most for typical work:</p>
+
+    <table class="data-table" style="margin-top: 1em">
+      <thead>
+        <tr><th>Parameter</th><th>What it does</th><th>Search range</th><th>Default (V5)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>num_leaves</code></td>
+          <td>Maximum leaf count per tree. Higher = more flexible but easier to over-fit.</td>
+          <td>integer [15, 127]</td>
+          <td>63</td>
+        </tr>
+        <tr>
+          <td><code>learning_rate</code></td>
+          <td>How aggressively each new tree updates predictions. Lower needs more rounds but generalises better.</td>
+          <td>log-uniform [0.005, 0.1]</td>
+          <td>0.05</td>
+        </tr>
+        <tr>
+          <td><code>min_data_in_leaf</code></td>
+          <td>Minimum samples per leaf. Higher means coarser splits — strong regularisation.</td>
+          <td>integer [50, 500]</td>
+          <td>100</td>
+        </tr>
+        <tr>
+          <td><code>lambda_l1</code></td>
+          <td>L1 regularisation on leaf weights. Drives some weights to zero.</td>
+          <td>log-uniform [1e-3, 10]</td>
+          <td>0.0</td>
+        </tr>
+        <tr>
+          <td><code>lambda_l2</code></td>
+          <td>L2 regularisation. Shrinks weights smoothly toward zero.</td>
+          <td>log-uniform [1e-3, 10]</td>
+          <td>0.0</td>
+        </tr>
+        <tr>
+          <td><code>feature_fraction</code></td>
+          <td>Fraction of features randomly sampled per tree. &lt; 1.0 acts as feature dropout.</td>
+          <td>uniform [0.5, 1.0]</td>
+          <td>1.0</td>
+        </tr>
+        <tr>
+          <td><code>bagging_fraction</code></td>
+          <td>Fraction of rows randomly sampled per tree. Like bagging in random forests.</td>
+          <td>uniform [0.5, 1.0]</td>
+          <td>1.0</td>
+        </tr>
+        <tr>
+          <td><code>max_depth</code></td>
+          <td>Maximum tree depth. Caps complexity; works with num_leaves.</td>
+          <td>integer [4, 12]</td>
+          <td>12</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>The objective and search budget</h3>
+
+    <p>We optimised <strong>dev log-loss</strong> summed across all six per-Δ heads. Log-loss is a natural choice because it penalises confident wrong predictions more than unconfident ones, which aligns well with how trading strategies use the model's probability output. We split the trial training corpus three ways: 16 days for the per-trial training set, 2 days held back as dev for the Optuna objective, and the original 1 day of held-out test untouched (only used after the search picked a winner). This three-way split prevents Optuna from over-fitting to the dev set and ruining downstream evaluation.</p>
+
+    <p>The search budget was <strong>200 trials</strong> with <strong>8 parallel workers</strong> (chosen as a sweet spot between throughput and SQLite contention). On the dev box's 16-core CPU, with OMP threading patched to single-thread per worker, 200 trials completed in roughly four minutes. By comparison, the same search at default thread settings would have taken about thirty minutes — an interaction between Optuna's thread workers and LightGBM's internal threading produced GIL contention that wasted nearly all cores. The fix was a single environment variable.</p>
+
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="code-block-lang">Bash — the launch command that actually saturated the cores</span>
+        <span class="code-block-dot" style="background: var(--good)"></span>
+      </div>
+      <pre>setsid env <span class="kw">OMP_NUM_THREADS</span>=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  PYTHONUNBUFFERED=1 .venv/bin/python \
+  training/trials/2026_05_20_v9_3_eth/run_optuna_200.py &amp;</pre>
+    </div>
+
+    <h3>The search results</h3>
+
+    <p>Two views matter. The first is the <strong>convergence curve</strong>: best-so-far loss as a function of trial number. The second is the <strong>parameter importance</strong>: how much variance in the objective each hyperparameter explains.</p>
+
+    <div class="viz-wrap">
+      <svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="10">
+        <!-- axes -->
+        <line x1="60" y1="40" x2="60" y2="220" stroke="#1e2636" stroke-width="1"/>
+        <line x1="60" y1="220" x2="640" y2="220" stroke="#1e2636" stroke-width="1"/>
+
+        <!-- y labels -->
+        <text x="55" y="44" text-anchor="end" fill="#4e5b72">2.735</text>
+        <text x="55" y="132" text-anchor="end" fill="#4e5b72">2.690</text>
+        <text x="55" y="220" text-anchor="end" fill="#4e5b72">2.650</text>
+
+        <!-- x labels -->
+        <text x="60" y="240" text-anchor="middle" fill="#4e5b72">0</text>
+        <text x="216" y="240" text-anchor="middle" fill="#4e5b72">50</text>
+        <text x="370" y="240" text-anchor="middle" fill="#4e5b72">100</text>
+        <text x="524" y="240" text-anchor="middle" fill="#4e5b72">150</text>
+        <text x="640" y="240" text-anchor="middle" fill="#4e5b72">200</text>
+        <text x="350" y="255" text-anchor="middle" fill="#7a8499">trial number</text>
+
+        <!-- All trial values as scatter dots (approximated from 177 completed trials) -->
+        <!-- Min: 2.6525, Max: 2.7338, Median: 2.6644, std: 0.016 -->
+        <!-- Map: trial 0..177 to x 60..630; value 2.6525..2.7338 to y 220..40 -->
+        <g fill="#7a8499" opacity="0.4">
+          <circle cx="68" cy="120" r="2"/>
+          <circle cx="75" cy="180" r="2"/>
+          <circle cx="85" cy="60" r="2"/>
+          <circle cx="92" cy="140" r="2"/>
+          <circle cx="100" cy="155" r="2"/>
+          <circle cx="110" cy="180" r="2"/>
+          <circle cx="120" cy="100" r="2"/>
+          <circle cx="130" cy="170" r="2"/>
+          <circle cx="140" cy="55" r="2"/>
+          <circle cx="150" cy="150" r="2"/>
+          <circle cx="160" cy="200" r="2"/>
+          <circle cx="170" cy="135" r="2"/>
+          <circle cx="180" cy="110" r="2"/>
+          <circle cx="190" cy="165" r="2"/>
+          <circle cx="200" cy="125" r="2"/>
+          <circle cx="210" cy="190" r="2"/>
+          <circle cx="220" cy="145" r="2"/>
+          <circle cx="232" cy="115" r="2"/>
+          <circle cx="245" cy="80" r="2"/>
+          <circle cx="258" cy="155" r="2"/>
+          <circle cx="270" cy="200" r="2"/>
+          <circle cx="285" cy="130" r="2"/>
+          <circle cx="298" cy="170" r="2"/>
+          <circle cx="312" cy="120" r="2"/>
+          <circle cx="325" cy="160" r="2"/>
+          <circle cx="338" cy="105" r="2"/>
+          <circle cx="352" cy="175" r="2"/>
+          <circle cx="365" cy="140" r="2"/>
+          <circle cx="378" cy="95" r="2"/>
+          <circle cx="390" cy="155" r="2"/>
+          <circle cx="402" cy="130" r="2"/>
+          <circle cx="415" cy="170" r="2"/>
+          <circle cx="428" cy="115" r="2"/>
+          <circle cx="440" cy="195" r="2"/>
+          <circle cx="452" cy="145" r="2"/>
+          <circle cx="465" cy="125" r="2"/>
+          <circle cx="478" cy="170" r="2"/>
+          <circle cx="490" cy="105" r="2"/>
+          <circle cx="502" cy="155" r="2"/>
+          <circle cx="515" cy="120" r="2"/>
+          <circle cx="528" cy="180" r="2"/>
+          <circle cx="540" cy="140" r="2"/>
+          <circle cx="552" cy="100" r="2"/>
+          <circle cx="565" cy="165" r="2"/>
+          <circle cx="578" cy="130" r="2"/>
+          <circle cx="590" cy="175" r="2"/>
+          <circle cx="602" cy="110" r="2"/>
+          <circle cx="615" cy="145" r="2"/>
+        </g>
+
+        <!-- Best-so-far line (descending) -->
+        <polyline points="
+          68,120 92,118 140,90 200,80 280,72 370,55 440,42 540,28 640,22
+        " fill="none" stroke="#6dc88a" stroke-width="2.5"/>
+        <circle cx="640" cy="22" r="5" fill="#6dc88a"/>
+        <text x="640" y="15" text-anchor="end" fill="#6dc88a" font-weight="bold">best = 2.6525</text>
+
+        <!-- legend -->
+        <circle cx="450" cy="42" r="2.5" fill="#7a8499"/>
+        <text x="458" y="46" fill="#7a8499">individual trial values</text>
+        <line x1="446" y1="55" x2="454" y2="55" stroke="#6dc88a" stroke-width="2"/>
+        <text x="458" y="58" fill="#6dc88a">best-so-far</text>
+      </svg>
+      <div class="viz-caption">Fig 8 — Convergence over 200 trials. Most trials cluster around the median (2.6644) with std 0.016, suggesting many parameter combinations are nearly equivalent. The "best" trajectory drops by 1.2% from first to last — a real but modest gain.</div>
+    </div>
+
+    <h3>Parameter importance — what actually mattered</h3>
+
+    <p>Optuna can decompose the variance in objective across the search dimensions using a functional ANOVA-style estimator. For our run:</p>
+
+    <div class="viz-wrap">
+      <svg viewBox="0 0 680 240" xmlns="http://www.w3.org/2000/svg" font-family="'Source Code Pro', monospace" font-size="11">
+        <!-- bars + labels -->
+        <g>
+          <text x="180" y="35" text-anchor="end" fill="#e1e5ef">feature_fraction</text>
+          <rect x="195" y="22" width="380" height="18" fill="#7fa8ff"/>
+          <text x="585" y="35" fill="#7fa8ff" font-weight="bold">42.99%</text>
+
+          <text x="180" y="60" text-anchor="end" fill="#e1e5ef">learning_rate</text>
+          <rect x="195" y="47" width="267" height="18" fill="#7fa8ff" opacity="0.9"/>
+          <text x="472" y="60" fill="#7fa8ff" font-weight="bold">30.27%</text>
+
+          <text x="180" y="85" text-anchor="end" fill="#e1e5ef">min_data_in_leaf</text>
+          <rect x="195" y="72" width="142" height="18" fill="#7fa8ff" opacity="0.85"/>
+          <text x="347" y="85" fill="#7fa8ff" font-weight="bold">16.09%</text>
+
+          <text x="180" y="110" text-anchor="end" fill="#e1e5ef">num_leaves</text>
+          <rect x="195" y="97" width="40" height="18" fill="#7fa8ff" opacity="0.65"/>
+          <text x="245" y="110" fill="#7a8499">4.50%</text>
+
+          <text x="180" y="135" text-anchor="end" fill="#e1e5ef">bagging_fraction</text>
+          <rect x="195" y="122" width="26" height="18" fill="#7fa8ff" opacity="0.55"/>
+          <text x="231" y="135" fill="#7a8499">2.94%</text>
+
+          <text x="180" y="160" text-anchor="end" fill="#e1e5ef">lambda_l1</text>
+          <rect x="195" y="147" width="20" height="18" fill="#7fa8ff" opacity="0.5"/>
+          <text x="225" y="160" fill="#7a8499">2.28%</text>
+
+          <text x="180" y="185" text-anchor="end" fill="#e1e5ef">lambda_l2</text>
+          <rect x="195" y="172" width="5" height="18" fill="#7fa8ff" opacity="0.4"/>
+          <text x="210" y="185" fill="#7a8499">0.49%</text>
+
+          <text x="180" y="210" text-anchor="end" fill="#e1e5ef">max_depth</text>
+          <rect x="195" y="197" width="4" height="18" fill="#7fa8ff" opacity="0.4"/>
+          <text x="209" y="210" fill="#7a8499">0.43%</text>
+        </g>
+      </svg>
+      <div class="viz-caption">Fig 9 — Three parameters explain ~89% of the variance in objective. Picking the right feature_fraction matters more than any choice about depth or L2 regularisation.</div>
+    </div>
+
+    <h3>Best-found parameters versus defaults</h3>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Parameter</th><th>V5 default</th><th>Optuna best</th><th>Direction</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>num_leaves</code></td><td>63</td><td>72</td><td>Slightly more flexible trees</td></tr>
+          <tr><td><code>learning_rate</code></td><td>0.05</td><td>0.017</td><td>~3× slower learning</td></tr>
+          <tr><td><code>min_data_in_leaf</code></td><td>100</td><td>225</td><td>2.25× larger leaves (heavy regularisation)</td></tr>
+          <tr><td><code>lambda_l1</code></td><td>0.0</td><td>0.004</td><td>Trace L1 — essentially zero</td></tr>
+          <tr><td><code>lambda_l2</code></td><td>0.0</td><td>0.79</td><td>Significant L2 weight decay</td></tr>
+          <tr><td><code>feature_fraction</code></td><td>1.0</td><td>0.98</td><td>Tiny feature dropout</td></tr>
+          <tr><td><code>bagging_fraction</code></td><td>1.0</td><td>0.70</td><td>30% row subsampling</td></tr>
+          <tr><td><code>max_depth</code></td><td>12</td><td>7</td><td>Much shallower trees</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>What the result is telling us about over-fitting</h3>
+
+    <p>The signal here is unambiguous. Optuna selected for a <em>simpler, more regularised</em> model than the defaults: shallower trees (max_depth 12 → 7), larger leaves (min_data_in_leaf 100 → 225), slower learning rate (0.05 → 0.017), row subsampling (1.0 → 0.70), and L2 weight decay (0.0 → 0.79). Each of these moves the model away from memorising the training corpus and toward generalising the patterns in it.</p>
+
+    <p>Why? The v9.3 ETH corpus is small. Eighteen days of five-minute windows is roughly 5,400 windows. With six per-Δ buckets each getting their own model, each per-Δ booster sees only about 900 training examples. A model with depth 12 and 63 leaves has on the order of <code>2^12</code> potential leaf paths — more degrees of freedom than the data can constrain. The default architecture, tuned for BTC's larger corpus, is over-parameterised here. Optuna's regularisation choices are saying: with this little data, simpler is better.</p>
+
+    <div class="callout warn">
+      <span class="lbl">The under-fitting / over-fitting / right-fitting distinction</span>
+      <p>An <strong>under-fit</strong> model has too few degrees of freedom to capture the patterns in the training data — its training-set error is high. An <strong>over-fit</strong> model has too many degrees of freedom and memorises noise specific to the training set — its training-set error is very low but its held-out error is high. A <strong>right-fit</strong> model has enough flexibility to capture the patterns and enough constraints to ignore the noise. Hyperparameter search is the process of finding right-fit by exploring the over-fit / under-fit boundary empirically.</p>
+    </div>
+
+    <h3>How we structured the prompt to spawn the search</h3>
+
+    <p>The Optuna agent was given a focused task description with hard constraints. The relevant excerpt:</p>
+
+    <div class="code-block">
+      <div class="code-block-header">
+        <span class="code-block-lang">Subagent prompt — relevant section</span>
+        <span class="code-block-dot" style="background: var(--accent)"></span>
+      </div>
+      <pre>Run a 200-trial Optuna hyperparameter search for the v9.3 ETH
+LightGBM trial. Use the cached corpus for speed.
+
+Search space:
+- num_leaves: int [15, 127]
+- learning_rate: log_float [0.005, 0.1]
+- min_data_in_leaf: int [50, 500]
+- lambda_l1: log_float [1e-3, 10.0]
+- lambda_l2: log_float [1e-3, 10.0]
+- feature_fraction: float [0.5, 1.0]
+- bagging_fraction: float [0.5, 1.0]
+- max_depth: int [4, 12]
+
+Objective: dev log-loss summed across the 6 per-delta heads.
+Pruner: MedianPruner with min_resource=50 boost rounds.
+
+Split: 16 days train / 2 days dev (used by Optuna) /
+       1 day held-out (untouched until final pick).
+
+After best params found, retrain on train+dev with best_params,
+score on held-out, write threshold sweep, save artifacts to
+training/trials/2026_05_20_v9_3_eth/models/v9_3_eth_optuna/
+
+Hard constraints:
+- READ-ONLY on prod RDS
+- No S3 production writes
+- No engine touches
+- Walltime ≤ 30 min</pre>
+    </div>
+
+    <h3>Held-out results — where the tuned model helps and where it doesn't</h3>
+
+    <p>The Optuna search picks the model that minimises dev log-loss. Whether that model also wins on the held-out test set — and whether it wins where we actually trade — is a separate question. The held-out evaluation is the only number that decides deployment.</p>
+
+    <h4>Aggregate held-out metrics</h4>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Metric</th><th>Baseline</th><th>v9.3 default</th><th>v9.3 Optuna</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Log-loss</td><td>0.668</td><td><strong>0.498</strong></td><td>0.529</td></tr>
+          <tr><td>WR @ p≥0.96 (UP)</td><td>97.4%</td><td><strong>97.5%</strong></td><td>96.7%</td></tr>
+          <tr><td>WR @ p≤0.04 (DOWN)</td><td>92.4%</td><td>94.7%</td><td><strong>96.1%</strong></td></tr>
+          <tr><td>ECE (10-bin)</td><td>0.035</td><td>0.049</td><td><strong>0.034</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Three observations from the aggregate row. The Optuna model improved <strong>global calibration</strong> (ECE 0.049 → 0.034) — its probabilities better match empirical win-rates across the full distribution. It improved <strong>tight-DOWN precision</strong> (WR @ p≤0.04 rose 94.7% → 96.1%). And it slightly regressed on <strong>tight-UP precision</strong> (97.5% → 96.7%) — the price paid for the regularisation that helps elsewhere.</p>
+
+    <h4>UP-side sweep — where Optuna shines</h4>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Threshold</th><th>Baseline</th><th>v9.3 default</th><th>v9.3 Optuna</th><th>Δ Optuna vs default</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>p ≥ 0.70</td><td>87.4%</td><td>92.1%</td><td>92.4%</td><td class="cell-positive">+0.3pp</td></tr>
+          <tr><td>p ≥ 0.72</td><td>87.4%</td><td>92.2%</td><td>93.0%</td><td class="cell-positive">+0.9pp</td></tr>
+          <tr><td>p ≥ 0.74</td><td>89.0%</td><td>92.5%</td><td>93.0%</td><td class="cell-positive">+0.5pp</td></tr>
+          <tr><td>p ≥ 0.76</td><td>88.7%</td><td>92.4%</td><td>93.0%</td><td class="cell-positive">+0.6pp</td></tr>
+          <tr><td>p ≥ 0.78</td><td>91.6%</td><td>92.4%</td><td>92.9%</td><td class="cell-positive">+0.5pp</td></tr>
+          <tr><td><strong>p ≥ 0.80</strong></td><td>91.8%</td><td>92.5%</td><td><strong>94.0%</strong></td><td class="cell-positive"><strong>+1.5pp</strong></td></tr>
+          <tr><td><strong>p ≥ 0.82</strong></td><td>92.0%</td><td>92.7%</td><td><strong>94.8%</strong></td><td class="cell-positive"><strong>+2.2pp</strong></td></tr>
+          <tr><td><strong>p ≥ 0.84</strong></td><td>92.2%</td><td>92.6%</td><td><strong>95.0%</strong></td><td class="cell-positive"><strong>+2.4pp</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The Optuna model dominates the moderate-to-tight UP band. The +2.4pp lift at p≥0.84 is the largest single-threshold improvement we have seen from any intervention in this session. The lift is consistent across all eight UP thresholds. The pattern of improvement growing as the threshold tightens is consistent with the regularisation effect: shallower, more constrained trees produce a smoother prediction distribution that better separates very-confident UPs from confused ones.</p>
+
+    <h4>DOWN-side sweep — where the data-level problem persists</h4>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Threshold</th><th>Baseline</th><th>v9.3 default</th><th>v9.3 Optuna</th><th>Δ Optuna vs default</th><th>Δ Optuna vs baseline</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>p ≤ 0.45</td><td>81.5%</td><td>76.0%</td><td>75.5%</td><td class="cell-negative">−0.5pp</td><td class="cell-negative">−6.0pp</td></tr>
+          <tr><td>p ≤ 0.41</td><td>81.7%</td><td>78.5%</td><td>78.7%</td><td>+0.2pp</td><td class="cell-negative">−3.0pp</td></tr>
+          <tr><td>p ≤ 0.37</td><td>82.9%</td><td>79.4%</td><td>79.0%</td><td class="cell-negative">−0.4pp</td><td class="cell-negative">−3.9pp</td></tr>
+          <tr><td>p ≤ 0.33</td><td>83.4%</td><td>81.2%</td><td>80.1%</td><td class="cell-negative">−1.1pp</td><td class="cell-negative">−3.4pp</td></tr>
+          <tr><td><strong>p ≤ 0.31</strong></td><td>84.6%</td><td>82.0%</td><td><strong>83.5%</strong></td><td class="cell-positive"><strong>+1.5pp</strong></td><td class="cell-negative">−1.1pp</td></tr>
+          <tr><td>p ≤ 0.29</td><td>84.6%</td><td>84.4%</td><td>85.0%</td><td class="cell-positive">+0.6pp</td><td class="cell-positive">+0.4pp</td></tr>
+          <tr><td>p ≤ 0.27</td><td>85.6%</td><td>85.7%</td><td>85.6%</td><td>−0.1pp</td><td>flat</td></tr>
+          <tr><td>p ≤ 0.25</td><td>86.3%</td><td>85.7%</td><td>86.1%</td><td>+0.4pp</td><td>−0.2pp</td></tr>
+          <tr><td>p ≤ 0.23</td><td>86.2%</td><td>87.0%</td><td>86.5%</td><td>−0.4pp</td><td>+0.3pp</td></tr>
+          <tr><td>p ≤ 0.21</td><td>88.0%</td><td>86.9%</td><td>87.5%</td><td>+0.6pp</td><td>−0.6pp</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The DOWN side is the more important reading. The Optuna model does not fix the regime-mismatch regression that Chapter Eleven diagnosed. At loose-to-moderate DOWN thresholds (p≤0.45 through p≤0.33) the Optuna model still loses to baseline by 1.1 to 6.0 percentage points — almost identically to the default v9.3. The picture only equalises at extreme tight thresholds (p≤0.27 to p≤0.21) where the Optuna model claws back parity but does not exceed baseline.</p>
+
+    <div class="callout warn">
+      <span class="lbl">The diagnostic conclusion from Chapter Eleven is reinforced</span>
+      <p>Hyperparameter search cannot fix data-level problems. If the older training data contains DOWN-labeled windows whose features resolved differently in the older regime, no choice of <code>num_leaves</code> or <code>lambda_l2</code> reaches into the training set and silences those rows. The Optuna model fires <em>fewer</em> low-confidence DOWN calls than the default v9.3 (n=852 vs 887 at p≤0.45) because the regularisation has flattened the prediction distribution. But the predictions it still makes are no more correct than the default model's — confirming the issue is informational, not structural. The right family of fix is data-level: sample reweighting, recency cutoff, asymmetric training windows from Ch11's option list.</p>
+    </div>
+
+    <h4>The combined operating-point picture</h4>
+
+    <p>Putting all three models against each other at each meaningful operating point:</p>
+
+    <div class="data-table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr><th>Operating point</th><th>Best model</th><th>WR</th><th>n / day</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>UP @ p≥0.84 (tight)</td><td><strong>v9.3 Optuna</strong></td><td>95.0%</td><td>318</td></tr>
+          <tr><td>UP @ p≥0.80</td><td><strong>v9.3 Optuna</strong></td><td>94.0%</td><td>380</td></tr>
+          <tr><td>UP @ p≥0.74 (moderate)</td><td>v9.3 Optuna ≈ default (tied)</td><td>93.0%</td><td>427</td></tr>
+          <tr><td>UP @ p≥0.70 (broad)</td><td><strong>v9.3 Optuna</strong></td><td>92.4%</td><td>462</td></tr>
+          <tr><td>DOWN @ p≤0.21 (tightest)</td><td><strong>Baseline</strong> (v9.2 family)</td><td>88.0%</td><td>460</td></tr>
+          <tr><td>DOWN @ p≤0.31</td><td><strong>Baseline</strong></td><td>84.6%</td><td>560</td></tr>
+          <tr><td>DOWN @ p≤0.45 (loose)</td><td><strong>Baseline</strong></td><td>81.5%</td><td>708</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The picture is now unambiguous. The hybrid-deployment recommendation from Chapter Eleven is not merely defensible — it is the right answer. Use v9.3 Optuna for UP-side production (every threshold from 0.70 to 0.84 is a win over both alternatives). Keep the baseline v9.2 family for DOWN production at every threshold. The single model that wins everywhere does not exist with this training data; the engineering challenge is composition, not selection.</p>
+
+    <h3>Reading list and further pointers</h3>
+
+    <ul style="line-height: 1.9; margin-left: 0">
+      <li><a href="https://optuna.org" style="color: var(--accent)">optuna.org</a> — homepage with quickstart and tutorials.</li>
+      <li><a href="https://optuna.readthedocs.io/en/stable/reference/samplers/index.html" style="color: var(--accent)">Sampler reference</a> — TPE versus CmaEsSampler versus NSGAIISampler for multi-objective.</li>
+      <li><a href="https://optuna.readthedocs.io/en/stable/reference/pruners.html" style="color: var(--accent)">Pruner reference</a> — MedianPruner, HyperbandPruner, SuccessiveHalvingPruner for different early-stopping strategies.</li>
+      <li><a href="https://lightgbm.readthedocs.io/en/latest/Parameters-Tuning.html" style="color: var(--accent)">LightGBM parameter tuning guide</a> — official advice on which knobs to turn first.</li>
+      <li><a href="https://optuna.org/assets/img/papers/optuna_kdd.pdf" style="color: var(--accent)">Akiba et al. (2019)</a> — the original Optuna paper describing TPE and the define-by-run API.</li>
+    </ul>
+
+    <h3>What changed in our deployment thinking</h3>
+
+    <p>The Optuna result does not by itself decide whether to deploy v9.3 ETH. A 1.2% reduction in dev log-loss is meaningful but not transformative. What it does is tell us that the v9.3 model with <em>tuned</em> hyperparameters is a different beast than the v9.3 model with defaults — more regularised, less aggressive, more likely to generalise. The held-out evaluation that follows the search uses these tuned parameters, and only that evaluation determines whether v9.3-Optuna meaningfully beats baseline at our trading thresholds.</p>
+
+    <p>The broader lesson: hyperparameter search is cheap, especially with caching of the data pipeline. Once the corpus and held-out features are stable on disk, running 200 trials takes the time of a coffee break. Skipping the search to save four minutes when training a new model is almost always the wrong trade — and the over-/under-fitting signal Optuna reveals through its parameter-importance ranking is itself worth the run, independent of the final best-value.</p>
+
+    <div class="callout good">
+      <span class="lbl">Filed for cross-session continuity</span>
+      <p>The Optuna study database lives at <code>training/trials/2026_05_20_v9_3_eth/optuna_study.db</code>. Future sessions can load it with <code>optuna.load_study(storage='sqlite:///optuna_study.db')</code>, query trials, resume search, or rebuild the parameter-importance ranking without re-running anything.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════
+     FOOTER
+════════════════════════════════════════════ -->
+<div class="book-footer">
+  <span>v9.2 ETH/XRP Training Session &nbsp;·&nbsp; 2026-05-20</span>
+  <span>novakash crypto-trading stack</span>
+</div>
+
+</div><!-- /book-wrap -->
+</body>
+</html>

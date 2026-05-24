@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v9.2 Iso Calibration — Strategy Rollout Plan (2026-05-18)</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --bg-2: #161922;
+    --bg-3: #1f2330;
+    --fg: #e6e8ef;
+    --fg-dim: #99a0b0;
+    --accent: #8ab4ff;
+    --accent-2: #7ee7c8;
+    --warn: #ffb86b;
+    --bad: #ff6b6b;
+    --good: #7ee7c8;
+    --rule: #2a2f3d;
+    --code-bg: #11141c;
+    --shadow: 0 8px 32px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 15px; line-height: 1.55; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { border-bottom-color: var(--accent); }
+  code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+  pre { background: var(--code-bg); padding: 14px 18px; border-radius: 6px;
+    border: 1px solid var(--rule); overflow-x: auto; line-height: 1.5; }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 4px;
+    border: 1px solid var(--rule); }
+  pre code { background: none; border: none; padding: 0; }
+  .container { max-width: 1080px; margin: 0 auto; padding: 56px 32px 80px; }
+  header { padding-bottom: 28px; border-bottom: 1px solid var(--rule); margin-bottom: 36px; }
+  header h1 { font-size: 32px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  header .meta { color: var(--fg-dim); font-size: 14px; }
+  header .meta span { margin-right: 14px; }
+  h2 { font-size: 22px; margin-top: 48px; padding-bottom: 8px; border-bottom: 1px solid var(--rule);
+    letter-spacing: -0.005em; }
+  h3 { font-size: 17px; margin-top: 30px; color: var(--accent-2); }
+  .callout { padding: 16px 20px; margin: 22px 0; border-radius: 6px;
+    background: var(--bg-2); border-left: 3px solid var(--accent); }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.bad { border-left-color: var(--bad); }
+  .callout.good { border-left-color: var(--good); }
+  .callout .label { display: inline-block; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  .callout.warn .label { color: var(--warn); }
+  .callout.bad  .label { color: var(--bad); }
+  .callout.good .label { color: var(--good); }
+  table { border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 14px; }
+  th, td { padding: 9px 12px; border-bottom: 1px solid var(--rule); text-align: left; }
+  th { background: var(--bg-2); font-weight: 600; color: var(--fg); border-bottom: 2px solid var(--rule); }
+  tr:hover td { background: var(--bg-2); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .delta-pos { color: var(--good); }
+  .delta-neg { color: var(--bad); }
+  .delta-neutral { color: var(--fg-dim); }
+  .pill { display: inline-block; padding: 2px 9px; font-size: 11px; font-weight: 600;
+    border-radius: 12px; background: var(--bg-3); color: var(--fg-dim); margin-left: 6px;
+    letter-spacing: 0.04em; text-transform: uppercase; }
+  .pill.recommended { background: rgba(126, 231, 200, 0.15); color: var(--good); }
+  .pill.alt { background: rgba(255, 184, 107, 0.12); color: var(--warn); }
+  .pill.reject { background: rgba(255, 107, 107, 0.12); color: var(--bad); }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  .gap { margin-top: 14px; }
+  .grid { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
+  .card { padding: 18px 22px; background: var(--bg-2); border-radius: 8px;
+    border: 1px solid var(--rule); }
+  .card h4 { margin: 0 0 10px; font-size: 15px; }
+  .card .kv { font-size: 13px; color: var(--fg-dim); }
+  .card .big { font-size: 22px; font-weight: 600; margin-top: 6px; color: var(--fg); }
+  .timeline { border-left: 2px solid var(--rule); padding-left: 20px; margin-top: 18px; }
+  .timeline .step { position: relative; padding: 8px 0 14px; }
+  .timeline .step::before { content: ""; position: absolute; left: -27px; top: 14px;
+    width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); }
+  .timeline .step.complete::before { background: var(--good); }
+  .timeline .step.pending::before { background: var(--warn); }
+  .timeline .step.blocked::before { background: var(--bad); }
+  .step .stage-num { font-size: 11px; color: var(--fg-dim); letter-spacing: 0.08em;
+    text-transform: uppercase; }
+  .step .stage-title { font-weight: 600; font-size: 15px; margin: 2px 0 4px; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule);
+    color: var(--fg-dim); font-size: 13px; }
+  .toc { background: var(--bg-2); padding: 14px 22px; border-radius: 8px;
+    border: 1px solid var(--rule); margin-bottom: 30px; }
+  .toc h4 { margin: 0 0 8px; font-size: 12px; color: var(--fg-dim);
+    letter-spacing: 0.12em; text-transform: uppercase; }
+  .toc ol { margin: 0; padding-left: 18px; font-size: 13px; columns: 2; column-gap: 30px; }
+  @media (max-width: 760px) {
+    .container { padding: 32px 18px 60px; }
+    .grid { grid-template-columns: 1fr; }
+    .toc ol { columns: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>v9.2 isotonic calibration — strategy rollout plan</h1>
+  <div class="meta">
+    <span>📅 2026-05-18</span>
+    <span>Author: claude-session</span>
+    <span>Hub notes: #528, #531, #536</span>
+  </div>
+</header>
+
+<div class="toc">
+  <h4>Contents</h4>
+  <ol>
+    <li><a href="#headline">Headline</a></li>
+    <li><a href="#evidence">Evidence summary</a></li>
+    <li><a href="#fork">The strategic fork</a></li>
+    <li><a href="#proposal">Proposed approach (NEW strats)</a></li>
+    <li><a href="#strats">Specific strategy specs</a></li>
+    <li><a href="#timeline">Rollout timeline</a></li>
+    <li><a href="#decision">Decision points</a></li>
+    <li><a href="#risks">Risks &amp; mitigations</a></li>
+    <li><a href="#open">Open items</a></li>
+  </ol>
+</div>
+
+<h2 id="headline">1 · Headline</h2>
+
+<div class="callout good">
+  <div class="label">Result</div>
+  Isotonic calibration of <code>probability_lgb_v9_2</code> drops test ECE from
+  <strong>0.1644 to 0.0216 (-87%)</strong> and Brier <strong>-10.6%</strong> —
+  both far exceeding the canonical promotion gate
+  (<code>training/iso_refit_v9_1_v12.py</code>: ECE&nbsp;≥&nbsp;30%, Brier&nbsp;≥&nbsp;5%).
+  At the live UP gate (<code>p92 ≥ 0.72</code>), applying iso gives
+  <strong>+44% qualifying ticks at +1.6pp WR</strong> — tick-level, on a fully
+  held-out 2-day test split.
+</div>
+
+<div class="callout warn">
+  <div class="label">Important caveat</div>
+  Numbers above are <strong>tick-level qualifying events</strong>, not
+  first-fire trade-level events. Direction of effect is robust. Magnitude in
+  daily-trade terms needs a first-fire simulator (open TODO).
+</div>
+
+<h2 id="evidence">2 · Evidence summary</h2>
+
+<h3>Calibration metrics (the promotion-gate numbers)</h3>
+
+<table>
+<thead><tr><th>Split</th><th class="num">n</th><th class="num">ECE before</th>
+  <th class="num">ECE after</th><th class="num">Δ ECE</th>
+  <th class="num">Brier before</th><th class="num">Brier after</th>
+  <th class="num">Δ Brier</th></tr></thead>
+<tbody>
+  <tr><td>train</td><td class="num">119,447</td><td class="num">0.1450</td><td class="num">0.0000</td>
+    <td class="num delta-pos">-100%</td><td class="num">0.2607</td><td class="num">0.2319</td><td class="num delta-pos">-11.0%</td></tr>
+  <tr><td>val</td><td class="num">39,816</td><td class="num">0.1735</td><td class="num">0.0500</td>
+    <td class="num delta-pos">-71.2%</td><td class="num">0.2637</td><td class="num">0.2253</td><td class="num delta-pos">-14.6%</td></tr>
+  <tr><td><strong>test</strong></td><td class="num">39,816</td><td class="num">0.1644</td>
+    <td class="num"><strong>0.0216</strong></td><td class="num delta-pos"><strong>-86.9%</strong></td>
+    <td class="num">0.2613</td><td class="num"><strong>0.2335</strong></td><td class="num delta-pos"><strong>-10.6%</strong></td></tr>
+</tbody>
+</table>
+
+<h3>What the iso curve does at the live gates</h3>
+
+<table>
+<thead><tr><th>Raw p92</th><th>Calibrated p92</th><th>Δ</th><th>Read</th></tr></thead>
+<tbody>
+  <tr><td>0.20 ← live DOWN gate</td><td>0.098</td><td class="delta-neg">-0.10</td>
+    <td>raw is OVER-confident DOWN; calibrated says "10% UP", not "20% UP"</td></tr>
+  <tr><td>0.50</td><td>0.489</td><td class="delta-neutral">-0.01</td><td>basically right</td></tr>
+  <tr><td>0.65</td><td>0.642</td><td class="delta-neutral">-0.01</td><td>basically right</td></tr>
+  <tr><td><strong>0.72 ← live UP gate</strong></td><td><strong>0.797</strong></td>
+    <td class="delta-pos"><strong>+0.077</strong></td><td><strong>under-confident here — raw 72% is really 80%</strong></td></tr>
+  <tr><td>0.75</td><td>0.930</td><td class="delta-pos">+0.18</td><td>strongly under-confident</td></tr>
+  <tr><td>0.85+</td><td>1.000</td><td class="delta-pos">+0.15</td><td>basically certain when committed</td></tr>
+</tbody>
+</table>
+
+<h3>Decision impact at live thresholds (test split, tick-level)</h3>
+
+<div class="grid">
+  <div class="card">
+    <h4>UP <code>p92 ≥ 0.72</code></h4>
+    <div class="kv">Raw: 814 ticks @ 88.3% WR</div>
+    <div class="big delta-pos">+44% vol, +1.6pp WR</div>
+    <div class="kv">Calibrated: 1,174 ticks @ 89.9% WR</div>
+  </div>
+  <div class="card">
+    <h4>DOWN <code>p92 ≤ 0.20</code></h4>
+    <div class="kv">Raw: 305 ticks @ 100% WR (small sample)</div>
+    <div class="big delta-neutral">+121% vol, -8.6pp WR</div>
+    <div class="kv">Calibrated: 675 ticks @ 91.4% WR</div>
+  </div>
+</div>
+
+<h3>Per-day WR audit — confirms the 59h "high-WR" anomaly</h3>
+
+<table>
+<thead><tr><th>Day (UTC)</th><th class="num">Test ticks</th><th class="num">Fires @ raw 0.72</th><th class="num">WR</th><th>Read</th></tr></thead>
+<tbody>
+  <tr><td>2026-05-16</td><td class="num">12,803</td><td class="num">189</td><td class="num">73.5%</td><td>below baseline</td></tr>
+  <tr><td>2026-05-17</td><td class="num">21,378</td><td class="num">406</td><td class="num">98.8%</td><td>way above baseline (this drove the misleading 59h finding)</td></tr>
+  <tr><td>2026-05-18 (partial)</td><td class="num">5,635</td><td class="num">219</td><td class="num">81.7%</td><td>below baseline</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+  <div class="label">Why this matters</div>
+  Per-day WR varies wildly (73.5% / 98.8% / 81.7%) — regime drift is real
+  and iso does NOT immunize against it. Iso fixes aggregate calibration; it
+  doesn't predict which day you're in. Promotion plan must include monitoring
+  triggers for per-day WR drift.
+</div>
+
+<h2 id="fork">3 · The strategic fork</h2>
+
+<p>Two ways to ship the iso candidate, each with different risk/reward and
+different blast radius if something goes wrong.</p>
+
+<div class="grid">
+  <div class="card">
+    <h4>Option A: modify the existing <code>v9_2_raw_lgb</code> strategy <span class="pill reject">REJECT</span></h4>
+    <p style="font-size:14px;color:var(--fg-dim);margin:8px 0">Apply iso transform to <code>probability_lgb_v9_2</code> at the engine load path, keep thresholds at 0.72/0.20. Behaviour of the live strategy changes overnight.</p>
+    <ul style="font-size:13px;color:var(--fg-dim)">
+      <li>+44% volume immediately, +1.6pp WR projected (tick-level)</li>
+      <li>One change, one config edit, no new strategy plumbing</li>
+      <li><strong>BUT:</strong> blast radius is the entire live strategy's PnL — no shadow period, no isolated test</li>
+      <li>If iso behaves differently in production (regime shift, residual under/over-confidence at 0.65-0.80), you find out via real PnL hit</li>
+      <li>Per <code>feedback_no_auto_promote.md</code>, every promotion is manual — but this is still a higher-stakes promotion than a new strat</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>Option B: ship a NEW strategy variant <span class="pill recommended">RECOMMENDED</span></h4>
+    <p style="font-size:14px;color:var(--fg-dim);margin:8px 0">Launch <code>v9_2_raw_lgb_iso</code> alongside the existing strat. Same gate logic but probability is iso-calibrated. Low <code>max_collateral_pct</code> for first weeks. Run in parallel for direct A/B.</p>
+    <ul style="font-size:13px;color:var(--fg-dim)">
+      <li>Existing strategy continues to trade with its proven 0.72/0.20 gates — zero perturbation</li>
+      <li>New strategy quantifies the actual lift (or absence of lift) under real conditions</li>
+      <li>Low max_bid (e.g. $5 vs current $20) caps PnL exposure during shadow period</li>
+      <li>If new strat underperforms in live, kill it; existing strat unaffected</li>
+      <li>If it overperforms, gradually raise its budget while ramping down the old one</li>
+      <li>Aligns with Billy's vote per session conversation</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout good">
+  <div class="label">Recommendation</div>
+  <strong>Option B — new strategy variants at low max bid.</strong> Lower blast
+  radius, cleaner attribution, fits the manual-promote discipline.
+</div>
+
+<h2 id="proposal">4 · Proposed approach — NEW strategy variants</h2>
+
+<p>Three new strategies, all gated at the same statistical regime as
+<code>v9_2_raw_lgb</code> but trading on the calibrated probability. Each
+isolates a different verification question.</p>
+
+<div class="grid">
+  <div class="card">
+    <h4>📐 v9_2_iso_volmatch — sanity-check baseline</h4>
+    <p style="font-size:13px"><strong>Purpose:</strong> verify iso doesn't change real behaviour vs raw at matched volume.</p>
+    <p style="font-size:13px"><strong>Gate:</strong> <code>p92_cal ≥ 0.797</code> UP, <code>p92_cal ≤ 0.098</code> DOWN.
+    These calibrated thresholds correspond to <code>raw 0.72</code> and <code>raw 0.20</code> by construction.</p>
+    <p style="font-size:13px"><strong>Expected:</strong> ~same fires/day as existing strat, ~same WR. <strong>If different:</strong> iso has a bug, halt rollout.</p>
+    <p style="font-size:13px"><strong>Budget:</strong> $5 max_position (vs $20 live)</p>
+  </div>
+
+  <div class="card">
+    <h4>🚀 v9_2_iso_expand — the headline thesis</h4>
+    <p style="font-size:13px"><strong>Purpose:</strong> harvest the +44% volume that iso surfaces at the same numerical threshold.</p>
+    <p style="font-size:13px"><strong>Gate:</strong> <code>p92_cal ≥ 0.72</code> UP, <code>p92_cal ≤ 0.20</code> DOWN.</p>
+    <p style="font-size:13px"><strong>Expected:</strong> ~1.4× fires/day vs existing, ~1pp higher WR. <strong>If different:</strong> tick→trade conversion is non-trivial or regime drift dominates.</p>
+    <p style="font-size:13px"><strong>Budget:</strong> $5 max_position, then ramp on positive shadow data</p>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h4>🛡️ v9_2_iso_strict — higher-conviction variant</h4>
+    <p style="font-size:13px"><strong>Purpose:</strong> the "tightening" lever from #531 that DID work at scale. Half the volume of headline variant but +5pp WR projected.</p>
+    <p style="font-size:13px"><strong>Gate:</strong> <code>p92_cal ≥ 0.85</code> UP, <code>p92_cal ≤ 0.12</code> DOWN.</p>
+    <p style="font-size:13px"><strong>Expected:</strong> ~0.5× fires/day vs existing, ~95% WR. Useful if the headline variant suffers from regime drift.</p>
+    <p style="font-size:13px"><strong>Budget:</strong> $5 max_position. Could be the survival variant if expand underperforms.</p>
+  </div>
+
+  <div class="card">
+    <h4>🚫 NOT proposing</h4>
+    <ul style="font-size:13px;color:var(--fg-dim)">
+      <li>Tiered band-dependent thresholds — falsified on full window (#531 correction)</li>
+      <li>Extension-zone strategy (eval_offset &gt; 210) — cliff confirmed at scale</li>
+      <li>Joint p92 ∩ p91 strategy — only 4 days of v9.1 data (#531 appendix G)</li>
+      <li>Iso applied directly to the live <code>v9_2_raw_lgb</code> — Option A above</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="strats">5 · Specific strategy specs (YAML sketches)</h2>
+
+<p>Following the v9_2_raw_lgb config pattern (single qualifying tick,
+no cohort gates, no veto). Two changes from baseline: (a) probability
+read through the iso calibrator, (b) <code>max_position_usd</code> reduced.</p>
+
+<pre><code># engine/strategies/configs/v9_2_iso_expand.yaml
+name: v9_2_iso_expand
+strategy_id: v9_2_iso_expand
+version: "1.0.0"
+# v9_2_iso_expand — calibrated v9.2 at same numerical threshold
+#
+# Differs from v9_2_raw_lgb by reading probability_lgb_v9_2 through the
+# iso calibrator before gate check. Iso candidate fit 2026-05-18 on full
+# 11-day window; test ECE 0.1644 → 0.0216 (-87%); details in hub note #536.
+#
+# Defaults GHOST. Promote to LIVE manually. Per feedback_no_auto_promote.
+
+status: GHOST            # &lt;-- manual flip to LIVE
+description: |
+  Iso-calibrated v9.2 signal strategy. Same threshold values as v9_2_raw_lgb
+  but applied to the CALIBRATED probability instead of raw. Headline thesis:
+  +44% qualifying ticks at +1.6pp WR (tick-level, test split, hub note #536).
+mode: GHOST              # &lt;-- shadow-mode default
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_2_iso_expand.py
+pre_gate_hook: evaluate_v9_2_iso_expand
+
+sizing:
+  type: kelly
+  fraction: 0.025        # SAME as v9_2_raw_lgb
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.72         # interpreted on the CALIBRATED probability
+  down_threshold: 0.20       # interpreted on the CALIBRATED probability
+  eval_offset_min: 60
+  eval_offset_max: 210
+  apply_iso_calibration: true     # &lt;-- new flag; engine plumbing required
+  iso_calibrator_path: "v9_2/iso_candidate_2026-05-18.json"  # in S3
+
+# === Risk caps for shadow / early-live ===
+risk:
+  max_position_usd: 5        # &lt;-- LOW (vs $20 on v9_2_raw_lgb)
+  max_daily_loss_usd: 20
+  enabled_hours_utc: [0,1,2,3,4,5,6,7,8,10,11,12,13,14,16,17,18,19,20,21,22,23]
+  # Hours 9 and 15 excluded based on bg agent #2 (note #524) per-hour WR cliffs.
+  # Revisit after 7 days of shadow data.
+</code></pre>
+
+<p style="font-size:13px;color:var(--fg-dim)">Same template for
+<code>v9_2_iso_volmatch</code> (thresholds 0.797 / 0.098) and
+<code>v9_2_iso_strict</code> (thresholds 0.85 / 0.12). All three GHOST by default.</p>
+
+<h2 id="timeline">6 · Rollout timeline</h2>
+
+<div class="timeline">
+  <div class="step complete">
+    <div class="stage-num">STAGE 0 — DONE</div>
+    <div class="stage-title">Offline iso fit + verification</div>
+    <p>Candidate JSON at <code>/tmp/v92_iso_candidate_2026-05-18.json</code>.
+    Metrics: ECE -87%, Brier -10.6% on test split. Schema matches
+    <code>training/calibration.py</code> convention.</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 1 — TODAY OR TOMORROW</div>
+    <div class="stage-title">First-fire trade-level simulator</div>
+    <p>Convert tick-level deltas to per-window first-fire trades.
+    Quantify daily-volume estimate for each of the three proposed strats.
+    <strong>BLOCKING for promotion conversation.</strong></p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 2</div>
+    <div class="stage-title">Verify live calibration state</div>
+    <p>Read v9.2 scorer init in <code>app/</code> + companion JSON next to the
+    booster. Is identity iso loaded today, or a real curve? Resolves
+    "is this a first-ever iso fit, or a refit?"</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 3</div>
+    <div class="stage-title">Engine plumbing</div>
+    <p>Add <code>apply_iso_calibration</code> flag to strategy gate-eval.
+    Pair-load the iso JSON next to v9.2 scorer. Add per-strategy
+    <code>iso_calibrator_path</code> resolution. Test against unit fixtures.</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 4 — D+1</div>
+    <div class="stage-title">Upload calibrator to S3</div>
+    <p>Move <code>/tmp/v92_iso_candidate_2026-05-18.json</code> →
+    <code>s3://bbrnovakash-models-do-not-delete/v9_2/iso_candidate_2026-05-18.json</code>.
+    Strict naming: <code>iso_candidate_</code> prefix until promoted.</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 5 — D+2 to D+8 (7 days shadow)</div>
+    <div class="stage-title">GHOST mode all three variants</div>
+    <p>Strategies emit decisions but don't trade. Collect: fires/day,
+    realized WR (from window outcomes), fill quality estimate (CLOB
+    snapshot at decision time). Compare GHOST decisions against
+    v9_2_raw_lgb's LIVE fires on the same windows.</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 6 — D+9</div>
+    <div class="stage-title">Decision gate</div>
+    <p>If any of the three variants show realized WR within 1pp of
+    projection AND volume within 25% of projection: promote that variant
+    to LIVE at $5 max_position. If divergence &gt; 25%, extend shadow
+    period or re-run analysis.</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 7 — D+9 to D+30</div>
+    <div class="stage-title">Live at $5 cap</div>
+    <p>Run promoted variant in parallel with existing <code>v9_2_raw_lgb</code>.
+    Daily WR audit. Per-hour-of-day audit. Wallet truth reconciliation.</p>
+  </div>
+  <div class="step pending">
+    <div class="stage-num">STAGE 8 — D+30+</div>
+    <div class="stage-title">Ramp or kill</div>
+    <p>Promote to full max_position OR cut. Then consider retiring
+    v9_2_raw_lgb (the raw-uncalibrated version) if the iso variant clearly
+    dominates over 4 weeks of live data.</p>
+  </div>
+</div>
+
+<h2 id="decision">7 · Decision points (where Billy presses go / no-go)</h2>
+
+<ol>
+  <li><strong>Stage 1 outcome</strong>: do first-fire trade-level numbers confirm the +44% tick-level finding? If trade-level lift is &lt; 20%, scope down to volmatch-only.</li>
+  <li><strong>Stage 2 outcome</strong>: is there an identity iso already loaded? If yes, this is a refit (lower bar); if no, this is a first-fit (higher bar, more diligence).</li>
+  <li><strong>Stage 6 decision</strong>: which variant(s) to promote? If multiple meet bar, promote the conservative (volmatch) first.</li>
+  <li><strong>Stage 8 decision</strong>: retire raw v9_2_raw_lgb? Only if iso variant has 4+ weeks at higher PnL/trade with no negative tails.</li>
+</ol>
+
+<h2 id="risks">8 · Risks &amp; mitigations</h2>
+
+<table>
+<thead><tr><th>Risk</th><th>Likelihood</th><th>Impact</th><th>Mitigation</th></tr></thead>
+<tbody>
+  <tr><td>Iso behaves differently in prod vs analysis (regime shift)</td>
+      <td>Med</td><td>Med</td>
+      <td>$5 max_position cap; 7-day shadow before live; per-day WR audit triggers</td></tr>
+  <tr><td>Tick→trade conversion changes the +44% figure substantially</td>
+      <td>Med</td><td>Low</td>
+      <td>Stage 1 simulator (blocking)</td></tr>
+  <tr><td>Live engine already has identity iso loaded; "calibration" is double-app</td>
+      <td>Low</td><td>High</td>
+      <td>Stage 2 verification (blocking)</td></tr>
+  <tr><td>Residual under-confidence at 0.65-0.80 means iso "fix" is partial</td>
+      <td>High</td><td>Low</td>
+      <td>Stage 7 audit; consider two-stage iso+Platt refit if material</td></tr>
+  <tr><td>Schema bug — calibrator JSON loaded as identity iso (note #353 footgun)</td>
+      <td>Low</td><td>High</td>
+      <td>Calibrator's <code>max |x-y| = 0.222</code> verified non-trivial; unit test on load</td></tr>
+  <tr><td>Per-day WR variance dominates the +1.6pp WR lift</td>
+      <td>Med</td><td>Low</td>
+      <td>The 7-day shadow period gives multiple days for averaging; promotion bar requires ≥6 days at expected band</td></tr>
+  <tr><td>v9.2 model itself drifts and iso becomes stale</td>
+      <td>Med (over months)</td><td>Med</td>
+      <td>Quarterly iso refit cadence; ECE monitoring as daily metric</td></tr>
+</tbody>
+</table>
+
+<h2 id="open">9 · Open items (cross-ref hub notes for full list)</h2>
+
+<ul>
+  <li><strong>First-fire trade-level simulator</strong> — blocking for promotion. ~5 min of work.</li>
+  <li><strong>Verify live iso state</strong> — identity or real? Read scorer code.</li>
+  <li><strong>Per-band ECE post-iso</strong> — does 151-210 (the weakest band) still need work?</li>
+  <li><strong>Per-hour ECE post-iso</strong> — fix the 15 UTC / 09 UTC cliffs from bg #2?</li>
+  <li><strong>Two-stage iso+Platt</strong> — tighten residual 0.65-0.80 under-confidence and 0.90+ over-confidence patches.</li>
+  <li><strong>Extend canonical training pipeline</strong> — <code>training/iso_refit_v9_1_v12.py</code> has no v9_2 path; add one for reproducibility.</li>
+  <li><strong>Engine config mystery</strong> — config yaml says UP=0.75, Billy says live is 0.72. Resolve via <code>strategy_runtime_overrides</code> or fired-trade metadata.</li>
+  <li><strong>DOWN cliff investigation</strong> — was raw 0.20 → 100% real or small-sample? Iso flattens it; understand which.</li>
+  <li><strong>15m strats analysis</strong> — much bigger sample sizes; mirror this work there if v9.2 plays out.</li>
+</ul>
+
+<footer>
+  <p>Generated 2026-05-18 by claude-session. Source data via DuckDB on
+  RDS→S3 Parquet pipeline (hub note #525). Iso candidate at
+  <code>/tmp/v92_iso_candidate_2026-05-18.json</code> — schema follows
+  <code>training/calibration.py</code> convention,
+  <code>kind=isotonic</code>, 200 breakpoints,
+  <code>max&nbsp;|x-y|&nbsp;=&nbsp;0.222</code> (non-trivial confirmed).</p>
+  <p>Cross-references: hub notes <strong>#528</strong> (pre-flight),
+  <strong>#531</strong> (threshold-tuning analysis + correction),
+  <strong>#536</strong> (iso findings),
+  <strong>#525</strong> (Parquet pipeline + PR #150 for the helper script),
+  <strong>#526</strong> (epsilon best-execution algo — orthogonal lever),
+  <strong>#522</strong> (train-serve skew constraint).</p>
+  <p style="color:var(--fg-dim);font-size:12px;margin-top:14px">
+  Per <code>feedback_no_auto_promote.md</code>: every config flip,
+  every S3 upload, every <code>--promote</code> is Billy-by-hand.
+  Nothing in this plan is automated.</p>
+</footer>
+
+</div>
+</body>
+</html>

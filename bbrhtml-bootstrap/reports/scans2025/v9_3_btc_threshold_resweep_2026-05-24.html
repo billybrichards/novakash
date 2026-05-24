@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>v9.3 BTC threshold re-sweep — 24h post-PR-#582 (2026-05-24)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    :root {
+      --bg-deep: #0A0A0F; --bg-surface: #14141C; --bg-elevated: #1C1C28; --bg-card: #161620;
+      --text-primary: #F5F3F0; --text-secondary: #B8B3AB; --text-tertiary: #7A7268;
+      --border-subtle: rgba(255,255,255,0.06); --border-default: rgba(255,255,255,0.10); --border-strong: rgba(255,255,255,0.18);
+      --violet:#8B5CF6; --green:#10B981; --green-soft:#34D399; --cyan:#06B6D4; --cyan-soft:#22D3EE; --amber:#F59E0B;
+      --red:#EF4444;
+      --font-display:"Instrument Serif", serif;
+      --font-body:"IBM Plex Sans", sans-serif;
+      --font-mono:"JetBrains Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg-deep); color: var(--text-primary); font-family: var(--font-body); font-weight: 300; line-height: 1.65; margin: 0; padding: 0; }
+    .container { max-width: 1120px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+    h1, h2, h3 { font-family: var(--font-display); font-weight: 400; color: var(--text-primary); letter-spacing: -0.02em; }
+    h1 { font-size: 3.4rem; line-height: 1.05; margin: 0 0 1rem 0; }
+    h2 { font-size: 2.0rem; margin-top: 3.2rem; margin-bottom: 1.2rem; }
+    h3 { font-size: 1.35rem; margin-top: 2rem; margin-bottom: 0.8rem; color: var(--cyan-soft); font-family: var(--font-body); font-weight: 500; letter-spacing: 0; }
+    p { color: var(--text-secondary); font-size: 1.02rem; }
+    em { color: var(--cyan-soft); font-style: italic; }
+    strong { color: var(--text-primary); font-weight: 500; }
+    .lede { font-family: var(--font-display); font-size: 1.45rem; line-height: 1.5; color: var(--text-primary); font-style: italic; margin-top: 1.5rem; }
+    .hero { background: linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-deep) 100%); border-bottom: 1px solid var(--border-subtle); padding: 4rem 0 3rem 0; }
+    .meta-bar { display: flex; flex-wrap: wrap; gap: 1.5rem; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.78rem; margin-top: 1.5rem; }
+    .meta-bar b { color: var(--text-primary); font-weight: 500; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 2rem 0; }
+    .stat { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1.1rem 1.2rem; }
+    .stat-label { font-size: 0.72rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--font-mono); }
+    .stat-value { font-family: var(--font-display); font-size: 2.2rem; line-height: 1.0; color: var(--text-primary); margin-top: 0.4rem; }
+    .stat-value.green { color: var(--green-soft); }
+    .stat-value.red { color: var(--red); }
+    .stat-value.amber { color: var(--amber); }
+    .stat-value.cyan { color: var(--cyan-soft); }
+    .stat-sub { font-size: 0.78rem; color: var(--text-tertiary); margin-top: 0.5rem; font-family: var(--font-mono); }
+    .callout { background: rgba(6,182,212,0.04); border-left: 3px solid var(--cyan); padding: 1.1rem 1.4rem; margin: 1.5rem 0; border-radius: 0 6px 6px 0; }
+    .callout.amber { background: rgba(245,158,11,0.05); border-left-color: var(--amber); }
+    .callout.red { background: rgba(239,68,68,0.05); border-left-color: var(--red); }
+    .callout.green { background: rgba(16,185,129,0.05); border-left-color: var(--green); }
+    .callout-title { font-family: var(--font-mono); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan-soft); margin-bottom: 0.5rem; }
+    .callout.amber .callout-title { color: var(--amber); }
+    .callout.red .callout-title { color: var(--red); }
+    .callout.green .callout-title { color: var(--green-soft); }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
+    th, td { padding: 0.55rem 0.7rem; text-align: left; border-bottom: 1px solid var(--border-subtle); }
+    th { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 500; background: var(--bg-surface); }
+    td.mono { font-family: var(--font-mono); font-size: 0.82rem; }
+    .scroll-table { max-height: 480px; overflow-y: auto; border: 1px solid var(--border-subtle); border-radius: 6px; }
+    .chart { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem; margin: 1.2rem 0; }
+    .footer { margin-top: 4rem; padding: 2rem 0; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-family: var(--font-mono); font-size: 0.78rem; text-align: center; }
+    .toc { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1.2rem 1.4rem; margin: 2rem 0; }
+    .toc a { color: var(--cyan-soft); text-decoration: none; font-family: var(--font-mono); font-size: 0.85rem; }
+    .toc ul { margin: 0; padding-left: 1.2rem; }
+    .toc li { padding: 0.18rem 0; }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="container">
+      <div style="font-family: var(--font-mono); font-size: 0.78rem; color: var(--cyan-soft); letter-spacing: 0.15em; text-transform: uppercase;">Re-sweep · 24h post-PR-#582 · GHOST mode · BTC 5m</div>
+      <h1>v9.3 BTC threshold re-sweep — with 24h more emissions at the new 0.86 ceiling</h1>
+      <p class="lede">
+        The original sweep (note #606) saw a ceiling of <em>0.7987</em> and no usable threshold above 70% WR.
+        After PR #582 wired the engine-side feature emitters, the ceiling jumped to <em>0.8646</em> on 2026-05-23 20:56 UTC.
+        With <em>222 windows</em> and <em>23,056 per-tick evaluations</em> now in hand, the question is simple:
+        does v9.3 BTC have a 90%+ WR pocket as a standalone strategy?
+      </p>
+      <div class="meta-bar">
+        <span>Data window: <b>2026-05-23 15:42 — 2026-05-24 11:28 UTC</b></span>
+        <span>Unique windows: <b>222</b> (221 resolved)</span>
+        <span>Per-tick evals: <b>23,056</b></span>
+        <span>Generated: <b>2026-05-24 11:35 UTC</b></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <div class="toc">
+      <strong style="font-family: var(--font-body); color: var(--text-primary);">Contents</strong>
+      <ul>
+        <li><a href="#hero">1. Hero summary</a></li>
+        <li><a href="#setup">2. Setup &mdash; data window, ceiling movement, methodology</a></li>
+        <li><a href="#dist">3. Probability distribution + ceiling time-series</a></li>
+        <li><a href="#sweep">4. Threshold sweep &mdash; full UP/DOWN tables</a></li>
+        <li><a href="#pocket">5. 90% WR pocket hunt &mdash; yes / no</a></li>
+        <li><a href="#cross">6. Cross-strategy comparison &mdash; v9.3 alone vs filters</a></li>
+        <li><a href="#rec">7. Recommendation</a></li>
+      </ul>
+    </div>
+
+    <h2 id="hero">1. Hero summary</h2>
+    <div class="stat-grid">
+      <div class="stat"><div class="stat-label">Windows resolved</div><div class="stat-value">221</div><div class="stat-sub">UP:116 / DOWN:105</div></div>
+      <div class="stat"><div class="stat-label">Current ceiling</div><div class="stat-value cyan">0.8646</div><div class="stat-sub">prior: 0.7987 (+6.59pp)</div></div>
+      <div class="stat"><div class="stat-label">Standalone v9.3 best UP</div><div class="stat-value amber">71.4%</div><div class="stat-sub">thr 0.73 · n=49 · LB 57.6%</div></div>
+      <div class="stat"><div class="stat-label">v9.2+v12 AND benchmark</div><div class="stat-value green">92.9%</div><div class="stat-sub">v92>=0.75 &amp; v12>=0.55 · n=28 · LB 77.4%</div></div>
+      <div class="stat"><div class="stat-label">90% pockets (LB>=80, n>=30)</div><div class="stat-value red">0</div><div class="stat-sub">standalone v9.3 only</div></div>
+      <div class="stat"><div class="stat-label">v9.3 + v9.2 AND best</div><div class="stat-value green">92.9%</div><div class="stat-sub">v93>=0.60 &amp; v92>=0.75 · n=28 · LB 77.4%</div></div>
+    </div>
+
+    <div class="callout red">
+      <div class="callout-title">Verdict: NO standalone 90% pocket</div>
+      Across all 50 UP thresholds and 50 DOWN thresholds, <strong>zero</strong> standalone v9.3 BTC operating points satisfy
+      (WR&nbsp;&ge;&nbsp;90% AND Wilson LB&nbsp;&ge;&nbsp;80% AND n&nbsp;&ge;&nbsp;30). The best standalone Wilson LB is
+      <strong>57.6%</strong> at UP thr&nbsp;0.73 (WR&nbsp;71.4%, n=49).
+      The v9.2 + v12 AND filter at (0.75 / 0.55) still hits <strong>92.9% WR</strong> (n=28, LB&nbsp;77.4%)
+      &mdash; the benchmark holds and v9.3 BTC does not beat it as a standalone.
+    </div>
+
+    <h2 id="setup">2. Setup</h2>
+    <h3>Data window &amp; methodology</h3>
+    <p>
+      Pulled all <code>signal_evaluations</code> rows where <code>asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc IS NOT NULL AND evaluated_at &gt;= 2026-05-23 13:33:52</code>.
+      Per-window dedup: each 5m window contributes one row, with <code>v93_max = MAX(probability_lgb_v9_3_btc)</code>
+      for UP-side analysis and <code>v93_min = MIN(...)</code> for DOWN-side. Outcomes from <code>market_data</code>
+      (confirmed canonical for BTC per note #617). Wilson 95% lower bound throughout.
+    </p>
+
+    <h3>Ceiling movement since prior sweep</h3>
+    <ul style="color: var(--text-secondary);">
+      <li><strong>Prior sweep (note #606):</strong> ceiling 0.7987, 56 resolved windows.</li>
+      <li><strong>PR #582 deploy:</strong> engine-side feature emitters wired (note #620).</li>
+      <li><strong>This sweep:</strong> ceiling 0.8646, 221 resolved windows (+165 window net gain).</li>
+      <li><strong>Ceiling expansion events:</strong> 8 total. Last new high was <code>2026-05-23T20:56:32.500333+00:00</code> at <code>0.8646</code>.</li>
+    </ul>
+
+    <div class="callout amber">
+      <div class="callout-title">The "ceiling" is mostly a single excursion</div>
+      The 0.8646 high was set at 20:56 UTC on 2026-05-23 (roughly 7 hours after deploy) and <strong>has not been broken
+      in the ~15 hours since</strong>. Of the 222 windows pulled, only <strong>1 window has v93_max &ge; 0.86</strong>,
+      <strong>3 windows &ge; 0.80</strong>, and <strong>72 windows &ge; 0.70</strong>. The realistic operating ceiling
+      is closer to <code>~0.79</code>; the planned tight threshold (0.935) remains structurally unreachable.
+    </div>
+
+    <h2 id="dist">3. Probability distribution + ceiling time-series</h2>
+    <div class="chart" id="hist"></div>
+    <div class="chart" id="ceiling_ts"></div>
+
+    <h2 id="sweep">4. Threshold sweep</h2>
+    <h3>Top 10 standalone v9.3 UP thresholds by Wilson LB (n &ge; 15)</h3>
+    <table>
+      <thead><tr><th>thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th><th>fire rate</th></tr></thead>
+      <tbody><tr><td class='mono'>0.73</td><td class='mono'>49</td><td class='mono'>35</td><td class='mono'>71.4%</td><td class='mono'>57.6%</td><td class='mono'>22.2%</td></tr><tr><td class='mono'>0.74</td><td class='mono'>37</td><td class='mono'>26</td><td class='mono'>70.3%</td><td class='mono'>54.2%</td><td class='mono'>16.7%</td></tr><tr><td class='mono'>0.70</td><td class='mono'>71</td><td class='mono'>46</td><td class='mono'>64.8%</td><td class='mono'>53.2%</td><td class='mono'>32.1%</td></tr><tr><td class='mono'>0.71</td><td class='mono'>63</td><td class='mono'>41</td><td class='mono'>65.1%</td><td class='mono'>52.8%</td><td class='mono'>28.5%</td></tr><tr><td class='mono'>0.72</td><td class='mono'>59</td><td class='mono'>38</td><td class='mono'>64.4%</td><td class='mono'>51.7%</td><td class='mono'>26.7%</td></tr><tr><td class='mono'>0.69</td><td class='mono'>90</td><td class='mono'>55</td><td class='mono'>61.1%</td><td class='mono'>50.8%</td><td class='mono'>40.7%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>96</td><td class='mono'>58</td><td class='mono'>60.4%</td><td class='mono'>50.4%</td><td class='mono'>43.4%</td></tr><tr><td class='mono'>0.67</td><td class='mono'>137</td><td class='mono'>79</td><td class='mono'>57.7%</td><td class='mono'>49.3%</td><td class='mono'>62.0%</td></tr><tr><td class='mono'>0.62</td><td class='mono'>194</td><td class='mono'>106</td><td class='mono'>54.6%</td><td class='mono'>47.6%</td><td class='mono'>87.8%</td></tr><tr><td class='mono'>0.63</td><td class='mono'>193</td><td class='mono'>105</td><td class='mono'>54.4%</td><td class='mono'>47.4%</td><td class='mono'>87.3%</td></tr></tbody>
+    </table>
+
+    <h3>Top 10 standalone v9.3 DOWN thresholds by Wilson LB (n &ge; 15)</h3>
+    <table>
+      <thead><tr><th>thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th><th>fire rate</th></tr></thead>
+      <tbody><tr><td class='mono'>0.25</td><td class='mono'>159</td><td class='mono'>80</td><td class='mono'>50.3%</td><td class='mono'>42.6%</td><td class='mono'>71.9%</td></tr><tr><td class='mono'>0.24</td><td class='mono'>93</td><td class='mono'>48</td><td class='mono'>51.6%</td><td class='mono'>41.6%</td><td class='mono'>42.1%</td></tr><tr><td class='mono'>0.26</td><td class='mono'>183</td><td class='mono'>89</td><td class='mono'>48.6%</td><td class='mono'>41.5%</td><td class='mono'>82.8%</td></tr><tr><td class='mono'>0.28</td><td class='mono'>195</td><td class='mono'>94</td><td class='mono'>48.2%</td><td class='mono'>41.3%</td><td class='mono'>88.2%</td></tr><tr><td class='mono'>0.27</td><td class='mono'>189</td><td class='mono'>91</td><td class='mono'>48.1%</td><td class='mono'>41.1%</td><td class='mono'>85.5%</td></tr><tr><td class='mono'>0.50</td><td class='mono'>219</td><td class='mono'>103</td><td class='mono'>47.0%</td><td class='mono'>40.5%</td><td class='mono'>99.1%</td></tr><tr><td class='mono'>0.32</td><td class='mono'>215</td><td class='mono'>101</td><td class='mono'>47.0%</td><td class='mono'>40.4%</td><td class='mono'>97.3%</td></tr><tr><td class='mono'>0.30</td><td class='mono'>214</td><td class='mono'>100</td><td class='mono'>46.7%</td><td class='mono'>40.2%</td><td class='mono'>96.8%</td></tr><tr><td class='mono'>0.31</td><td class='mono'>214</td><td class='mono'>100</td><td class='mono'>46.7%</td><td class='mono'>40.2%</td><td class='mono'>96.8%</td></tr><tr><td class='mono'>0.29</td><td class='mono'>212</td><td class='mono'>99</td><td class='mono'>46.7%</td><td class='mono'>40.1%</td><td class='mono'>95.9%</td></tr></tbody>
+    </table>
+
+    <h3>v9.3 UP at very-high thresholds (thr &ge; 0.75) &mdash; small-n curiosity</h3>
+    <table>
+      <thead><tr><th>thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th><th>fire rate</th></tr></thead>
+      <tbody><tr><td class='mono'>0.75</td><td class='mono'>31</td><td class='mono'>20</td><td class='mono'>64.5%</td><td class='mono'>46.9%</td><td class='mono'>14.0%</td></tr><tr><td class='mono'>0.76</td><td class='mono'>21</td><td class='mono'>14</td><td class='mono'>66.7%</td><td class='mono'>45.4%</td><td class='mono'>9.5%</td></tr><tr><td class='mono'>0.77</td><td class='mono'>13</td><td class='mono'>9</td><td class='mono'>69.2%</td><td class='mono'>42.4%</td><td class='mono'>5.9%</td></tr><tr><td class='mono'>0.78</td><td class='mono'>7</td><td class='mono'>6</td><td class='mono'>85.7%</td><td class='mono'>48.7%</td><td class='mono'>3.2%</td></tr><tr><td class='mono'>0.79</td><td class='mono'>6</td><td class='mono'>6</td><td class='mono'>100.0%</td><td class='mono'>61.0%</td><td class='mono'>2.7%</td></tr><tr><td class='mono'>0.80</td><td class='mono'>3</td><td class='mono'>3</td><td class='mono'>100.0%</td><td class='mono'>43.8%</td><td class='mono'>1.4%</td></tr><tr><td class='mono'>0.81</td><td class='mono'>2</td><td class='mono'>2</td><td class='mono'>100.0%</td><td class='mono'>34.2%</td><td class='mono'>0.9%</td></tr><tr><td class='mono'>0.82</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.83</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.84</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.85</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.86</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.87</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.88</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.89</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.90</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.91</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.92</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.93</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.94</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.95</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.96</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.97</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.98</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr><tr><td class='mono'>0.99</td><td class='mono'>0</td><td class='mono'>0</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td><td class='mono'>0.0%</td></tr></tbody>
+    </table>
+    <p>
+      <em>Note:</em> at thr=0.79 we get 6/6 (100% WR) but Wilson LB is only 61.0%. At thr=0.80 we get 3/3 (LB 43.8%). These
+      cells suggest that <strong>if</strong> v9.3 ever crosses 0.78&ndash;0.80 it tends to be right, but it does so too
+      rarely (fire rate ~3%) to be a useful standalone strategy.
+    </p>
+
+    <h3>Full UP sweep (0.50 &rarr; 0.99, step 0.01)</h3>
+    <div class="scroll-table">
+    <table>
+      <thead><tr><th>thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th><th>fire rate</th></tr></thead>
+      <tbody><tr><td class='mono'>0.50</td><td class='mono'>220</td><td class='mono'>116</td><td class='mono'>52.7%</td><td class='mono'>46.1%</td><td class='mono'>99.5%</td></tr><tr><td class='mono'>0.51</td><td class='mono'>219</td><td class='mono'>116</td><td class='mono'>53.0%</td><td class='mono'>46.4%</td><td class='mono'>99.1%</td></tr><tr><td class='mono'>0.52</td><td class='mono'>219</td><td class='mono'>116</td><td class='mono'>53.0%</td><td class='mono'>46.4%</td><td class='mono'>99.1%</td></tr><tr><td class='mono'>0.53</td><td class='mono'>217</td><td class='mono'>114</td><td class='mono'>52.5%</td><td class='mono'>45.9%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.54</td><td class='mono'>217</td><td class='mono'>114</td><td class='mono'>52.5%</td><td class='mono'>45.9%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.55</td><td class='mono'>217</td><td class='mono'>114</td><td class='mono'>52.5%</td><td class='mono'>45.9%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.56</td><td class='mono'>215</td><td class='mono'>113</td><td class='mono'>52.6%</td><td class='mono'>45.9%</td><td class='mono'>97.3%</td></tr><tr><td class='mono'>0.57</td><td class='mono'>214</td><td class='mono'>112</td><td class='mono'>52.3%</td><td class='mono'>45.7%</td><td class='mono'>96.8%</td></tr><tr><td class='mono'>0.58</td><td class='mono'>213</td><td class='mono'>111</td><td class='mono'>52.1%</td><td class='mono'>45.4%</td><td class='mono'>96.4%</td></tr><tr><td class='mono'>0.59</td><td class='mono'>212</td><td class='mono'>110</td><td class='mono'>51.9%</td><td class='mono'>45.2%</td><td class='mono'>95.9%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>211</td><td class='mono'>110</td><td class='mono'>52.1%</td><td class='mono'>45.4%</td><td class='mono'>95.5%</td></tr><tr><td class='mono'>0.61</td><td class='mono'>198</td><td class='mono'>107</td><td class='mono'>54.0%</td><td class='mono'>47.1%</td><td class='mono'>89.6%</td></tr><tr><td class='mono'>0.62</td><td class='mono'>194</td><td class='mono'>106</td><td class='mono'>54.6%</td><td class='mono'>47.6%</td><td class='mono'>87.8%</td></tr><tr><td class='mono'>0.63</td><td class='mono'>193</td><td class='mono'>105</td><td class='mono'>54.4%</td><td class='mono'>47.4%</td><td class='mono'>87.3%</td></tr><tr><td class='mono'>0.64</td><td class='mono'>186</td><td class='mono'>101</td><td class='mono'>54.3%</td><td class='mono'>47.1%</td><td class='mono'>84.2%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>184</td><td class='mono'>100</td><td class='mono'>54.3%</td><td class='mono'>47.1%</td><td class='mono'>83.3%</td></tr><tr><td class='mono'>0.66</td><td class='mono'>184</td><td class='mono'>100</td><td class='mono'>54.3%</td><td class='mono'>47.1%</td><td class='mono'>83.3%</td></tr><tr><td class='mono'>0.67</td><td class='mono'>137</td><td class='mono'>79</td><td class='mono'>57.7%</td><td class='mono'>49.3%</td><td class='mono'>62.0%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>96</td><td class='mono'>58</td><td class='mono'>60.4%</td><td class='mono'>50.4%</td><td class='mono'>43.4%</td></tr><tr><td class='mono'>0.69</td><td class='mono'>90</td><td class='mono'>55</td><td class='mono'>61.1%</td><td class='mono'>50.8%</td><td class='mono'>40.7%</td></tr><tr><td class='mono'>0.70</td><td class='mono'>71</td><td class='mono'>46</td><td class='mono'>64.8%</td><td class='mono'>53.2%</td><td class='mono'>32.1%</td></tr><tr><td class='mono'>0.71</td><td class='mono'>63</td><td class='mono'>41</td><td class='mono'>65.1%</td><td class='mono'>52.8%</td><td class='mono'>28.5%</td></tr><tr><td class='mono'>0.72</td><td class='mono'>59</td><td class='mono'>38</td><td class='mono'>64.4%</td><td class='mono'>51.7%</td><td class='mono'>26.7%</td></tr><tr><td class='mono'>0.73</td><td class='mono'>49</td><td class='mono'>35</td><td class='mono'>71.4%</td><td class='mono'>57.6%</td><td class='mono'>22.2%</td></tr><tr><td class='mono'>0.74</td><td class='mono'>37</td><td class='mono'>26</td><td class='mono'>70.3%</td><td class='mono'>54.2%</td><td class='mono'>16.7%</td></tr><tr><td class='mono'>0.75</td><td class='mono'>31</td><td class='mono'>20</td><td class='mono'>64.5%</td><td class='mono'>46.9%</td><td class='mono'>14.0%</td></tr><tr><td class='mono'>0.76</td><td class='mono'>21</td><td class='mono'>14</td><td class='mono'>66.7%</td><td class='mono'>45.4%</td><td class='mono'>9.5%</td></tr><tr><td class='mono'>0.77</td><td class='mono'>13</td><td class='mono'>9</td><td class='mono'>69.2%</td><td class='mono'>42.4%</td><td class='mono'>5.9%</td></tr><tr><td class='mono'>0.78</td><td class='mono'>7</td><td class='mono'>6</td><td class='mono'>85.7%</td><td class='mono'>48.7%</td><td class='mono'>3.2%</td></tr><tr><td class='mono'>0.79</td><td class='mono'>6</td><td class='mono'>6</td><td class='mono'>100.0%</td><td class='mono'>61.0%</td><td class='mono'>2.7%</td></tr><tr><td class='mono'>0.80</td><td class='mono'>3</td><td class='mono'>3</td><td class='mono'>100.0%</td><td class='mono'>43.8%</td><td class='mono'>1.4%</td></tr><tr><td class='mono'>0.81</td><td class='mono'>2</td><td class='mono'>2</td><td class='mono'>100.0%</td><td class='mono'>34.2%</td><td class='mono'>0.9%</td></tr><tr><td class='mono'>0.82</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.83</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.84</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.85</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr><tr><td class='mono'>0.86</td><td class='mono'>1</td><td class='mono'>1</td><td class='mono'>100.0%</td><td class='mono'>20.7%</td><td class='mono'>0.5%</td></tr></tbody>
+    </table>
+    </div>
+
+    <h3>Full DOWN sweep (0.01 &rarr; 0.50, step 0.01)</h3>
+    <div class="scroll-table">
+    <table>
+      <thead><tr><th>thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th><th>fire rate</th></tr></thead>
+      <tbody><tr><td class='mono'>0.18</td><td class='mono'>2</td><td class='mono'>2</td><td class='mono'>100.0%</td><td class='mono'>34.2%</td><td class='mono'>0.9%</td></tr><tr><td class='mono'>0.19</td><td class='mono'>7</td><td class='mono'>4</td><td class='mono'>57.1%</td><td class='mono'>25.0%</td><td class='mono'>3.2%</td></tr><tr><td class='mono'>0.20</td><td class='mono'>10</td><td class='mono'>5</td><td class='mono'>50.0%</td><td class='mono'>23.7%</td><td class='mono'>4.5%</td></tr><tr><td class='mono'>0.21</td><td class='mono'>10</td><td class='mono'>5</td><td class='mono'>50.0%</td><td class='mono'>23.7%</td><td class='mono'>4.5%</td></tr><tr><td class='mono'>0.22</td><td class='mono'>19</td><td class='mono'>10</td><td class='mono'>52.6%</td><td class='mono'>31.7%</td><td class='mono'>8.6%</td></tr><tr><td class='mono'>0.23</td><td class='mono'>31</td><td class='mono'>15</td><td class='mono'>48.4%</td><td class='mono'>32.0%</td><td class='mono'>14.0%</td></tr><tr><td class='mono'>0.24</td><td class='mono'>93</td><td class='mono'>48</td><td class='mono'>51.6%</td><td class='mono'>41.6%</td><td class='mono'>42.1%</td></tr><tr><td class='mono'>0.25</td><td class='mono'>159</td><td class='mono'>80</td><td class='mono'>50.3%</td><td class='mono'>42.6%</td><td class='mono'>71.9%</td></tr><tr><td class='mono'>0.26</td><td class='mono'>183</td><td class='mono'>89</td><td class='mono'>48.6%</td><td class='mono'>41.5%</td><td class='mono'>82.8%</td></tr><tr><td class='mono'>0.27</td><td class='mono'>189</td><td class='mono'>91</td><td class='mono'>48.1%</td><td class='mono'>41.1%</td><td class='mono'>85.5%</td></tr><tr><td class='mono'>0.28</td><td class='mono'>195</td><td class='mono'>94</td><td class='mono'>48.2%</td><td class='mono'>41.3%</td><td class='mono'>88.2%</td></tr><tr><td class='mono'>0.29</td><td class='mono'>212</td><td class='mono'>99</td><td class='mono'>46.7%</td><td class='mono'>40.1%</td><td class='mono'>95.9%</td></tr><tr><td class='mono'>0.30</td><td class='mono'>214</td><td class='mono'>100</td><td class='mono'>46.7%</td><td class='mono'>40.2%</td><td class='mono'>96.8%</td></tr><tr><td class='mono'>0.31</td><td class='mono'>214</td><td class='mono'>100</td><td class='mono'>46.7%</td><td class='mono'>40.2%</td><td class='mono'>96.8%</td></tr><tr><td class='mono'>0.32</td><td class='mono'>215</td><td class='mono'>101</td><td class='mono'>47.0%</td><td class='mono'>40.4%</td><td class='mono'>97.3%</td></tr><tr><td class='mono'>0.33</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.34</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.35</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.36</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.37</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.38</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.39</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.40</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.41</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.42</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.43</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.44</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.45</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.46</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.47</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.48</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.49</td><td class='mono'>217</td><td class='mono'>101</td><td class='mono'>46.5%</td><td class='mono'>40.0%</td><td class='mono'>98.2%</td></tr><tr><td class='mono'>0.50</td><td class='mono'>219</td><td class='mono'>103</td><td class='mono'>47.0%</td><td class='mono'>40.5%</td><td class='mono'>99.1%</td></tr></tbody>
+    </table>
+    </div>
+
+    <div class="chart" id="sweep_chart"></div>
+
+    <h2 id="pocket">5. 90% WR pocket hunt</h2>
+    <div class="callout red">
+      <div class="callout-title">Result: NO standalone v9.3 BTC pocket meets the 90/80/30 bar</div>
+      Sweep universe: 50 UP thresholds + 50 DOWN thresholds = 100 operating points.
+      <strong>Pockets satisfying (WR&nbsp;&ge;&nbsp;90% AND Wilson LB&nbsp;&ge;&nbsp;80% AND n&nbsp;&ge;&nbsp;30):
+      0</strong>.
+    </div>
+    <p>
+      The standalone closest to the bar at any reasonable sample size is <strong>UP thr&nbsp;0.73</strong>
+      (n=49, WR&nbsp;71.4%, Wilson LB&nbsp;57.6%).
+      That's a respectable 71.4% WR but a <strong>full 18.6 percentage points</strong> below the 90% target and
+      <strong>22.4 percentage points</strong> below the 92.86% benchmark set by v9.2+v12.
+    </p>
+    <p>
+      The "100% WR" rows at thr&nbsp;&ge;&nbsp;0.79 are interesting but the sample is too thin to bank on:
+      n=6 yields a Wilson 95% LB of only 61.0% &mdash; insufficient to claim a pocket. We'd need at least
+      n&nbsp;=&nbsp;~25 with 100% WR (or n=30 with 93%+) to clear the 80% LB bar. At current emission rates
+      (~3 windows/day above 0.79), that would take 8&ndash;10 more days of GHOST data.
+    </p>
+
+    <h2 id="cross">6. Cross-strategy comparison</h2>
+    <h3>v9.3 + v9.2 AND filter (UP) &mdash; top by Wilson LB, n &ge; 20</h3>
+    <table>
+      <thead><tr><th>v93_thr</th><th>v92_thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th></tr></thead>
+      <tbody><tr><td class='mono'>0.60</td><td class='mono'>0.75</td><td class='mono'>28</td><td class='mono'>26</td><td class='mono'>92.9%</td><td class='mono'>77.4%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.75</td><td class='mono'>27</td><td class='mono'>25</td><td class='mono'>92.6%</td><td class='mono'>76.6%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>0.75</td><td class='mono'>23</td><td class='mono'>21</td><td class='mono'>91.3%</td><td class='mono'>73.2%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.72</td><td class='mono'>63</td><td class='mono'>53</td><td class='mono'>84.1%</td><td class='mono'>73.2%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.72</td><td class='mono'>59</td><td class='mono'>49</td><td class='mono'>83.1%</td><td class='mono'>71.5%</td></tr><tr><td class='mono'>0.70</td><td class='mono'>0.75</td><td class='mono'>20</td><td class='mono'>18</td><td class='mono'>90.0%</td><td class='mono'>69.9%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.70</td><td class='mono'>85</td><td class='mono'>67</td><td class='mono'>78.8%</td><td class='mono'>69.0%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.70</td><td class='mono'>80</td><td class='mono'>62</td><td class='mono'>77.5%</td><td class='mono'>67.2%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>0.72</td><td class='mono'>45</td><td class='mono'>36</td><td class='mono'>80.0%</td><td class='mono'>66.2%</td></tr><tr><td class='mono'>0.70</td><td class='mono'>0.72</td><td class='mono'>41</td><td class='mono'>33</td><td class='mono'>80.5%</td><td class='mono'>66.0%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.65</td><td class='mono'>123</td><td class='mono'>91</td><td class='mono'>74.0%</td><td class='mono'>65.6%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.65</td><td class='mono'>112</td><td class='mono'>83</td><td class='mono'>74.1%</td><td class='mono'>65.3%</td></tr><tr><td class='mono'>0.72</td><td class='mono'>0.72</td><td class='mono'>38</td><td class='mono'>30</td><td class='mono'>78.9%</td><td class='mono'>63.7%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>0.65</td><td class='mono'>70</td><td class='mono'>52</td><td class='mono'>74.3%</td><td class='mono'>63.0%</td></tr><tr><td class='mono'>0.74</td><td class='mono'>0.72</td><td class='mono'>32</td><td class='mono'>25</td><td class='mono'>78.1%</td><td class='mono'>61.2%</td></tr></tbody>
+    </table>
+    <p>
+      The top v9.3+v9.2 AND cell hits <strong>92.9% WR (n=28, LB&nbsp;77.4%)</strong>
+      at thresholds (v93&nbsp;&ge;&nbsp;0.60, v92&nbsp;&ge;&nbsp;0.75).
+      Crucially, this is <em>identical</em> to the v9.2 leg's contribution alone (see below), suggesting v9.3 is
+      a near-passthrough at v93_thr=0.60 (it fires on almost every window where v9.2 itself fires).
+    </p>
+
+    <h3>v9.2 + v12 AND filter (UP, benchmark) &mdash; top by Wilson LB, n &ge; 20</h3>
+    <table>
+      <thead><tr><th>v92_thr</th><th>v12_thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th></tr></thead>
+      <tbody><tr><td class='mono'>0.750</td><td class='mono'>0.550</td><td class='mono'>28</td><td class='mono'>26</td><td class='mono'>92.9%</td><td class='mono'>77.4%</td></tr><tr><td class='mono'>0.725</td><td class='mono'>0.650</td><td class='mono'>30</td><td class='mono'>27</td><td class='mono'>90.0%</td><td class='mono'>74.4%</td></tr><tr><td class='mono'>0.725</td><td class='mono'>0.550</td><td class='mono'>56</td><td class='mono'>48</td><td class='mono'>85.7%</td><td class='mono'>74.3%</td></tr><tr><td class='mono'>0.750</td><td class='mono'>0.600</td><td class='mono'>24</td><td class='mono'>22</td><td class='mono'>91.7%</td><td class='mono'>74.2%</td></tr><tr><td class='mono'>0.725</td><td class='mono'>0.600</td><td class='mono'>48</td><td class='mono'>40</td><td class='mono'>83.3%</td><td class='mono'>70.4%</td></tr><tr><td class='mono'>0.700</td><td class='mono'>0.550</td><td class='mono'>80</td><td class='mono'>63</td><td class='mono'>78.8%</td><td class='mono'>68.6%</td></tr><tr><td class='mono'>0.700</td><td class='mono'>0.650</td><td class='mono'>44</td><td class='mono'>36</td><td class='mono'>81.8%</td><td class='mono'>68.0%</td></tr><tr><td class='mono'>0.700</td><td class='mono'>0.600</td><td class='mono'>69</td><td class='mono'>54</td><td class='mono'>78.3%</td><td class='mono'>67.2%</td></tr><tr><td class='mono'>0.650</td><td class='mono'>0.650</td><td class='mono'>57</td><td class='mono'>45</td><td class='mono'>78.9%</td><td class='mono'>66.7%</td></tr><tr><td class='mono'>0.700</td><td class='mono'>0.725</td><td class='mono'>26</td><td class='mono'>22</td><td class='mono'>84.6%</td><td class='mono'>66.5%</td></tr><tr><td class='mono'>0.725</td><td class='mono'>0.700</td><td class='mono'>21</td><td class='mono'>18</td><td class='mono'>85.7%</td><td class='mono'>65.4%</td></tr><tr><td class='mono'>0.650</td><td class='mono'>0.550</td><td class='mono'>115</td><td class='mono'>85</td><td class='mono'>73.9%</td><td class='mono'>65.2%</td></tr><tr><td class='mono'>0.650</td><td class='mono'>0.600</td><td class='mono'>95</td><td class='mono'>71</td><td class='mono'>74.7%</td><td class='mono'>65.2%</td></tr><tr><td class='mono'>0.600</td><td class='mono'>0.650</td><td class='mono'>61</td><td class='mono'>47</td><td class='mono'>77.0%</td><td class='mono'>65.1%</td></tr><tr><td class='mono'>0.700</td><td class='mono'>0.700</td><td class='mono'>31</td><td class='mono'>25</td><td class='mono'>80.6%</td><td class='mono'>63.7%</td></tr></tbody>
+    </table>
+    <p>
+      The benchmark from note #618 is reproduced on this fresh dataset:
+      <strong>v9.2 &ge; 0.75 AND v12 &ge; 0.55 &rarr; 92.9% WR (n=28, LB&nbsp;77.4%)</strong>.
+      Several adjacent cells (0.725/0.65, 0.75/0.60, 0.725/0.55) also land at 85&ndash;92% WR with LBs in the 70&ndash;77% band.
+    </p>
+
+    <h3>v9.3 + v12 AND filter (UP) &mdash; top by Wilson LB, n &ge; 20</h3>
+    <table>
+      <thead><tr><th>v93_thr</th><th>v12_thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th></tr></thead>
+      <tbody><tr><td class='mono'>0.65</td><td class='mono'>0.65</td><td class='mono'>59</td><td class='mono'>41</td><td class='mono'>69.5%</td><td class='mono'>56.9%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.65</td><td class='mono'>69</td><td class='mono'>47</td><td class='mono'>68.1%</td><td class='mono'>56.4%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.70</td><td class='mono'>44</td><td class='mono'>31</td><td class='mono'>70.5%</td><td class='mono'>55.8%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.72</td><td class='mono'>35</td><td class='mono'>25</td><td class='mono'>71.4%</td><td class='mono'>54.9%</td></tr><tr><td class='mono'>0.74</td><td class='mono'>0.50</td><td class='mono'>37</td><td class='mono'>26</td><td class='mono'>70.3%</td><td class='mono'>54.2%</td></tr><tr><td class='mono'>0.74</td><td class='mono'>0.55</td><td class='mono'>34</td><td class='mono'>24</td><td class='mono'>70.6%</td><td class='mono'>53.8%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.60</td><td class='mono'>123</td><td class='mono'>77</td><td class='mono'>62.6%</td><td class='mono'>53.8%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.60</td><td class='mono'>111</td><td class='mono'>70</td><td class='mono'>63.1%</td><td class='mono'>53.8%</td></tr><tr><td class='mono'>0.70</td><td class='mono'>0.50</td><td class='mono'>71</td><td class='mono'>46</td><td class='mono'>64.8%</td><td class='mono'>53.2%</td></tr><tr><td class='mono'>0.70</td><td class='mono'>0.55</td><td class='mono'>61</td><td class='mono'>40</td><td class='mono'>65.6%</td><td class='mono'>53.0%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>0.65</td><td class='mono'>28</td><td class='mono'>20</td><td class='mono'>71.4%</td><td class='mono'>52.9%</td></tr><tr><td class='mono'>0.74</td><td class='mono'>0.60</td><td class='mono'>28</td><td class='mono'>20</td><td class='mono'>71.4%</td><td class='mono'>52.9%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.70</td><td class='mono'>38</td><td class='mono'>26</td><td class='mono'>68.4%</td><td class='mono'>52.5%</td></tr><tr><td class='mono'>0.68</td><td class='mono'>0.55</td><td class='mono'>83</td><td class='mono'>52</td><td class='mono'>62.7%</td><td class='mono'>51.9%</td></tr><tr><td class='mono'>0.72</td><td class='mono'>0.50</td><td class='mono'>59</td><td class='mono'>38</td><td class='mono'>64.4%</td><td class='mono'>51.7%</td></tr></tbody>
+    </table>
+    <p>
+      v9.3 + v12 AND is materially weaker than v9.2 + v12 AND: best is ~69.5% WR (LB 56.9%). This is the strongest
+      evidence yet that <strong>v9.3 BTC carries no marginal information over v9.2 BTC on this dataset</strong> &mdash;
+      pairing v12 with v9.3 instead of v9.2 destroys the filter's edge.
+    </p>
+
+    <h3>v9.3 + v9.2 + v12 triple AND (UP) &mdash; top by Wilson LB, n &ge; 20</h3>
+    <table>
+      <thead><tr><th>v93_thr</th><th>v92_thr</th><th>v12_thr</th><th>n</th><th>wins</th><th>WR</th><th>Wilson LB</th></tr></thead>
+      <tbody><tr><td class='mono'>0.60</td><td class='mono'>0.725</td><td class='mono'>0.650</td><td class='mono'>29</td><td class='mono'>26</td><td class='mono'>89.7%</td><td class='mono'>73.6%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.725</td><td class='mono'>0.650</td><td class='mono'>26</td><td class='mono'>23</td><td class='mono'>88.5%</td><td class='mono'>71.0%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.725</td><td class='mono'>0.600</td><td class='mono'>47</td><td class='mono'>39</td><td class='mono'>83.0%</td><td class='mono'>69.9%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.725</td><td class='mono'>0.600</td><td class='mono'>44</td><td class='mono'>36</td><td class='mono'>81.8%</td><td class='mono'>68.0%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.700</td><td class='mono'>0.600</td><td class='mono'>67</td><td class='mono'>53</td><td class='mono'>79.1%</td><td class='mono'>67.9%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.700</td><td class='mono'>0.650</td><td class='mono'>43</td><td class='mono'>35</td><td class='mono'>81.4%</td><td class='mono'>67.4%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.650</td><td class='mono'>0.650</td><td class='mono'>56</td><td class='mono'>44</td><td class='mono'>78.6%</td><td class='mono'>66.2%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.650</td><td class='mono'>0.600</td><td class='mono'>93</td><td class='mono'>70</td><td class='mono'>75.3%</td><td class='mono'>65.6%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.700</td><td class='mono'>0.600</td><td class='mono'>62</td><td class='mono'>48</td><td class='mono'>77.4%</td><td class='mono'>65.6%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.700</td><td class='mono'>0.725</td><td class='mono'>25</td><td class='mono'>21</td><td class='mono'>84.0%</td><td class='mono'>65.3%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.600</td><td class='mono'>0.650</td><td class='mono'>60</td><td class='mono'>46</td><td class='mono'>76.7%</td><td class='mono'>64.6%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.700</td><td class='mono'>0.650</td><td class='mono'>39</td><td class='mono'>31</td><td class='mono'>79.5%</td><td class='mono'>64.5%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.725</td><td class='mono'>0.700</td><td class='mono'>20</td><td class='mono'>17</td><td class='mono'>85.0%</td><td class='mono'>64.0%</td></tr><tr><td class='mono'>0.65</td><td class='mono'>0.650</td><td class='mono'>0.600</td><td class='mono'>86</td><td class='mono'>63</td><td class='mono'>73.3%</td><td class='mono'>63.1%</td></tr><tr><td class='mono'>0.60</td><td class='mono'>0.700</td><td class='mono'>0.700</td><td class='mono'>30</td><td class='mono'>24</td><td class='mono'>80.0%</td><td class='mono'>62.7%</td></tr></tbody>
+    </table>
+    <p>
+      Adding v9.3 as a third gate on top of v9.2+v12 trims sample but does <em>not</em> improve WR or Wilson LB
+      vs the v9.2+v12 doublet. Best triple: 89.7% WR (n=29, LB&nbsp;73.6%).
+      The simpler v9.2+v12 AND filter is already at or above this.
+    </p>
+
+    <h2 id="rec">7. Recommendation</h2>
+    <div class="callout amber">
+      <div class="callout-title">Don't deploy v9.3 BTC standalone. Keep observing.</div>
+      <ul style="color: var(--text-primary);">
+        <li><strong>v9.3 BTC standalone is not a 90% WR strategy</strong> at any reachable threshold on the current
+        emission ceiling. Best is 71.4% WR at thr 0.73 (n=49).</li>
+        <li><strong>v9.3 has no additive lift over v9.2</strong> in AND-filter ensembles &mdash; the v9.3+v9.2 best
+        cell merely matches the v9.2-only contribution, and v9.3+v12 underperforms v9.2+v12.</li>
+        <li><strong>The v9.2 + v12 AND filter (0.75/0.55) remains the leader</strong> at 92.86% WR (n=28, LB 77.4%) on
+        this 221-window dataset. Promote that, not v9.3.</li>
+        <li><strong>Wait for more data above 0.78</strong>: at current emission rates (~3 windows/day &gt; 0.79),
+        an additional ~8&ndash;10 days of GHOST data is needed to give the high-threshold tail enough sample to
+        evaluate whether a true 90% pocket exists.</li>
+        <li><strong>Investigate why the ceiling stalled.</strong> Only 1 window above 0.86 in 24h suggests PR #582
+        didn't fully unblock the feature path &mdash; check whether the 20:56 expansion was a one-shot.</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    Generated 2026-05-24 11:35 UTC &middot; analysis cache <code>/tmp/v93_resweep/</code> &middot; based on <code>signal_evaluations</code> + <code>market_data</code> on novakash-pg-prod
+  </div>
+
+<script>
+// Histogram
+Plotly.newPlot('hist', [{
+  type: 'bar',
+  x: [0.312, 0.338, 0.362, 0.388, 0.412, 0.438, 0.463, 0.487, 0.512, 0.538, 0.562, 0.588, 0.613, 0.637, 0.663, 0.688, 0.713, 0.738, 0.762, 0.788, 0.812, 0.838, 0.863, 0.888],
+  y: [1, 0, 0, 0, 0, 0, 0, 0, 2, 1, 3, 3, 18, 9, 79, 34, 17, 24, 21, 7, 2, 0, 1, 0],
+  marker: { color: '#22D3EE', line: { color: '#06B6D4', width: 1 } }
+}], {
+  title: { text: 'v9.3 BTC per-window max-probability distribution (n=222)', font: { color: '#F5F3F0', family: 'Instrument Serif' } },
+  xaxis: { title: 'v93_max', color: '#B8B3AB', gridcolor: 'rgba(255,255,255,0.05)' },
+  yaxis: { title: 'windows', color: '#B8B3AB', gridcolor: 'rgba(255,255,255,0.05)' },
+  paper_bgcolor: '#161620', plot_bgcolor: '#161620',
+  shapes: [
+    { type:'line', x0:0.86, x1:0.86, y0:0, y1:1, yref:'paper', line:{color:'#EF4444', dash:'dash', width:2} },
+    { type:'line', x0:0.79, x1:0.79, y0:0, y1:1, yref:'paper', line:{color:'#F59E0B', dash:'dot', width:1.5} }
+  ],
+  annotations: [
+    { x:0.86, y:1, yref:'paper', yanchor:'bottom', text:'ceiling 0.8646', font:{color:'#EF4444'}, showarrow:false },
+    { x:0.79, y:0.9, yref:'paper', yanchor:'bottom', text:'practical 0.79', font:{color:'#F59E0B'}, showarrow:false }
+  ]
+});
+
+// Ceiling time-series (hourly max)
+Plotly.newPlot('ceiling_ts', [
+  { x: ["2026-05-23T15", "2026-05-23T16", "2026-05-23T17", "2026-05-23T18", "2026-05-23T19", "2026-05-23T20", "2026-05-23T21", "2026-05-23T22", "2026-05-23T23", "2026-05-24T00", "2026-05-24T01", "2026-05-24T02", "2026-05-24T03", "2026-05-24T04", "2026-05-24T05", "2026-05-24T06", "2026-05-24T07", "2026-05-24T08", "2026-05-24T09", "2026-05-24T10", "2026-05-24T11"], y: [0.777104047665836, 0.7986512524084779, 0.7682299248579532, 0.7377881152766015, 0.7588484032290246, 0.8646400272846222, 0.8148447207811862, 0.7368087768554688, 0.7703435285530824, 0.7932772271040469, 0.8073568940162659, 0.7677412629127502, 0.77418898862634, 0.7557683289051056, 0.764911025762558, 0.7556289434432983, 0.7205857485532761, 0.7680365971926242, 0.755330198228696, 0.7787493765354156, 0.7686944050925042], type:'scatter', mode:'lines+markers', name:'hourly max', line:{color:'#22D3EE'} },
+  { x: ["2026-05-23T15", "2026-05-23T16", "2026-05-23T17", "2026-05-23T18", "2026-05-23T19", "2026-05-23T20", "2026-05-23T21", "2026-05-23T22", "2026-05-23T23", "2026-05-24T00", "2026-05-24T01", "2026-05-24T02", "2026-05-24T03", "2026-05-24T04", "2026-05-24T05", "2026-05-24T06", "2026-05-24T07", "2026-05-24T08", "2026-05-24T09", "2026-05-24T10", "2026-05-24T11"], y: [0.4800408609859979, 0.4582744262085159, 0.4553038234938151, 0.4930781714119268, 0.46169448950290887, 0.4528403792868749, 0.4777382875098673, 0.44968668967492903, 0.48130172737036425, 0.48076184362978447, 0.46353658172548357, 0.4748047328728571, 0.46252587149834934, 0.46497524642706206, 0.4396043211419477, 0.4628351584372122, 0.4223398279764708, 0.46088275882502505, 0.48444728136447124, 0.4536498668468804, 0.47877128916215506], type:'scatter', mode:'lines', name:'hourly mean', line:{color:'#7A7268', dash:'dot'} }
+], {
+  title: { text: 'Hourly v9.3 BTC probability (max + mean)', font:{color:'#F5F3F0', family:'Instrument Serif'} },
+  xaxis: { title:'hour (UTC)', color:'#B8B3AB', gridcolor:'rgba(255,255,255,0.05)' },
+  yaxis: { title:'v93_prob', color:'#B8B3AB', gridcolor:'rgba(255,255,255,0.05)' },
+  paper_bgcolor:'#161620', plot_bgcolor:'#161620',
+  legend: { font:{color:'#F5F3F0'} }
+});
+
+// Sweep chart - WR + LB vs threshold
+Plotly.newPlot('sweep_chart', [
+  { x: [0.5, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58, 0.59, 0.6, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67, 0.68, 0.69, 0.7, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, 0.79, 0.8, 0.81, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99], y: [52.72727272727272, 52.96803652968036, 52.96803652968036, 52.53456221198156, 52.53456221198156, 52.53456221198156, 52.55813953488372, 52.336448598130836, 52.112676056338024, 51.886792452830186, 52.13270142180095, 54.04040404040404, 54.63917525773196, 54.40414507772021, 54.3010752688172, 54.347826086956516, 54.347826086956516, 57.66423357664233, 60.416666666666664, 61.111111111111114, 64.7887323943662, 65.07936507936508, 64.40677966101694, 71.42857142857143, 70.27027027027027, 64.51612903225806, 66.66666666666666, 69.23076923076923, 85.71428571428571, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], name:'WR (%)', type:'scatter', mode:'lines+markers', line:{color:'#34D399'} },
+  { x: [0.5, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58, 0.59, 0.6, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67, 0.68, 0.69, 0.7, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, 0.79, 0.8, 0.81, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99], y: [46.13983400115399, 46.36334953695852, 46.36334953695852, 45.9042462777152, 45.9042462777152, 45.9042462777152, 45.89713451038539, 45.662560814273625, 45.42598285364319, 45.187375642975084, 45.414534559679446, 47.08767153990927, 47.611219743811624, 47.35979211654248, 47.127236834622735, 47.13503997523875, 47.13503997523875, 49.29236708993527, 50.41492795838095, 50.782268454539384, 53.18184572117227, 52.751231116001826, 51.655259672266006, 57.590850793899676, 54.216560827956414, 46.947638042814894, 45.37307565721029, 42.36888781333764, 48.686549668097015, 60.96569663469354, 43.84939195509822, 34.23719528896193, 20.654329147389294, 20.654329147389294, 20.654329147389294, 20.654329147389294, 20.654329147389294, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], name:'Wilson 95% LB (%)', type:'scatter', mode:'lines', line:{color:'#22D3EE', dash:'dash'} },
+  { x: [0.5, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58, 0.59, 0.6, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67, 0.68, 0.69, 0.7, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, 0.79, 0.8, 0.81, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.9, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99], y: [220, 219, 219, 217, 217, 217, 215, 214, 213, 212, 211, 198, 194, 193, 186, 184, 184, 137, 96, 90, 71, 63, 59, 49, 37, 31, 21, 13, 7, 6, 3, 2, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name:'n_windows', type:'scatter', mode:'lines', yaxis:'y2', line:{color:'#F59E0B', dash:'dot'} }
+], {
+  title: { text:'v9.3 BTC standalone UP sweep — WR / LB / n vs threshold', font:{color:'#F5F3F0', family:'Instrument Serif'} },
+  xaxis: { title:'UP threshold', color:'#B8B3AB', gridcolor:'rgba(255,255,255,0.05)' },
+  yaxis: { title:'percent', color:'#B8B3AB', gridcolor:'rgba(255,255,255,0.05)', range:[0,100] },
+  yaxis2: { title:'n windows', overlaying:'y', side:'right', color:'#F59E0B', gridcolor:'rgba(0,0,0,0)' },
+  paper_bgcolor:'#161620', plot_bgcolor:'#161620',
+  legend: { font:{color:'#F5F3F0'} },
+  shapes: [
+    { type:'line', x0:0.50, x1:0.99, y0:90, y1:90, line:{color:'#EF4444', dash:'dash'} },
+    { type:'line', x0:0.50, x1:0.99, y0:80, y1:80, line:{color:'#F59E0B', dash:'dot'} }
+  ],
+  annotations: [
+    { x:0.97, y:90, text:'90% WR target', font:{color:'#EF4444'}, showarrow:false, xanchor:'right' },
+    { x:0.97, y:80, text:'80% LB bar', font:{color:'#F59E0B'}, showarrow:false, xanchor:'right' }
+  ]
+});
+</script>
+</body>
+</html>

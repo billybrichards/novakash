@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>v9.2 — How We Build, Train, Test, Calibrate</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg-2: #131722;
+    --bg-3: #1c2230;
+    --fg: #e1e5ef;
+    --fg-dim: #8e98ad;
+    --fg-mute: #5b6478;
+    --rule: #232a3a;
+    --accent: #7aa2ff;
+    --accent-dim: #4a6fc0;
+    --warn: #f3b06a;
+    --bad: #ef6b6b;
+    --good: #6dc88a;
+    --info: #6cb5d3;
+    --math: #b8a5e8;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--sans); line-height: 1.55; font-size: 15px; }
+  code { font-family: var(--mono); font-size: 12.5px; background: #0a0d14;
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--rule); }
+
+  .deck { max-width: 1100px; margin: 0 auto; padding: 40px 32px 60px; }
+  header { padding-bottom: 24px; border-bottom: 1px solid var(--rule); margin-bottom: 36px; }
+  header h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.01em; }
+  header .sub { color: var(--fg-dim); font-size: 14px; }
+  header .meta { color: var(--fg-mute); font-size: 13px; margin-top: 10px; }
+  header .meta span { margin-right: 14px; }
+
+  /* ── Slide framing ── */
+  .slide {
+    background: linear-gradient(180deg, var(--bg-2) 0%, #0e1320 100%);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 36px 40px;
+    margin: 36px 0;
+    position: relative;
+    min-height: 480px;
+  }
+  .slide-num {
+    position: absolute; top: 18px; right: 28px;
+    font-family: var(--mono); font-size: 11px; color: var(--fg-mute);
+    letter-spacing: 0.15em;
+  }
+  .slide h2 {
+    font-size: 22px; margin: 0 0 6px;
+    letter-spacing: -0.005em;
+  }
+  .slide .stage {
+    display: inline-block;
+    font-family: var(--mono); font-size: 11px;
+    padding: 2px 10px;
+    border-radius: 10px;
+    margin-bottom: 14px;
+  }
+  .stage.build { background: rgba(122, 162, 255, 0.16); color: var(--accent); }
+  .stage.train { background: rgba(108, 181, 211, 0.16); color: var(--info); }
+  .stage.test  { background: rgba(243, 176, 106, 0.16); color: var(--warn); }
+  .stage.ece   { background: rgba(184, 165, 232, 0.16); color: var(--math); }
+  .stage.iso   { background: rgba(109, 200, 138, 0.16); color: var(--good); }
+  .slide .tag {
+    color: var(--fg-mute); font-size: 12.5px; margin-top: 2px;
+  }
+  .slide p { color: var(--fg-dim); margin: 12px 0; }
+  .slide strong { color: var(--fg); }
+
+  /* ── SVG container ── */
+  .viz { background: #0a0d14; border: 1px solid var(--rule); border-radius: 10px;
+    padding: 18px; margin: 20px 0; }
+  .viz svg { display: block; width: 100%; height: auto; }
+  .viz .caption { color: var(--fg-mute); font-size: 12px; text-align: center;
+    margin-top: 10px; }
+
+  /* ── Two-col grid for slide details ── */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 22px;
+    margin-top: 18px;
+  }
+  .panel {
+    background: var(--bg-3);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .panel h4 { margin: 0 0 8px; font-size: 14px; color: var(--accent); }
+  .panel p { margin: 4px 0; font-size: 13.5px; color: var(--fg-dim); }
+  .panel code { font-size: 12px; }
+  .panel ul { margin: 6px 0 6px 18px; padding: 0; color: var(--fg-dim); font-size: 13px; }
+  .panel li { margin: 3px 0; }
+
+  .math-box {
+    background: #15182a;
+    border-left: 3px solid var(--math);
+    padding: 10px 16px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    color: var(--math);
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  .math-box .label {
+    color: var(--fg-mute); font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.1em; margin-bottom: 4px; display: block;
+  }
+
+  /* slide footer arrow */
+  .next {
+    text-align: center; color: var(--fg-mute); font-size: 22px;
+    margin: 6px 0 -6px;
+  }
+
+  @media (max-width: 760px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .slide { padding: 24px 22px; }
+    .deck { padding: 24px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="deck">
+
+<header>
+  <h1>v9.2 — How We Build, Train, Test, Calibrate</h1>
+  <div class="sub">The 5-stage canonical training pipeline: from raw signal_evaluations rows to a calibrated production scorer that returns a trustworthy probability.</div>
+  <div class="meta">
+    <span>📅 2026-05-20</span>
+    <span>Author: claude-session</span>
+    <span>Cross-ref: <code>training.build_dataset</code> + <code>training.train_lgb_v5</code> (canonical entrypoints)</span>
+  </div>
+</header>
+
+<!-- ════════ SLIDE 1 — BUILD ════════ -->
+<section class="slide">
+  <div class="slide-num">SLIDE 1 / 5</div>
+  <span class="stage build">STAGE 1 · BUILD</span>
+  <h2>Assemble the training corpus</h2>
+  <p class="tag">Take per-tick features from <code>signal_evaluations</code> and join them to per-window outcomes from <code>market_data</code>. One row per (asset, window_ts, seconds_to_close) → (78 features + 1 label).</p>
+
+  <div class="viz">
+    <svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg">
+      <!-- Left source: signal_evaluations -->
+      <rect x="40" y="50" width="240" height="120" rx="8"
+            fill="#131722" stroke="#7aa2ff" stroke-width="2"/>
+      <text x="160" y="78" fill="#7aa2ff" font-size="14" font-weight="600"
+            text-anchor="middle" font-family="monospace">signal_evaluations</text>
+      <text x="160" y="100" fill="#8e98ad" font-size="11"
+            text-anchor="middle" font-family="monospace">per-tick scoring snapshots</text>
+      <text x="160" y="120" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">asset=BTC · timeframe=5m</text>
+      <text x="160" y="138" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">518k rows × 78 features</text>
+      <text x="160" y="156" fill="#8e98ad" font-size="11"
+            text-anchor="middle" font-family="monospace">window_ts · seconds_to_close · ret_60s · vpin · tfm_* …</text>
+
+      <!-- Right source: market_data -->
+      <rect x="620" y="50" width="240" height="120" rx="8"
+            fill="#131722" stroke="#6dc88a" stroke-width="2"/>
+      <text x="740" y="78" fill="#6dc88a" font-size="14" font-weight="600"
+            text-anchor="middle" font-family="monospace">market_data</text>
+      <text x="740" y="100" fill="#8e98ad" font-size="11"
+            text-anchor="middle" font-family="monospace">resolved outcomes (labels)</text>
+      <text x="740" y="120" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">asset=BTC · timeframe=5m</text>
+      <text x="740" y="138" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">~20.5k windows resolved</text>
+      <text x="740" y="156" fill="#8e98ad" font-size="11"
+            text-anchor="middle" font-family="monospace">window_ts · outcome ∈ {UP, DOWN, NULL}</text>
+
+      <!-- Arrows joining at center -->
+      <path d="M 280 110 Q 380 200 450 200" stroke="#7aa2ff" stroke-width="2"
+            fill="none" stroke-linecap="round"/>
+      <path d="M 620 110 Q 520 200 450 200" stroke="#6dc88a" stroke-width="2"
+            fill="none" stroke-linecap="round"/>
+
+      <!-- Join label -->
+      <text x="450" y="194" fill="#fff" font-size="12" font-weight="600"
+            text-anchor="middle" font-family="monospace">LEFT JOIN ON (asset, window_ts)</text>
+
+      <!-- Output box -->
+      <rect x="290" y="220" width="320" height="46" rx="8"
+            fill="#0a0d14" stroke="#e1e5ef" stroke-width="2"/>
+      <text x="450" y="240" fill="#e1e5ef" font-size="13" font-weight="600"
+            text-anchor="middle" font-family="monospace">training_table</text>
+      <text x="450" y="256" fill="#8e98ad" font-size="11"
+            text-anchor="middle" font-family="monospace">518k rows × (78 features + 1 label) · 19-day window</text>
+    </svg>
+    <div class="caption">
+      Features come from the live scorer's snapshot at score time. Labels come from the
+      resolved Polymarket outcome at window close. The join is the source of truth.
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h4>Why this join shape</h4>
+      <ul>
+        <li><strong>features → signal_evaluations</strong>: same source as live serving → train/serve skew = 0</li>
+        <li><strong>labels → market_data</strong>: resolved outcomes that we can't see at score time → no look-ahead</li>
+        <li>Filter window_ts &gt; cutoff (e.g. ≥ <code>1778959500</code>) to skip pre-fix contaminated periods</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h4>Code entry point</h4>
+      <p><code>training.build_dataset</code> — the canonical builder. Per <code>feedback_canonical_training.md</code>, all other paths are anti-patterns.</p>
+      <p>Output: pandas DataFrame ready for <code>train_lgb_v5</code>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="next">↓</div>
+
+<!-- ════════ SLIDE 2 — TRAIN ════════ -->
+<section class="slide">
+  <div class="slide-num">SLIDE 2 / 5</div>
+  <span class="stage train">STAGE 2 · TRAIN</span>
+  <h2>Six per-Δ LightGBM heads</h2>
+  <p class="tag">Instead of one booster trying to learn how predictions decay with seconds-to-close, we train SIX boosters — one per Δ bucket. Each sees only rows from its bucket.</p>
+
+  <div class="viz">
+    <svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+      <!-- Train/dev/test split bar at top -->
+      <text x="60" y="32" fill="#8e98ad" font-size="11" font-family="monospace">19-day corpus →</text>
+      <rect x="200" y="20" width="490" height="22" fill="#1c2230" stroke="#232a3a"/>
+      <rect x="200" y="20" width="360" height="22" fill="rgba(108,181,211,0.4)"/>
+      <rect x="560" y="20" width="80"  height="22" fill="rgba(243,176,106,0.4)"/>
+      <rect x="640" y="20" width="50"  height="22" fill="rgba(109,200,138,0.4)"/>
+      <text x="380" y="36" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">train  (14d)</text>
+      <text x="600" y="36" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">dev (3d)</text>
+      <text x="665" y="36" fill="#e1e5ef" font-size="11"
+            text-anchor="middle" font-family="monospace">test (2d)</text>
+      <text x="700" y="36" fill="#8e98ad" font-size="11"
+            font-family="monospace">time-ordered</text>
+
+      <!-- Bucket boxes -->
+      <g font-family="monospace">
+        <g transform="translate(40, 80)">
+          <rect width="120" height="80" rx="6" fill="#15182a" stroke="#6cb5d3" stroke-width="1.5"/>
+          <text x="60" y="22" fill="#6cb5d3" font-size="13" font-weight="600" text-anchor="middle">Δ=30s</text>
+          <text x="60" y="42" fill="#8e98ad" font-size="11" text-anchor="middle">stc ∈ [0,45]</text>
+          <text x="60" y="60" fill="#e1e5ef" font-size="11" text-anchor="middle">lgb_btc_030.txt</text>
+          <text x="60" y="74" fill="#8e98ad" font-size="10" text-anchor="middle">~80k rows</text>
+        </g>
+        <g transform="translate(180, 80)">
+          <rect width="120" height="80" rx="6" fill="#15182a" stroke="#6cb5d3" stroke-width="1.5"/>
+          <text x="60" y="22" fill="#6cb5d3" font-size="13" font-weight="600" text-anchor="middle">Δ=60s</text>
+          <text x="60" y="42" fill="#8e98ad" font-size="11" text-anchor="middle">stc ∈ [46,75]</text>
+          <text x="60" y="60" fill="#e1e5ef" font-size="11" text-anchor="middle">lgb_btc_060.txt</text>
+          <text x="60" y="74" fill="#8e98ad" font-size="10" text-anchor="middle">~80k rows</text>
+        </g>
+        <g transform="translate(320, 80)">
+          <rect width="120" height="80" rx="6" fill="#15182a" stroke="#6cb5d3" stroke-width="1.5"/>
+          <text x="60" y="22" fill="#6cb5d3" font-size="13" font-weight="600" text-anchor="middle">Δ=90s</text>
+          <text x="60" y="42" fill="#8e98ad" font-size="11" text-anchor="middle">stc ∈ [76,105]</text>
+          <text x="60" y="60" fill="#e1e5ef" font-size="11" text-anchor="middle">lgb_btc_090.txt</text>
+          <text x="60" y="74" fill="#8e98ad" font-size="10" text-anchor="middle">~80k rows</text>
+        </g>
+        <g transform="translate(460, 80)">
+          <rect width="120" height="80" rx="6" fill="#15182a" stroke="#6cb5d3" stroke-width="1.5"/>
+          <text x="60" y="22" fill="#6cb5d3" font-size="13" font-weight="600" text-anchor="middle">Δ=120s</text>
+          <text x="60" y="42" fill="#8e98ad" font-size="11" text-anchor="middle">stc ∈ [106,150]</text>
+          <text x="60" y="60" fill="#e1e5ef" font-size="11" text-anchor="middle">lgb_btc_120.txt</text>
+          <text x="60" y="74" fill="#8e98ad" font-size="10" text-anchor="middle">~85k rows</text>
+        </g>
+        <g transform="translate(600, 80)">
+          <rect width="120" height="80" rx="6" fill="#15182a" stroke="#6cb5d3" stroke-width="1.5"/>
+          <text x="60" y="22" fill="#6cb5d3" font-size="13" font-weight="600" text-anchor="middle">Δ=180s</text>
+          <text x="60" y="42" fill="#8e98ad" font-size="11" text-anchor="middle">stc ∈ [151,210]</text>
+          <text x="60" y="60" fill="#e1e5ef" font-size="11" text-anchor="middle">lgb_btc_180.txt</text>
+          <text x="60" y="74" fill="#8e98ad" font-size="10" text-anchor="middle">~95k rows</text>
+        </g>
+        <g transform="translate(740, 80)">
+          <rect width="120" height="80" rx="6" fill="#15182a" stroke="#6cb5d3" stroke-width="1.5"/>
+          <text x="60" y="22" fill="#6cb5d3" font-size="13" font-weight="600" text-anchor="middle">Δ=240s</text>
+          <text x="60" y="42" fill="#8e98ad" font-size="11" text-anchor="middle">stc ∈ [211,300]</text>
+          <text x="60" y="60" fill="#e1e5ef" font-size="11" text-anchor="middle">lgb_btc_240.txt</text>
+          <text x="60" y="74" fill="#8e98ad" font-size="10" text-anchor="middle">~100k rows</text>
+        </g>
+
+        <!-- Routing arrows -->
+        <text x="450" y="195" fill="#e1e5ef" font-size="13" text-anchor="middle" font-weight="600">↓ at serve time: route by seconds_to_close ↓</text>
+
+        <!-- Routing diagram -->
+        <rect x="200" y="220" width="500" height="60" rx="6" fill="#0a0d14" stroke="#7aa2ff" stroke-width="1.5"/>
+        <text x="450" y="240" fill="#7aa2ff" font-size="13" font-weight="600" text-anchor="middle">V2ModelRegistry._select_booster(stc)</text>
+        <text x="450" y="262" fill="#8e98ad" font-size="11" text-anchor="middle">if stc ≤ 45 → booster_30 · else if stc ≤ 75 → booster_60 · ... · else → booster_240</text>
+        <text x="450" y="276" fill="#8e98ad" font-size="11" text-anchor="middle">Only ONE booster fires per snapshot tick.</text>
+      </g>
+    </svg>
+    <div class="caption">
+      Each of the 6 boosters specializes in its window-position range. A 5m window is
+      ~300 seconds, so all of <code>stc ∈ [0, 300]</code> is covered by the 6 buckets.
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h4>Hyperparameters (LightGBM)</h4>
+      <ul>
+        <li><code>num_leaves = 63</code></li>
+        <li><code>learning_rate = 0.05</code></li>
+        <li><code>num_boost_round = 500</code></li>
+        <li><code>early_stopping_rounds = 50</code> on dev</li>
+        <li><code>min_data_in_leaf = 100</code></li>
+        <li>objective: <code>binary</code>, metric: <code>binary_logloss</code></li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h4>Why per-Δ vs one shared booster</h4>
+      <p>Feature importance shifts dramatically with seconds-to-close.
+      Far from close: <code>tfm_*</code> forecasts dominate. Near close:
+      <code>vpin</code> + recent price ret dominates. One shared booster
+      averages those signals; per-Δ heads learn each regime independently.</p>
+    </div>
+  </div>
+</section>
+
+<div class="next">↓</div>
+
+<!-- ════════ SLIDE 3 — TEST ════════ -->
+<section class="slide">
+  <div class="slide-num">SLIDE 3 / 5</div>
+  <span class="stage test">STAGE 3 · TEST</span>
+  <h2>Held-out evaluation</h2>
+  <p class="tag">Predict on the 2-day test tail (never seen during training or hyperparameter selection). Measure log-loss, accuracy, and win-rate at conservative thresholds. This is the only number we trust.</p>
+
+  <div class="viz">
+    <svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+      <!-- WR-at-threshold curve -->
+      <g font-family="monospace">
+        <text x="80" y="30" fill="#e1e5ef" font-size="13" font-weight="600">Win-rate vs threshold (DOWN side)</text>
+        <text x="80" y="46" fill="#8e98ad" font-size="11">As we tighten the DOWN threshold (require lower p), WR rises but call count falls.</text>
+
+        <!-- Axes -->
+        <line x1="120" y1="80" x2="120" y2="270" stroke="#5b6478" stroke-width="1"/>
+        <line x1="120" y1="270" x2="540" y2="270" stroke="#5b6478" stroke-width="1"/>
+
+        <!-- Y labels (WR) -->
+        <text x="115" y="84" fill="#8e98ad" font-size="10" text-anchor="end">100%</text>
+        <text x="115" y="138" fill="#8e98ad" font-size="10" text-anchor="end">90%</text>
+        <text x="115" y="190" fill="#8e98ad" font-size="10" text-anchor="end">80%</text>
+        <text x="115" y="242" fill="#8e98ad" font-size="10" text-anchor="end">70%</text>
+        <text x="115" y="274" fill="#8e98ad" font-size="10" text-anchor="end">60%</text>
+        <text x="100" y="170" fill="#8e98ad" font-size="11" text-anchor="middle" transform="rotate(-90 100 170)">WR</text>
+
+        <!-- X labels (threshold) -->
+        <text x="120" y="288" fill="#8e98ad" font-size="10" text-anchor="middle">0.50</text>
+        <text x="225" y="288" fill="#8e98ad" font-size="10" text-anchor="middle">0.30</text>
+        <text x="330" y="288" fill="#8e98ad" font-size="10" text-anchor="middle">0.15</text>
+        <text x="435" y="288" fill="#8e98ad" font-size="10" text-anchor="middle">0.08</text>
+        <text x="540" y="288" fill="#8e98ad" font-size="10" text-anchor="middle">0.04</text>
+        <text x="330" y="304" fill="#8e98ad" font-size="11" text-anchor="middle">threshold (lower = more conservative)</text>
+
+        <!-- Curve: WR rises as threshold tightens -->
+        <path d="M 120,238 Q 200,200 280,170 Q 360,142 440,118 Q 500,100 540,90"
+              fill="none" stroke="#f3b06a" stroke-width="2.5"/>
+
+        <!-- Points -->
+        <circle cx="120" cy="238" r="4" fill="#f3b06a"/>
+        <circle cx="225" cy="195" r="4" fill="#f3b06a"/>
+        <circle cx="330" cy="155" r="4" fill="#f3b06a"/>
+        <circle cx="435" cy="120" r="4" fill="#f3b06a"/>
+        <circle cx="540" cy="95" r="4" fill="#f3b06a"/>
+
+        <!-- Right panel: fires/day overlay -->
+        <text x="640" y="100" fill="#e1e5ef" font-size="13" font-weight="600">Fires/day @ threshold</text>
+        <g transform="translate(620, 120)">
+          <text x="0" y="0"   fill="#8e98ad" font-size="12">p ≤ 0.50</text>
+          <rect x="80" y="-9" width="160" height="11" fill="rgba(243,176,106,0.4)" />
+          <text x="250" y="0" fill="#e1e5ef" font-size="11">~580/d</text>
+
+          <text x="0" y="22"  fill="#8e98ad" font-size="12">p ≤ 0.30</text>
+          <rect x="80" y="13" width="100" height="11" fill="rgba(243,176,106,0.55)" />
+          <text x="250" y="22" fill="#e1e5ef" font-size="11">~310/d</text>
+
+          <text x="0" y="44"  fill="#8e98ad" font-size="12">p ≤ 0.15</text>
+          <rect x="80" y="35" width="58" height="11" fill="rgba(243,176,106,0.7)" />
+          <text x="250" y="44" fill="#e1e5ef" font-size="11">~140/d</text>
+
+          <text x="0" y="66"  fill="#8e98ad" font-size="12">p ≤ 0.08</text>
+          <rect x="80" y="57" width="32" height="11" fill="rgba(243,176,106,0.85)" />
+          <text x="250" y="66" fill="#e1e5ef" font-size="11">~62/d</text>
+
+          <text x="0" y="88"  fill="#8e98ad" font-size="12">p ≤ 0.04</text>
+          <rect x="80" y="79" width="12" height="11" fill="rgba(243,176,106,1.0)" />
+          <text x="250" y="88" fill="#e1e5ef" font-size="11">~23/d</text>
+        </g>
+        <text x="700" y="240" fill="#8e98ad" font-size="11" text-anchor="middle">trade-off: precision vs volume</text>
+      </g>
+    </svg>
+    <div class="caption">
+      The "conservative threshold" choice is where on this curve to operate. v9.2 BTC LIVE
+      lives at <code>p ≤ 0.04</code> (DOWN) and <code>p ≥ 0.96</code> (UP) — high WR, low volume.
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h4>Held-out metrics — what we report</h4>
+      <ul>
+        <li><strong>Log-loss</strong>: average <code>−log(p_correct)</code>. Measures full distribution quality.</li>
+        <li><strong>Accuracy</strong>: <code>argmax</code> correct rate. Coarse-grained.</li>
+        <li><strong>WR @ threshold</strong>: precision at the operating point we actually trade at.</li>
+        <li><strong>Fires/day @ threshold</strong>: volume sanity check — need enough fires to be statistically real.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h4>What we never use</h4>
+      <ul>
+        <li>WR on the training set (overfitting illusion)</li>
+        <li>WR on dev only (already used for hyperparameter selection — biased)</li>
+        <li>Numbers from <code>p ≥ 0.5</code> split (trades happen at thresholds, not at 0.5)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="next">↓</div>
+
+<!-- ════════ SLIDE 4 — ECE ════════ -->
+<section class="slide">
+  <div class="slide-num">SLIDE 4 / 5</div>
+  <span class="stage ece">STAGE 4 · ECE</span>
+  <h2>Expected Calibration Error — "do the numbers mean what they say?"</h2>
+  <p class="tag">A model can have great accuracy and still emit nonsense probabilities. ECE asks: when the model says <em>p = 0.9</em>, does it actually win <em>90%</em> of the time?</p>
+
+  <div class="viz">
+    <svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg">
+      <g font-family="monospace">
+        <text x="80" y="30" fill="#e1e5ef" font-size="13" font-weight="600">Reliability diagram (raw model, BEFORE iso)</text>
+        <text x="80" y="46" fill="#8e98ad" font-size="11">x = predicted p (bin midpoint), y = empirical win-rate in that bin. Diagonal y=x = perfect calibration.</text>
+
+        <!-- Axes -->
+        <line x1="120" y1="80" x2="120" y2="320" stroke="#5b6478" stroke-width="1"/>
+        <line x1="120" y1="320" x2="540" y2="320" stroke="#5b6478" stroke-width="1"/>
+
+        <!-- Diagonal "perfect" line -->
+        <line x1="120" y1="320" x2="540" y2="80" stroke="#5b6478" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="490" y="78" fill="#5b6478" font-size="10">y = x</text>
+
+        <!-- Y axis labels -->
+        <text x="115" y="84" fill="#8e98ad" font-size="10" text-anchor="end">1.0</text>
+        <text x="115" y="200" fill="#8e98ad" font-size="10" text-anchor="end">0.5</text>
+        <text x="115" y="320" fill="#8e98ad" font-size="10" text-anchor="end">0.0</text>
+        <text x="80" y="200" fill="#8e98ad" font-size="11" text-anchor="middle" transform="rotate(-90 80 200)">empirical WR</text>
+
+        <!-- X axis labels -->
+        <text x="120" y="338" fill="#8e98ad" font-size="10" text-anchor="middle">0.0</text>
+        <text x="330" y="338" fill="#8e98ad" font-size="10" text-anchor="middle">0.5</text>
+        <text x="540" y="338" fill="#8e98ad" font-size="10" text-anchor="middle">1.0</text>
+        <text x="330" y="354" fill="#8e98ad" font-size="11" text-anchor="middle">predicted p (model output)</text>
+
+        <!-- Empirical bin dots (raw, miscalibrated S-shape — overconfident on tails) -->
+        <!-- bins at p_pred = 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95 -->
+        <!-- empirical WR shifted: pulled toward 0.5 (typical raw LGB output) -->
+        <g fill="#b8a5e8">
+          <circle cx="141" cy="296" r="5"/>  <!-- pred 0.05, empirical 0.10 -->
+          <circle cx="183" cy="276" r="5"/>  <!-- pred 0.15, empirical 0.19 -->
+          <circle cx="225" cy="252" r="5"/>  <!-- pred 0.25, empirical 0.28 -->
+          <circle cx="267" cy="232" r="5"/>  <!-- pred 0.35, empirical 0.37 -->
+          <circle cx="309" cy="216" r="5"/>  <!-- pred 0.45, empirical 0.43 -->
+          <circle cx="351" cy="196" r="5"/>  <!-- pred 0.55, empirical 0.52 -->
+          <circle cx="393" cy="176" r="5"/>  <!-- pred 0.65, empirical 0.60 -->
+          <circle cx="435" cy="148" r="5"/>  <!-- pred 0.75, empirical 0.72 -->
+          <circle cx="477" cy="120" r="5"/>  <!-- pred 0.85, empirical 0.83 -->
+          <circle cx="519" cy="106" r="5"/>  <!-- pred 0.95, empirical 0.89 -->
+        </g>
+
+        <!-- Connecting curve -->
+        <path d="M 141,296 Q 200,275 270,232 Q 340,200 410,170 Q 480,128 519,106"
+              fill="none" stroke="#b8a5e8" stroke-width="2"/>
+
+        <!-- "Gap" annotation -->
+        <path d="M 519,106 L 519,80" stroke="#ef6b6b" stroke-width="2"
+              marker-end="url(#arrow-bad)" stroke-dasharray="2,3"/>
+        <text x="525" y="98" fill="#ef6b6b" font-size="11">overconfident</text>
+
+        <!-- Right side text panel -->
+        <text x="600" y="100" fill="#e1e5ef" font-size="13" font-weight="600">ECE formula</text>
+        <text x="600" y="125" fill="#8e98ad" font-size="11">Bin predictions by p, weight by bin size:</text>
+        <rect x="600" y="135" width="270" height="70" rx="4" fill="#15182a" stroke="#b8a5e8" stroke-width="1"/>
+        <text x="610" y="152" fill="#b8a5e8" font-size="11">ECE = Σ (n_i / N) · |WR_i − p̂_i|</text>
+        <text x="610" y="172" fill="#8e98ad" font-size="10">  i: probability bin (e.g. 10 equal-width bins)</text>
+        <text x="610" y="186" fill="#8e98ad" font-size="10">  n_i: row count in bin i / N: total rows</text>
+        <text x="610" y="200" fill="#8e98ad" font-size="10">  WR_i: empirical WR · p̂_i: predicted p</text>
+
+        <text x="600" y="230" fill="#e1e5ef" font-size="13" font-weight="600">Reading the chart</text>
+        <text x="600" y="248" fill="#8e98ad" font-size="11">Dots BELOW the diagonal: model is</text>
+        <text x="600" y="262" fill="#8e98ad" font-size="11">over-confident (says 0.95, actually 0.89).</text>
+        <text x="600" y="280" fill="#8e98ad" font-size="11">Dots ABOVE: under-confident (says 0.3,</text>
+        <text x="600" y="294" fill="#8e98ad" font-size="11">actually 0.42).</text>
+        <text x="600" y="316" fill="#6dc88a" font-size="11" font-weight="600">Goal: bring every dot to the diagonal.</text>
+
+        <defs>
+          <marker id="arrow-bad" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#ef6b6b"/>
+          </marker>
+        </defs>
+      </g>
+    </svg>
+    <div class="caption">
+      The raw LightGBM model is well-trained but its probabilities don't line up with reality.
+      ECE quantifies the gap. Lower ECE = more trustworthy probabilities.
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h4>Why this matters for trading</h4>
+      <p>Sizing strategies use <code>p</code> directly: Kelly fraction = <code>(p·b − q)/b</code>. If <code>p</code> is overstated, you bet too much and blow up. If it's understated, you leave EV on the table. Calibration is the bridge between model output and rational position size.</p>
+    </div>
+    <div class="panel">
+      <h4>What good ECE looks like</h4>
+      <ul>
+        <li>ECE &lt; 0.01: excellent (within sampling noise of perfect)</li>
+        <li>ECE 0.01–0.03: production-acceptable</li>
+        <li>ECE 0.03–0.05: serviceable but worth calibrating</li>
+        <li>ECE &gt; 0.05: don't trust the probabilities; fix calibration before trading sizing on them</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="next">↓</div>
+
+<!-- ════════ SLIDE 5 — ISO ════════ -->
+<section class="slide">
+  <div class="slide-num">SLIDE 5 / 5</div>
+  <span class="stage iso">STAGE 5 · ISO</span>
+  <h2>Isotonic calibration — the post-hoc fix</h2>
+  <p class="tag">Don't retrain the model to fix calibration — that risks regressing accuracy. Instead, fit a monotonic function <em>f</em> that maps raw output to calibrated output. Apply <em>after</em> the model, at serve time.</p>
+
+  <div class="viz">
+    <svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg">
+      <g font-family="monospace">
+        <text x="80" y="30" fill="#e1e5ef" font-size="13" font-weight="600">Isotonic calibrator: raw p → calibrated p</text>
+        <text x="80" y="46" fill="#8e98ad" font-size="11">Monotone non-decreasing piecewise-linear function fit on dev data (sklearn.isotonic.IsotonicRegression).</text>
+
+        <!-- Axes -->
+        <line x1="120" y1="80" x2="120" y2="320" stroke="#5b6478" stroke-width="1"/>
+        <line x1="120" y1="320" x2="540" y2="320" stroke="#5b6478" stroke-width="1"/>
+
+        <!-- Identity diagonal -->
+        <line x1="120" y1="320" x2="540" y2="80" stroke="#5b6478" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="490" y="78" fill="#5b6478" font-size="10">y = x (no calibration)</text>
+
+        <!-- Y axis labels -->
+        <text x="115" y="84" fill="#8e98ad" font-size="10" text-anchor="end">1.0</text>
+        <text x="115" y="200" fill="#8e98ad" font-size="10" text-anchor="end">0.5</text>
+        <text x="115" y="320" fill="#8e98ad" font-size="10" text-anchor="end">0.0</text>
+        <text x="78" y="200" fill="#8e98ad" font-size="11" text-anchor="middle" transform="rotate(-90 78 200)">calibrated p</text>
+
+        <!-- X axis labels -->
+        <text x="120" y="338" fill="#8e98ad" font-size="10" text-anchor="middle">0.0</text>
+        <text x="330" y="338" fill="#8e98ad" font-size="10" text-anchor="middle">0.5</text>
+        <text x="540" y="338" fill="#8e98ad" font-size="10" text-anchor="middle">1.0</text>
+        <text x="330" y="354" fill="#8e98ad" font-size="11" text-anchor="middle">raw p (model output)</text>
+
+        <!-- Isotonic curve: piecewise-linear staircase that BENDS the diagonal toward calibration -->
+        <!-- Anchors: maps overconfident raw output back to where reality lives -->
+        <polyline points="
+          120,310
+          150,300
+          180,288
+          220,272
+          260,254
+          300,234
+          340,210
+          380,180
+          420,150
+          460,120
+          500,100
+          540,90
+        " fill="none" stroke="#6dc88a" stroke-width="3"/>
+
+        <!-- Anchor dots -->
+        <g fill="#6dc88a">
+          <circle cx="150" cy="300" r="3.5"/>
+          <circle cx="220" cy="272" r="3.5"/>
+          <circle cx="300" cy="234" r="3.5"/>
+          <circle cx="380" cy="180" r="3.5"/>
+          <circle cx="460" cy="120" r="3.5"/>
+          <circle cx="500" cy="100" r="3.5"/>
+        </g>
+
+        <!-- Annotation arrows: raw 0.95 → calibrated 0.89 -->
+        <line x1="519" y1="320" x2="519" y2="100" stroke="#7aa2ff" stroke-width="1" stroke-dasharray="3,3"/>
+        <line x1="120" y1="100" x2="519" y2="100" stroke="#7aa2ff" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="450" y="335" fill="#7aa2ff" font-size="11">raw 0.95</text>
+        <text x="78" y="95" fill="#7aa2ff" font-size="11" text-anchor="end">cal 0.89</text>
+        <circle cx="519" cy="100" r="5" fill="#7aa2ff" stroke="#0a0d14" stroke-width="2"/>
+
+        <!-- Right panel -->
+        <text x="600" y="100" fill="#e1e5ef" font-size="13" font-weight="600">Constraints by construction</text>
+        <ul>
+          <text x="600" y="125" fill="#8e98ad" font-size="11">• <tspan fill="#e1e5ef">monotone non-decreasing</tspan>: higher raw p → higher cal p</text>
+          <text x="600" y="143" fill="#8e98ad" font-size="11">• <tspan fill="#e1e5ef">range [0, 1]</tspan>: clipped output</text>
+          <text x="600" y="161" fill="#8e98ad" font-size="11">• <tspan fill="#e1e5ef">f(0) = 0, f(1) = 1</tspan>: endpoints preserved</text>
+          <text x="600" y="179" fill="#8e98ad" font-size="11">• <tspan fill="#e1e5ef">piecewise-linear</tspan>: simple + serialisable</text>
+        </ul>
+
+        <text x="600" y="215" fill="#e1e5ef" font-size="13" font-weight="600">Six iso calibrators in v9.2</text>
+        <text x="600" y="232" fill="#8e98ad" font-size="11">One iso per per-Δ booster head. Same fit recipe,</text>
+        <text x="600" y="246" fill="#8e98ad" font-size="11">independent curves — booster_30 may have totally</text>
+        <text x="600" y="260" fill="#8e98ad" font-size="11">different miscalibration shape than booster_240.</text>
+
+        <text x="600" y="288" fill="#e1e5ef" font-size="13" font-weight="600">At serve time</text>
+        <text x="600" y="305" fill="#8e98ad" font-size="11">stc → pick booster → predict raw_p → apply iso →</text>
+        <text x="600" y="319" fill="#6dc88a" font-size="11">emit calibrated probability_lgb_v9_2(_eth/xrp)</text>
+      </g>
+    </svg>
+    <div class="caption">
+      The green curve is the iso calibrator. Reading it: raw 0.95 → calibrated 0.89.
+      The curve "bends" the identity diagonal to match where the empirical WR points
+      actually fell in slide 4.
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <h4>Why iso vs Platt scaling vs temperature</h4>
+      <ul>
+        <li><strong>iso</strong>: flexible (any monotone shape), no parametric assumption — wins on complex miscalibration patterns ✓</li>
+        <li><strong>Platt (sigmoid)</strong>: 2 parameters, assumes a logistic shape. Cheaper but less flexible.</li>
+        <li><strong>Temperature</strong>: 1 parameter, just rescales logits. Doesn't fix shape issues.</li>
+      </ul>
+      <p>Iso is the right default. We use it across v9.2 BTC / ETH / XRP.</p>
+    </div>
+    <div class="panel">
+      <h4>Where iso lives in the codebase</h4>
+      <ul>
+        <li>Fit: <code>training/calibration_posthoc/fit_isotonic.py</code></li>
+        <li>Apply at serve: <code>app/isotonic_calibrator.py</code></li>
+        <li>S3 layout: <code>calibration/isotonic_v9_2/v&lt;n&gt;/isotonic.pkl</code></li>
+        <li>Gated by env flag: <code>ISOTONIC_CALIBRATION_V9_2_ENABLED</code></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ════════ Final summary ════════ -->
+<section class="slide" style="background: linear-gradient(180deg, #131722 0%, #0a0d14 100%);">
+  <div class="slide-num">RECAP</div>
+  <h2>The 5 stages, in one sentence each</h2>
+  <ol style="font-size: 16px; line-height: 1.9; color: var(--fg);">
+    <li><strong style="color: var(--accent)">BUILD</strong> — Join per-tick features from <code>signal_evaluations</code> with per-window outcomes from <code>market_data</code> to get the (78 features + label) dataset.</li>
+    <li><strong style="color: var(--info)">TRAIN</strong> — Fit six LightGBM boosters, one per Δ bucket, with 14d/3d/2d time-ordered train/dev/test split.</li>
+    <li><strong style="color: var(--warn)">TEST</strong> — Predict on held-out tail; measure log-loss, accuracy, and WR at conservative thresholds (e.g. <code>p ≤ 0.04</code> DOWN).</li>
+    <li><strong style="color: var(--math)">ECE</strong> — Bin predictions, compare to empirical win-rates; quantify the gap between predicted probability and reality.</li>
+    <li><strong style="color: var(--good)">ISO</strong> — Fit a monotone non-decreasing function on dev to map raw → calibrated; apply at serve time per Δ bucket.</li>
+  </ol>
+
+  <p style="color: var(--fg-mute); font-size: 13px; margin-top: 26px">
+    Hub note: <code>HUB_NOTE_2026-05-20_v9_2_training_pipeline_explainer.md</code> · also stored as
+    RDS row in <code>public.notes</code> for cross-session searchability.
+  </p>
+</section>
+
+</div>
+</body>
+</html>

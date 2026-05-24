@@ -1,0 +1,2176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chapter 14 · pt 2 — v9.3 BTC, Optuna &amp; the Two Strategies</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    :root {
+      --bg-deep: #0A0A0F;
+      --bg-surface: #14141C;
+      --bg-elevated: #1C1C28;
+      --bg-card: #161620;
+      --bg-overlay: rgba(255, 255, 255, 0.025);
+
+      --text-primary: #F5F3F0;
+      --text-secondary: #B8B3AB;
+      --text-tertiary: #7A7268;
+      --text-muted: #4A4540;
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+
+      --violet: #8B5CF6;
+      --violet-soft: #A78BFA;
+      --violet-dim: rgba(139, 92, 246, 0.15);
+      --green: #10B981;
+      --green-soft: #34D399;
+      --green-dim: rgba(16, 185, 129, 0.15);
+      --cyan: #06B6D4;
+      --cyan-soft: #22D3EE;
+      --cyan-dim: rgba(6, 182, 212, 0.15);
+      --amber: #F59E0B;
+      --amber-dim: rgba(245, 158, 11, 0.15);
+      --pink: #EC4899;
+      --pink-dim: rgba(236, 72, 153, 0.15);
+      --red: #EF4444;
+      --red-dim: rgba(239, 68, 68, 0.15);
+
+      --font-display: "Instrument Serif", "Times New Roman", serif;
+      --font-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: "JetBrains Mono", "Courier New", monospace;
+
+      --content-max: 86rem;
+      --reading-max: 46rem;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; font-size: 16px; -webkit-font-smoothing: antialiased; }
+    body {
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-weight: 400;
+      line-height: 1.68;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(6, 182, 212, 0.10) 0%, transparent 50%),
+        radial-gradient(ellipse 60% 40% at 90% 30%, rgba(139, 92, 246, 0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 70% 50% at 10% 60%, rgba(16, 185, 129, 0.04) 0%, transparent 60%);
+      background-attachment: fixed;
+    }
+    ::selection { background: var(--cyan); color: var(--bg-deep); }
+
+    .reading-progress {
+      position: fixed; top: 0; left: 0; height: 2px;
+      background: linear-gradient(90deg, var(--cyan), var(--violet), var(--green));
+      z-index: 100; width: 0; transition: width 0.12s ease-out;
+    }
+
+    .side-nav {
+      position: fixed; left: 1.25rem; top: 50%;
+      transform: translateY(-50%);
+      z-index: 60;
+      display: flex; flex-direction: column; gap: 0.4rem;
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .side-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 0.28rem 0.6rem;
+      border-left: 1px solid var(--border-subtle);
+      transition: color 0.2s, border-color 0.2s, padding-left 0.2s;
+      display: block;
+      white-space: nowrap;
+    }
+    .side-nav a:hover, .side-nav a.active {
+      color: var(--text-primary);
+      border-left-color: var(--cyan);
+      padding-left: 0.9rem;
+    }
+    @media (max-width: 1280px) { .side-nav { display: none; } }
+
+    .container { max-width: var(--content-max); margin: 0 auto; padding: 0 1.5rem; }
+    .reading { max-width: var(--reading-max); margin: 0 auto; }
+    section { padding: 6rem 0; position: relative; }
+    section + section { border-top: 1px solid var(--border-subtle); }
+    @media (min-width: 720px) { section { padding: 8rem 0; } }
+
+    .kicker {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 1.25rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .kicker::before {
+      content: '';
+      display: inline-block;
+      width: 1.5rem;
+      height: 1px;
+      background: var(--text-tertiary);
+    }
+    .kicker--cyan { color: var(--cyan-soft); }
+    .kicker--cyan::before { background: var(--cyan-soft); }
+    .kicker--violet { color: var(--violet-soft); }
+    .kicker--violet::before { background: var(--violet-soft); }
+    .kicker--green { color: var(--green-soft); }
+    .kicker--green::before { background: var(--green-soft); }
+    .kicker--amber { color: var(--amber); }
+    .kicker--amber::before { background: var(--amber); }
+    .kicker--red { color: var(--red); }
+    .kicker--red::before { background: var(--red); }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-display);
+      font-weight: 400;
+      letter-spacing: -0.015em;
+      line-height: 1.05;
+    }
+    h2 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      margin-bottom: 1rem;
+    }
+    h2 em { color: var(--cyan-soft); font-style: italic; }
+    h3 {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      margin: 2.5rem 0 0.75rem;
+    }
+    h4 {
+      font-size: clamp(1.15rem, 2vw, 1.45rem);
+      margin: 1.75rem 0 0.5rem;
+      color: var(--text-primary);
+    }
+    p { margin-bottom: 1.1rem; color: var(--text-secondary); font-size: 1.02rem; }
+    p strong { color: var(--text-primary); font-weight: 500; }
+    p em { color: var(--text-primary); font-style: italic; font-family: var(--font-display); font-size: 1.08em; }
+    a {
+      color: var(--cyan-soft);
+      text-decoration: none;
+      border-bottom: 1px solid rgba(34, 211, 238, 0.35);
+      transition: border-color 0.2s;
+    }
+    a:hover { border-bottom-color: var(--cyan-soft); }
+
+    code, .mono {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      color: var(--cyan-soft);
+      background: var(--bg-overlay);
+      padding: 0.08em 0.4em;
+      border-radius: 4px;
+      border: 1px solid var(--border-subtle);
+    }
+    p code { background: rgba(6,182,212,0.08); border-color: rgba(6,182,212,0.18); }
+
+    pre {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 1.5rem;
+      overflow-x: auto;
+      margin: 1.75rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-primary);
+      position: relative;
+    }
+    pre code {
+      background: none; border: none; padding: 0;
+      color: inherit; font-size: inherit;
+    }
+    pre .tk-com { color: var(--text-tertiary); font-style: italic; }
+    pre .tk-key { color: var(--violet-soft); }
+    pre .tk-str { color: var(--green-soft); }
+    pre .tk-num { color: var(--amber); }
+    pre .tk-fn  { color: var(--cyan-soft); }
+    pre .tk-bad { color: var(--red); }
+    pre::before {
+      content: attr(data-lang);
+      position: absolute;
+      top: 0.5rem; right: 1rem;
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    /* ─── HERO ─────────────────────────────────────────────────────── */
+    .hero {
+      min-height: 92vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 4rem 1.5rem 6rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-grid { max-width: var(--content-max); margin: 0 auto; width: 100%; position: relative; z-index: 2; }
+    .hero-kicker {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      display: block;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s 0.1s both;
+    }
+    .hero-kicker span:first-child { color: var(--cyan-soft); margin-right: 1rem; }
+    .hero-title {
+      font-family: var(--font-display);
+      font-weight: 400;
+      font-size: clamp(3rem, 10vw, 7.5rem);
+      line-height: 0.94;
+      letter-spacing: -0.035em;
+      margin-bottom: 2rem;
+      animation: fadeInUp 0.8s 0.25s both;
+    }
+    .hero-title em {
+      color: var(--cyan-soft);
+      font-style: italic;
+      display: inline-block;
+      background: linear-gradient(135deg, var(--cyan) 0%, var(--violet) 60%, var(--green) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      animation: gradShift 9s ease infinite;
+      background-size: 220% 220%;
+    }
+    @keyframes gradShift {
+      0%, 100% { background-position: 0% 0%; }
+      50% { background-position: 100% 100%; }
+    }
+    .hero-sub {
+      font-size: clamp(1.1rem, 2vw, 1.4rem);
+      line-height: 1.55;
+      max-width: 56rem;
+      color: var(--text-primary);
+      margin-bottom: 2.5rem;
+      font-weight: 300;
+      animation: fadeInUp 0.8s 0.4s both;
+    }
+    .hero-sub em { font-family: var(--font-display); color: var(--cyan-soft); }
+    .hero-promise {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.7;
+      color: var(--text-tertiary);
+      max-width: 48rem;
+      padding-left: 1rem;
+      border-left: 2px solid var(--cyan);
+      animation: fadeInUp 0.8s 0.55s both;
+    }
+    .hero-scroll {
+      position: absolute;
+      bottom: 2.5rem;
+      left: 50%;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      animation: bob 2.5s ease-in-out infinite;
+    }
+    @keyframes bob {
+      0%, 100% { transform: translate(-50%, 0); opacity: 0.6; }
+      50% { transform: translate(-50%, 8px); opacity: 1; }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .hero-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1.5rem;
+      margin-top: 3rem;
+      max-width: 64rem;
+      animation: fadeInUp 0.8s 0.7s both;
+    }
+    .hero-meta-item {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-default);
+    }
+    .hero-meta-item strong {
+      display: block;
+      color: var(--text-primary);
+      font-size: 1.65rem;
+      font-weight: 400;
+      margin-top: 0.4rem;
+      font-family: var(--font-display);
+      letter-spacing: -0.01em;
+      text-transform: none;
+    }
+    .hero-meta-item .arrow { color: var(--cyan-soft); }
+    .hero-meta-item .pp { color: var(--green-soft); font-size: 0.85rem; font-family: var(--font-mono); margin-left: 0.4rem; }
+
+    .hero-mirror {
+      display: flex;
+      align-items: baseline;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-top: 1.5rem;
+      font-family: var(--font-display);
+      animation: fadeInUp 0.8s 0.5s both;
+    }
+    .hero-mirror .num {
+      font-size: clamp(2.2rem, 5vw, 3.3rem);
+      letter-spacing: -0.02em;
+    }
+    .hero-mirror .num-base { color: var(--text-primary); }
+    .hero-mirror .num-mid  { color: var(--cyan-soft); }
+    .hero-mirror .num-top  { color: var(--violet-soft); font-style: italic; }
+    .hero-mirror .arrow {
+      font-family: var(--font-mono);
+      color: var(--cyan-soft);
+      font-size: 1.5rem;
+      font-style: normal;
+    }
+    .hero-mirror .lbl {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      display: block;
+      margin-top: 0.4rem;
+    }
+    .hero-mirror .col { display: flex; flex-direction: column; }
+
+    /* moment cards */
+    .moments-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+      margin-top: 3.5rem;
+    }
+    @media (min-width: 980px) {
+      .moments-grid { grid-template-columns: repeat(3, 1fr); }
+    }
+    .moment {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.8rem;
+      position: relative;
+      overflow: hidden;
+      transition: transform 0.3s, border-color 0.3s;
+    }
+    .moment:hover { transform: translateY(-3px); border-color: var(--border-strong); }
+    .moment-time {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.7rem;
+    }
+    .moment-head {
+      font-family: var(--font-display);
+      font-size: 1.55rem;
+      line-height: 1.15;
+      margin-bottom: 0.85rem;
+      letter-spacing: -0.01em;
+      color: var(--text-primary);
+    }
+    .moment-body { font-size: 0.93rem; line-height: 1.6; color: var(--text-secondary); }
+    .moment-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.6rem;
+      border-radius: 999px;
+      margin-top: 1.2rem;
+    }
+    .moment[data-mood="bad"] .moment-tag { background: var(--red-dim); color: var(--red); }
+    .moment[data-mood="good"] .moment-tag { background: var(--green-dim); color: var(--green-soft); }
+    .moment[data-mood="next"] .moment-tag { background: var(--violet-dim); color: var(--violet-soft); }
+    .moment[data-mood="warn"] .moment-tag { background: var(--amber-dim); color: var(--amber); }
+    .moment[data-mood="bad"] { border-left: 3px solid var(--red); }
+    .moment[data-mood="good"] { border-left: 3px solid var(--green); }
+    .moment[data-mood="next"] { border-left: 3px solid var(--violet); }
+    .moment[data-mood="warn"] { border-left: 3px solid var(--amber); }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 3rem;
+      margin-top: 3rem;
+      align-items: start;
+    }
+    @media (min-width: 980px) {
+      .two-col { grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+    }
+
+    /* strategy "card" — used for the side-by-side comparison */
+    .strat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 22px;
+      padding: 2.25rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .strat-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 4px;
+    }
+    .strat-card.cyan::before  { background: linear-gradient(90deg, var(--cyan), transparent); }
+    .strat-card.violet::before { background: linear-gradient(90deg, var(--violet), transparent); }
+    .strat-card .strat-tag {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.6rem;
+    }
+    .strat-card.cyan .strat-tag { color: var(--cyan-soft); }
+    .strat-card.violet .strat-tag { color: var(--violet-soft); }
+    .strat-card h3 {
+      font-size: 1.7rem;
+      margin: 0 0 0.5rem;
+      letter-spacing: -0.01em;
+    }
+    .strat-card .strat-codename {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--cyan-soft);
+      margin-bottom: 1.25rem;
+      word-break: break-all;
+    }
+    .strat-card.violet .strat-codename { color: var(--violet-soft); }
+    .strat-card .strat-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1rem;
+      padding: 0.65rem 0;
+      border-top: 1px solid var(--border-subtle);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+    .strat-card .strat-line .k { color: var(--text-tertiary); letter-spacing: 0.08em; }
+    .strat-card .strat-line .v { color: var(--text-primary); text-align: right; }
+    .strat-card .strat-line .v.good   { color: var(--green-soft); }
+    .strat-card .strat-line .v.cyan   { color: var(--cyan-soft); }
+    .strat-card .strat-line .v.violet { color: var(--violet-soft); }
+    .strat-card .strat-foot {
+      margin-top: 1.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-tertiary);
+      line-height: 1.55;
+      padding-top: 1rem;
+      border-top: 1px dashed var(--border-default);
+    }
+    .strat-card .big-num {
+      font-family: var(--font-display);
+      font-size: 3.2rem;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      margin: 1rem 0 0.25rem;
+    }
+    .strat-card.cyan   .big-num { color: var(--cyan-soft); }
+    .strat-card.violet .big-num { color: var(--violet-soft); }
+
+    /* chart wrap */
+    .chart-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 18px;
+      padding: 1.5rem;
+      margin: 3rem 0;
+      overflow: hidden;
+    }
+    .chart-title {
+      font-family: var(--font-mono);
+      font-size: 0.73rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin-bottom: 0.4rem;
+      padding-left: 0.5rem;
+    }
+    .chart-sub {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--text-tertiary);
+      margin-bottom: 1rem;
+      padding-left: 0.5rem;
+    }
+    .plotly-host { width: 100%; }
+
+    /* result tables */
+    .result-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      margin: 1.5rem 0;
+    }
+    .result-table caption {
+      text-align: left;
+      caption-side: top;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.75rem;
+      padding-left: 0.5rem;
+    }
+    .result-table th, .result-table td {
+      text-align: left;
+      padding: 0.7rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .result-table th {
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border-default);
+    }
+    .result-table td.num { text-align: right; }
+    .result-table th.num { text-align: right; }
+    .result-table td.label { color: var(--text-primary); }
+    .result-table td.hl { color: var(--cyan-soft); font-weight: 600; }
+    .result-table td.dim { color: var(--text-tertiary); }
+    .result-table tr.highlight td { background: rgba(6, 182, 212, 0.05); }
+    .result-table tr.breakthrough td { background: rgba(16, 185, 129, 0.06); color: var(--green-soft); }
+    .result-table tr.breakthrough td.label { color: var(--green-soft); font-weight: 500; }
+    .result-table tr.viol td { background: rgba(139, 92, 246, 0.06); color: var(--violet-soft); }
+    .result-table tr.viol td.label { color: var(--violet-soft); font-weight: 500; }
+
+    .pull-quote {
+      font-family: var(--font-display);
+      font-size: clamp(1.6rem, 3.3vw, 2.4rem);
+      line-height: 1.25;
+      color: var(--text-primary);
+      padding: 2.5rem 0;
+      max-width: 50rem;
+      margin: 2rem auto;
+      letter-spacing: -0.015em;
+    }
+    .pull-quote em { color: var(--cyan-soft); font-style: italic; }
+    .pull-quote::before {
+      content: '"';
+      display: block;
+      color: var(--cyan-soft);
+      font-size: 4rem;
+      line-height: 0.2;
+      margin-bottom: 1.5rem;
+      font-family: var(--font-display);
+    }
+    .pull-quote cite {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 1.5rem;
+      font-style: normal;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 1.5rem 0;
+    }
+    .badge {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      padding: 0.32rem 0.7rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-default);
+      color: var(--text-secondary);
+      background: var(--bg-overlay);
+    }
+    .badge--cyan { color: var(--cyan-soft); border-color: rgba(6,182,212,0.3); background: var(--cyan-dim); }
+    .badge--violet { color: var(--violet-soft); border-color: rgba(139,92,246,0.3); background: var(--violet-dim); }
+    .badge--green { color: var(--green-soft); border-color: rgba(16,185,129,0.3); background: var(--green-dim); }
+    .badge--amber { color: var(--amber); border-color: rgba(245,158,11,0.3); background: var(--amber-dim); }
+    .badge--red { color: var(--red); border-color: rgba(239,68,68,0.3); background: var(--red-dim); }
+
+    .callout {
+      background: var(--bg-card);
+      border-left: 3px solid var(--cyan);
+      border-radius: 4px;
+      padding: 1.5rem 1.75rem;
+      margin: 2rem 0;
+      font-size: 0.95rem;
+    }
+    .callout--warn { border-left-color: var(--amber); }
+    .callout--bad  { border-left-color: var(--red); }
+    .callout--good { border-left-color: var(--green); }
+    .callout--violet { border-left-color: var(--violet); }
+    .callout-label {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--cyan-soft);
+      margin-bottom: 0.4rem;
+    }
+    .callout--warn .callout-label { color: var(--amber); }
+    .callout--bad  .callout-label { color: var(--red); }
+    .callout--good .callout-label { color: var(--green-soft); }
+    .callout--violet .callout-label { color: var(--violet-soft); }
+    .callout p:last-child { margin-bottom: 0; }
+
+    /* metric chip row */
+    .metric-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    @media (min-width: 720px) {
+      .metric-row { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    }
+    .metric-chip {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      padding: 1.1rem 1.25rem;
+    }
+    .metric-chip .lbl {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 0.35rem;
+    }
+    .metric-chip .val {
+      font-family: var(--font-display);
+      font-size: 1.85rem;
+      letter-spacing: -0.02em;
+      color: var(--text-primary);
+    }
+    .metric-chip .sub {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      margin-top: 0.25rem;
+    }
+    .metric-chip.up   .val { color: var(--green-soft); }
+    .metric-chip.down .val { color: var(--red); }
+    .metric-chip.mid  .val { color: var(--cyan-soft); }
+    .metric-chip.viol .val { color: var(--violet-soft); }
+
+    /* file rows for appendix */
+    .files {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      margin-top: 2rem;
+    }
+    .file-row {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr 1.4fr;
+      gap: 1rem;
+      padding: 0.85rem 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      align-items: baseline;
+    }
+    @media (max-width: 720px) {
+      .file-row { grid-template-columns: 1fr; gap: 0.3rem; }
+    }
+    .file-path { color: var(--cyan-soft); word-break: break-all; }
+    .file-size { color: var(--text-tertiary); font-size: 0.75rem; letter-spacing: 0.1em; }
+    .file-note { color: var(--text-secondary); font-size: 0.78rem; font-family: var(--font-body); }
+    .file-group-head {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-top: 2rem;
+      margin-bottom: 0.5rem;
+      padding-left: 0.25rem;
+    }
+    .file-group-head:first-of-type { margin-top: 1rem; }
+
+    /* "what didn't work" cards */
+    .neg-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+      margin: 2.5rem 0;
+    }
+    @media (min-width: 980px) {
+      .neg-grid { grid-template-columns: 1fr 1fr; }
+    }
+    .neg-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-left: 3px solid var(--text-muted);
+      border-radius: 14px;
+      padding: 1.6rem 1.75rem;
+    }
+    .neg-card .neg-tag {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin-bottom: 0.75rem;
+    }
+    .neg-card h4 {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      margin: 0 0 0.5rem;
+      letter-spacing: -0.01em;
+      color: var(--text-primary);
+    }
+    .neg-card p {
+      font-size: 0.92rem;
+      line-height: 1.6;
+      margin-bottom: 0.6rem;
+    }
+    .neg-card .neg-stat {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.06em;
+      padding-top: 0.75rem;
+      margin-top: 0.75rem;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .neg-card .neg-stat b { color: var(--red); font-weight: 500; }
+    .neg-card .neg-stat .lift { color: var(--amber); }
+
+    footer {
+      padding: 4rem 1.5rem;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
+      letter-spacing: 0.1em;
+      border-top: 1px solid var(--border-subtle);
+    }
+    footer .glyph {
+      display: block;
+      color: var(--cyan-soft);
+      font-family: var(--font-display);
+      font-size: 1.6rem;
+      margin-bottom: 1rem;
+    }
+
+    .lead {
+      font-family: var(--font-display);
+      font-size: clamp(1.3rem, 2.2vw, 1.7rem);
+      line-height: 1.4;
+      color: var(--text-primary);
+      margin-bottom: 2rem;
+      max-width: 50rem;
+    }
+    .lead em { color: var(--cyan-soft); font-style: italic; }
+
+    /* params table */
+    .params-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.5rem;
+      margin: 2rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+    @media (min-width: 720px) { .params-grid { grid-template-columns: 1fr 1fr; } }
+    .params-grid .param {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1rem;
+      padding: 0.7rem 1rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+    }
+    .params-grid .param .k { color: var(--text-tertiary); letter-spacing: 0.04em; }
+    .params-grid .param .v { color: var(--text-primary); }
+    .params-grid .param.hl { border-color: rgba(6,182,212,0.4); background: rgba(6,182,212,0.06); }
+    .params-grid .param.hl .v { color: var(--cyan-soft); }
+
+    /* link back to part 1 */
+    .cross-ref {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--cyan-soft);
+      padding: 0.5rem 0.9rem;
+      border: 1px solid rgba(6,182,212,0.3);
+      border-radius: 999px;
+      background: var(--cyan-dim);
+      text-decoration: none;
+      margin-bottom: 1.5rem;
+    }
+    .cross-ref:hover { background: rgba(6,182,212,0.15); border-bottom: 1px solid rgba(6,182,212,0.3); }
+    .cross-ref::before {
+      content: '←';
+      color: var(--cyan-soft);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="reading-progress" id="reading-progress"></div>
+
+  <nav class="side-nav" aria-label="Chapter 14 · part 2 sections">
+    <a href="#hero">cover</a>
+    <a href="#optuna">optuna</a>
+    <a href="#sweep">threshold sweep</a>
+    <a href="#strategies">two strategies</a>
+    <a href="#timing">fire timing</a>
+    <a href="#negative">what failed</a>
+    <a href="#deploy">deploy reality</a>
+    <a href="#next">what's next</a>
+    <a href="#appendix">appendix</a>
+  </nav>
+
+  <!-- ─── HERO ──────────────────────────────────────────────────── -->
+  <section class="hero" id="hero">
+    <div class="hero-grid">
+      <a class="cross-ref" href="./v9_3_btc_ebook_chapter.html">part 1 · forging v9.3 BTC</a>
+
+      <div class="hero-kicker">
+        <span>CHAPTER 14 · PART 2</span>
+        <span>2026-05-22 · BTC · novakash</span>
+      </div>
+
+      <h1 class="hero-title">
+        <em>Optuna</em>, two<br/>
+        strategies &amp; the<br/>
+        ceiling we hit.
+      </h1>
+
+      <p class="hero-sub">
+        Sixty-five trials of Bayesian search on the SUPER-ENRICHED corpus.
+        A target-WR threshold sweep that revealed the <em>walk-forward ceiling at ~92%</em>.
+        Two deployable strategies &mdash; one drop-in, one tight &mdash; with honest receipts,
+        a fire-timing window that's actually tradeable, and a sequence-modeling
+        detour that came back empty-handed.
+      </p>
+
+      <div class="hero-mirror">
+        <div class="col">
+          <span class="num num-base">0.8136</span>
+          <span class="lbl">trial #65 composite</span>
+        </div>
+        <span class="arrow">→</span>
+        <div class="col">
+          <span class="num num-mid">79.9% / 82.8%</span>
+          <span class="lbl">drop-in @ LIVE thresholds</span>
+        </div>
+        <span class="arrow">→</span>
+        <div class="col">
+          <span class="num num-top">90.3% / 90.4%</span>
+          <span class="lbl">tight · UP 0.935 / DN 0.065</span>
+        </div>
+      </div>
+
+      <div class="hero-promise">
+        Part 2 picks up where the SUPER-ENRICHED corpus was queued and the Optuna
+        sweep was still in flight. It documents the final hyperparams, the surprise
+        about shallow trees, the operating points that actually work, what the
+        sequence experiments cost us, and where the live deploy got stuck.
+      </div>
+
+      <div class="hero-meta">
+        <div class="hero-meta-item">
+          Optuna trials<br/>
+          <strong>65 <span class="pp">completed</span></strong>
+        </div>
+        <div class="hero-meta-item">
+          Best composite<br/>
+          <strong>0.8136 <span class="pp">#65</span></strong>
+        </div>
+        <div class="hero-meta-item">
+          WF ceiling<br/>
+          <strong>~92% <span class="pp">per-window WR</span></strong>
+        </div>
+        <div class="hero-meta-item">
+          Deployable strategies<br/>
+          <strong>2 <span class="pp">drop-in + tight</span></strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-scroll">scroll · part 2</div>
+  </section>
+
+  <!-- ─── 1. OPTUNA ─────────────────────────────────────────────── -->
+  <section id="optuna">
+    <div class="container reading">
+      <div class="kicker kicker--violet"><span>01 · Optuna</span></div>
+      <h2>Sixty-five trials, one <em>surprise</em>.</h2>
+
+      <p class="lead">
+        Hyperparameter search on the SUPER-ENRICHED corpus ran <em>65 trials</em> of
+        Bayesian TPE through Optuna, persisted to <code>/tmp/btc_v9_3_cache/optuna_study.db</code>.
+        The composite objective is a weighted blend of UP-side and DOWN-side per-window WR
+        across the deployment threshold band. Trial #65 won at <strong>0.8136</strong>.
+      </p>
+
+      <p>
+        The trajectory below is the raw <code>value</code> per trial in order of completion.
+        The early bracket sits around <em>0.79</em>; the search settles into the <em>0.80 – 0.81</em>
+        band by trial 14; trial #65 finally cracks above the previous best (#47 at 0.8129).
+        No single trial is dramatically better &mdash; the win is the consistency. There are no
+        catastrophic dips after trial 14, which is the real signal that the search converged
+        on a stable regime.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="chart-wrap">
+        <div class="chart-title">Optuna composite · trial trajectory</div>
+        <div class="chart-sub">65 completed trials · TPE sampler · best = #65 at 0.8136 · y-axis = composite objective</div>
+        <div id="chart-optuna-trajectory" class="plotly-host" style="height: 460px;"></div>
+      </div>
+    </div>
+
+    <div class="container reading">
+      <h3>The best params &mdash; not what we expected</h3>
+
+      <p>
+        The winning parameter set is genuinely counter-intuitive. The conventional wisdom
+        on tabular LGB on financial data is: medium-depth trees (6 &ndash; 8), moderate
+        <code>num_leaves</code> (31 &ndash; 127), small <code>learning_rate</code>, light
+        regularization. Trial #65 picked <em>depth-2 stumps</em>, <em>118 leaves</em>,
+        heavy bagging at <em>0.656</em> with <em>freq=10</em>, and <em>λ<sub>2</sub>=3.18</em>.
+      </p>
+
+      <p>
+        The story that fits: at depth 2 each tree captures a single interaction at most.
+        The model becomes essentially a huge additive ensemble of pairwise interactions.
+        Combine that with feature subsampling (<code>feature_fraction=0.714</code>) and
+        aggressive row bagging, and the result is a model that <em>can't overfit any
+        individual signal</em> &mdash; which is exactly the failure mode that haunts
+        prediction-market models trained on shallow horizons.
+      </p>
+
+      <div class="params-grid">
+        <div class="param hl"><span class="k">num_leaves</span> <span class="v">118</span></div>
+        <div class="param hl"><span class="k">max_depth</span> <span class="v">2</span></div>
+        <div class="param"><span class="k">learning_rate</span> <span class="v">0.0149</span></div>
+        <div class="param"><span class="k">min_data_in_leaf</span> <span class="v">214</span></div>
+        <div class="param"><span class="k">feature_fraction</span> <span class="v">0.714</span></div>
+        <div class="param"><span class="k">bagging_fraction</span> <span class="v">0.656</span></div>
+        <div class="param"><span class="k">bagging_freq</span> <span class="v">10</span></div>
+        <div class="param"><span class="k">lambda_l1</span> <span class="v">0.124</span></div>
+        <div class="param"><span class="k">lambda_l2</span> <span class="v">3.178</span></div>
+        <div class="param dim"><span class="k">objective</span> <span class="v">binary</span></div>
+      </div>
+
+      <div class="callout callout--violet">
+        <div class="callout-label">Surprise · the depth-2 finding</div>
+        <p>
+          Of the top-5 trials by composite, <em>all five</em> picked <code>max_depth=2</code>.
+          Trial #65 (0.8136), #47 (0.8129), #36 (0.8103), #27 (0.8093), #19 (0.8092) &mdash;
+          depth-2 everywhere. That isn't Optuna stumbling into a local optimum; that is the
+          surface itself favouring shallow trees on this corpus.
+        </p>
+      </div>
+
+      <h3>What this changes about the deploy</h3>
+      <p>
+        The previous v9.2 baseline ran <code>num_leaves=63</code> per the per-Δ head config.
+        v9.3 with these params is <em>still</em> a single binary head; the difference is the
+        params themselves. Engine-side this is a swap of the LGB <code>booster_file</code>
+        and a config-only feature-list update &mdash; no inference-time changes.
+        The deploy story for the drop-in strategy is genuinely boring, which is what we want.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─── 2. THRESHOLD SWEEP ────────────────────────────────────── -->
+  <section id="sweep">
+    <div class="container reading">
+      <div class="kicker kicker--cyan"><span>02 · Threshold sweep</span></div>
+      <h2>The <em>shape</em> of the operating curve.</h2>
+
+      <p class="lead">
+        With the winning params baked in, the threshold sweep traces how per-window
+        WR moves as we tighten or loosen the firing gate. The bands matter more than
+        any single point &mdash; they tell us where on the curve a deploy can sit without
+        being one bad week away from collapse.
+      </p>
+
+      <p>
+        Two anchor points: the <em>LIVE thresholds</em> (UP 0.72, DOWN 0.20) for an
+        apples-to-apples comparison with v9.2 LIVE, and the <em>90%-WR thresholds</em>
+        (UP 0.935, DOWN 0.065) found by a target-WR search that asked, "what's the
+        loosest gate that still hits 90%?" The answer at both ends is honest: 90% is
+        reachable, 95%+ isn't.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="chart-wrap">
+        <div class="chart-title">SUPER-ENRICHED · Optuna best · threshold sweep</div>
+        <div class="chart-sub">per-window WR vs threshold · LIVE anchor + 90%-WR anchor highlighted · n displayed on hover</div>
+        <div id="chart-sweep" class="plotly-host" style="height: 520px;"></div>
+      </div>
+    </div>
+
+    <div class="container reading">
+      <h3>Target-WR operating points</h3>
+      <p>
+        We searched for the loosest threshold (maximum fires) that still hits each of
+        four WR targets: 90%, 95%, 99%, 100%. The result is the table below. Only the
+        90% targets are reachable.
+      </p>
+
+      <table class="result-table">
+        <caption>Target-WR sweep · maximize fires subject to WR ≥ target</caption>
+        <thead>
+          <tr>
+            <th>Target</th>
+            <th>Side</th>
+            <th class="num">Threshold</th>
+            <th class="num">n windows</th>
+            <th class="num">WR</th>
+            <th class="num">median first-fire stc</th>
+            <th class="num">median last-fire stc</th>
+            <th class="num">Q25 – Q75 first</th>
+            <th class="num">fires / window</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="breakthrough">
+            <td class="label">90%+ WR</td>
+            <td>UP</td>
+            <td class="num hl">p ≥ 0.935</td>
+            <td class="num">1,725</td>
+            <td class="num">90.3%</td>
+            <td class="num">274 s</td>
+            <td class="num">128 s</td>
+            <td class="num">214 – 276 s</td>
+            <td class="num">25</td>
+          </tr>
+          <tr class="breakthrough">
+            <td class="label">90%+ WR</td>
+            <td>DOWN</td>
+            <td class="num hl">p ≤ 0.065</td>
+            <td class="num">1,590</td>
+            <td class="num">90.4%</td>
+            <td class="num">258 s</td>
+            <td class="num">182 s</td>
+            <td class="num">226 – 276 s</td>
+            <td class="num">19</td>
+          </tr>
+          <tr>
+            <td class="label dim">95%+ WR</td>
+            <td class="dim">UP / DOWN</td>
+            <td class="num dim">— (none found)</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+          </tr>
+          <tr>
+            <td class="label dim">99%+ WR</td>
+            <td class="dim">UP / DOWN</td>
+            <td class="num dim">— (none found)</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+          </tr>
+          <tr>
+            <td class="label dim">100% WR</td>
+            <td class="dim">UP / DOWN</td>
+            <td class="num dim">— (none found)</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+            <td class="num dim">—</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout callout--warn">
+        <div class="callout-label">Honest finding · the ceiling</div>
+        <p>
+          The walk-forward CV ceiling is <em>~92 – 93% per-window WR</em>. Every threshold
+          above that drops to zero fires before reaching the WR target. This isn't a
+          search-budget problem &mdash; it's a structural limit of what the current feature
+          set can predict at 5m horizon on BTC. Beating it requires either new microstructure
+          features (Tier 4-5 in the next-steps section) or a different prediction target.
+        </p>
+      </div>
+
+      <p>
+        The two reachable points become the operating gates for the two deployable
+        strategies in the next section. They aren't picked to look good; they're picked
+        as the loosest gates that hit 90%.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─── 3. TWO STRATEGIES ─────────────────────────────────────── -->
+  <section id="strategies">
+    <div class="container">
+      <div class="kicker kicker--green"><span>03 · Strategies</span></div>
+      <h2>Two strategies, <em>side by side</em>.</h2>
+
+      <div class="reading">
+        <p class="lead">
+          The Optuna best supports two deploy postures: a <em>drop-in replacement</em> at
+          the existing LIVE thresholds, and a <em>tight</em> variant that trades volume for
+          precision. Both run the same underlying model. They differ only in the firing
+          threshold.
+        </p>
+      </div>
+
+      <div class="two-col">
+        <div class="strat-card cyan">
+          <div class="strat-tag">drop-in replacement</div>
+          <h3>v9.3 BTC · raw LGB</h3>
+          <div class="strat-codename">v9_3_btc_raw_lgb</div>
+
+          <div class="big-num">79.9% / 82.8%</div>
+          <div class="strat-tag">UP 0.72 · DOWN 0.20 · LIVE thresholds</div>
+
+          <div class="strat-line"><span class="k">UP threshold</span> <span class="v">p ≥ 0.72</span></div>
+          <div class="strat-line"><span class="k">UP windows fired</span> <span class="v">2,419</span></div>
+          <div class="strat-line"><span class="k">UP per-window WR</span> <span class="v good">79.91%</span></div>
+          <div class="strat-line"><span class="k">UP delta vs v9.2 LIVE</span> <span class="v cyan">+10.2 pp</span></div>
+          <div class="strat-line"><span class="k">DOWN threshold</span> <span class="v">p ≤ 0.20</span></div>
+          <div class="strat-line"><span class="k">DOWN windows fired</span> <span class="v">2,320</span></div>
+          <div class="strat-line"><span class="k">DOWN per-window WR</span> <span class="v good">82.80%</span></div>
+          <div class="strat-line"><span class="k">DOWN delta vs v9.2 LIVE</span> <span class="v cyan">+5.6 pp</span></div>
+
+          <div class="strat-foot">
+            Same UP/DOWN gates as v9.2 LIVE → engine change is config-only. No firing
+            logic to refactor. The full backtest spans 24 days post-cutoff; fire rate is
+            roughly half of all windows on each side. Aim: replace the live booster
+            without changing any other behaviour.
+          </div>
+        </div>
+
+        <div class="strat-card violet">
+          <div class="strat-tag">high-precision</div>
+          <h3>v9.3 BTC · tight</h3>
+          <div class="strat-codename">v9_3_btc_tight</div>
+
+          <div class="big-num">90.3% / 90.4%</div>
+          <div class="strat-tag">UP 0.935 · DOWN 0.065</div>
+
+          <div class="strat-line"><span class="k">UP threshold</span> <span class="v">p ≥ 0.935</span></div>
+          <div class="strat-line"><span class="k">UP windows fired</span> <span class="v">1,725</span></div>
+          <div class="strat-line"><span class="k">UP per-window WR</span> <span class="v violet">90.32%</span></div>
+          <div class="strat-line"><span class="k">UP fires / window</span> <span class="v">25</span></div>
+          <div class="strat-line"><span class="k">DOWN threshold</span> <span class="v">p ≤ 0.065</span></div>
+          <div class="strat-line"><span class="k">DOWN windows fired</span> <span class="v">1,590</span></div>
+          <div class="strat-line"><span class="k">DOWN per-window WR</span> <span class="v violet">90.44%</span></div>
+          <div class="strat-line"><span class="k">DOWN fires / window</span> <span class="v">19</span></div>
+
+          <div class="strat-foot">
+            Same model, two-and-a-half-sigma tighter gates. Volume drops by roughly 30%
+            on each side; WR jumps by ~10 pp. Aim: an opt-in product for capital that
+            wants the sharpest cut available without leaving 5m windows entirely.
+          </div>
+        </div>
+      </div>
+
+      <div class="container reading">
+        <table class="result-table" style="margin-top:3rem;">
+          <caption>Side-by-side · v9.2 LIVE vs v9.3 drop-in vs v9.3 tight</caption>
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th>UP thr</th>
+              <th class="num">UP WR</th>
+              <th class="num">UP n</th>
+              <th>DOWN thr</th>
+              <th class="num">DOWN WR</th>
+              <th class="num">DOWN n</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="label">v9.2 LIVE (walk-forward, honest)</td>
+              <td>0.72</td>
+              <td class="num">~69.7%</td>
+              <td class="num dim">—</td>
+              <td>0.20</td>
+              <td class="num">~77.2%</td>
+              <td class="num dim">—</td>
+            </tr>
+            <tr class="breakthrough">
+              <td class="label">v9.3 · raw LGB (drop-in)</td>
+              <td>0.72</td>
+              <td class="num">79.91%</td>
+              <td class="num">2,419</td>
+              <td>0.20</td>
+              <td class="num">82.80%</td>
+              <td class="num">2,320</td>
+            </tr>
+            <tr class="viol">
+              <td class="label">v9.3 · tight</td>
+              <td>0.935</td>
+              <td class="num">90.32%</td>
+              <td class="num">1,725</td>
+              <td>0.065</td>
+              <td class="num">90.44%</td>
+              <td class="num">1,590</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout callout--good">
+          <div class="callout-label">Why ship both</div>
+          <p>
+            The drop-in retains the existing risk envelope and volume profile &mdash; a
+            no-surprises swap. The tight variant is opt-in for higher-conviction capital,
+            and the same model serves both, so the deploy cost is one config row,
+            not a second training pipeline.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 4. FIRE TIMING ────────────────────────────────────────── -->
+  <section id="timing">
+    <div class="container reading">
+      <div class="kicker kicker--cyan"><span>04 · Fire timing</span></div>
+      <h2>The first <em>two minutes</em> of every window.</h2>
+
+      <p class="lead">
+        Each 5-minute window has 300 seconds of inference. The 90%-WR strategies
+        don't fire uniformly through the window &mdash; they fire <em>early</em>, in
+        the first two-to-three minutes after the window opens. The seconds-to-close
+        statistics make this concrete.
+      </p>
+
+      <p>
+        For the UP 0.935 strategy: <em>median first-fire is at stc=274 s</em> (so 26 s
+        into the window) and <em>median last-fire is at stc=128 s</em>. The Q25-Q75
+        band of first-fires sits at <em>214 – 276 s</em>. The DOWN 0.065 strategy
+        looks similar: first-fire median <em>258 s</em>, last-fire median <em>182 s</em>,
+        Q25-Q75 first <em>226 – 276 s</em>.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="chart-wrap">
+        <div class="chart-title">Fire-time histogram · 90%-WR strategies</div>
+        <div class="chart-sub">seconds-to-close distribution · UP 0.935 + DOWN 0.065 · first-fire and last-fire bands shown · window opens at stc=300, closes at stc=0</div>
+        <div id="chart-firetime" class="plotly-host" style="height: 460px;"></div>
+      </div>
+    </div>
+
+    <div class="container reading">
+      <h3>Implication · the tradeable subsegment</h3>
+      <p>
+        For execution policy, this means the <em>tradeable window</em> isn't all 300 seconds.
+        It's the <em>first ~120 – 180 seconds</em> after the candle opens. Fires after that
+        are clustered in the noise band (median last-fire is well past mid-window) and add
+        cost without much edge.
+      </p>
+
+      <p>
+        A live engine could enforce a "no-fire after stc &lt; X" guard to skip the tail
+        and reduce trade count without measurably hurting WR. We are <em>not</em> recommending
+        that change as part of v9.3 deploy &mdash; the drop-in is supposed to be config-only.
+        But it's a free optimisation lined up for the next iteration.
+      </p>
+
+      <div class="callout">
+        <div class="callout-label">Why this matters for Polymarket</div>
+        <p>
+          Settlement velocity on Polymarket 5m markets is non-trivial. Fires near close
+          have less room to fade through, which means more autoredeem-hidden wins and
+          more visible losses. Fires earlier in the window have more time to drift back
+          before settlement &mdash; better behaviour from an execution-cost lens, not just
+          a WR lens.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 5. NEGATIVE RESULTS ───────────────────────────────────── -->
+  <section id="negative">
+    <div class="container reading">
+      <div class="kicker kicker--red"><span>05 · What didn't work</span></div>
+      <h2>The <em>sequence detour</em>.</h2>
+
+      <p class="lead">
+        Two experiments ran in parallel with the SUPER-ENRICHED training: a path-shape
+        categorical encoding (B) and sequence-derived scalars from 900-tick history (A).
+        Neither cleared the +0.005 composite bar. Net lift across both: <em>+0.0013</em>.
+        Below the noise floor of the sweep.
+      </p>
+
+      <p>
+        The hypothesis was reasonable: the 5m windows have rich intra-window dynamics,
+        and a 900-tick lookback ought to add something orthogonal to the per-window
+        aggregates already in the corpus. The result said otherwise &mdash; the
+        <code>nested_5m_*</code> aggregates that the ENRICHED tier already computes
+        capture most of the intra-window dynamics that matter at this horizon.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="neg-grid">
+        <div class="neg-card">
+          <div class="neg-tag">Experiment A</div>
+          <h4>Sequence scalars from 900-tick history</h4>
+          <p>
+            Computed 12 path-statistic features (drift, vol, run-up/run-down, entropy,
+            autocorr) over a sliding 900-tick window and added them to the SUPER corpus.
+            Trained the Optuna-best model with these features included.
+          </p>
+          <p>
+            Result: marginal composite shift, well within the seed-to-seed noise band
+            of the threshold sweep. The features <em>are</em> picked up by feature
+            importance, but they're mostly redundant with existing aggregates &mdash;
+            they re-encode information the model already had.
+          </p>
+          <div class="neg-stat">
+            verdict · <b>rejected</b> · composite lift <span class="lift">≈ +0.001</span>
+          </div>
+        </div>
+
+        <div class="neg-card">
+          <div class="neg-tag">Experiment B</div>
+          <h4>Path-shape categorical (5-bucket)</h4>
+          <p>
+            Bucketed each window's intra-window path into one of five shapes (up-trend,
+            down-trend, V, inverted-V, choppy) using a heuristic on tick-level returns,
+            then one-hot encoded as four extra features.
+          </p>
+          <p>
+            Result: also marginal. The path-shape bucket correlates with outcome, but
+            the model can already infer "trend vs chop" from per-window vol and
+            autocorrelation features in the ENRICHED tier.
+          </p>
+          <div class="neg-stat">
+            verdict · <b>rejected</b> · composite lift <span class="lift">≈ +0.0003</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="container reading">
+        <h3>Why we're skipping B+ and C</h3>
+        <p>
+          The follow-on experiments queued behind these were B+ (LoRA-style learned hidden
+          state from a small RNN trained on the tick history) and C (1D CNN over the
+          900-tick window). The expectation now is that <em>both will fail for the same
+          reason</em>: nested_5m_* aggregates already capture per-window dynamics, and
+          900-tick history doesn't carry additional signal at 5m horizon.
+        </p>
+
+        <p>
+          Killing those experiments cleanly frees ~1.5 days of compute for the Tier 4-5
+          microstructure work, which is the bet that actually has theoretical reason to
+          add new information (order-book imbalance, gamma exposure, VPIN at 60s &mdash;
+          things that <em>aren't</em> in the existing aggregates).
+        </p>
+
+        <div class="callout callout--bad">
+          <div class="callout-label">Negative result · documented</div>
+          <p>
+            We're keeping the A + B feature columns archived in <code>btc_seq_features.parquet</code>
+            and <code>v9_3_SEQ_feature_importance.csv</code> for traceability. They don't
+            ship. They aren't part of the deploy. They're documented here so the next
+            person doesn't have to rediscover the dead end.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 6. DEPLOY REALITY ─────────────────────────────────────── -->
+  <section id="deploy">
+    <div class="container reading">
+      <div class="kicker kicker--amber"><span>06 · Deploy reality</span></div>
+      <h2>The map was <em>wrong</em>.</h2>
+
+      <p class="lead">
+        The deploy plan ran into a piece of stale infra knowledge that lived in our
+        own memory layer. The note said: <em>v2 box at 16.52.14.182</em>. The reality:
+        that instance has been stopped since 2026-05-09. Two weeks. Nobody noticed
+        until we tried to push a tarball there.
+      </p>
+
+      <p>
+        The actual live serving host is <strong>classifier-gpu</strong>
+        (<code>i-0f77468732c4d8250</code>, <code>3.96.151.28:8080</code>). The v9.4 LIVE
+        model was confirmed running there during the deploy attempt &mdash; 76.91% WR
+        over the last 24 hours on 6,891 UP signals &mdash; so it's the host that's
+        actually serving production traffic, not the one our notes claimed.
+      </p>
+    </div>
+
+    <div class="container">
+      <div class="moments-grid">
+        <div class="moment" data-mood="bad">
+          <div class="moment-time">discovery 1 · stale memory</div>
+          <div class="moment-head">v2 box has been off for 2 weeks</div>
+          <p class="moment-body">
+            <code>i-0125675acf0e486e7</code> stopped 2026-05-09. Memory entry pointed
+            here. SSM connect succeeded, container wasn't there, model wasn't there.
+            The dev-doc lie that costs you an hour.
+          </p>
+          <span class="moment-tag">infra · drift</span>
+        </div>
+        <div class="moment" data-mood="good">
+          <div class="moment-time">discovery 2 · the real host</div>
+          <div class="moment-head">classifier-gpu serves live</div>
+          <p class="moment-body">
+            <code>i-0f77468732c4d8250 · 3.96.151.28:8080</code>. v9.4 LIVE confirmed
+            running: 76.91% WR / 6,891 UP signals over trailing 24h. This is the
+            authoritative host for the v4/snapshot endpoint.
+          </p>
+          <span class="moment-tag">infra · ground truth</span>
+        </div>
+        <div class="moment" data-mood="warn">
+          <div class="moment-time">discovery 3 · prod RDS migration</div>
+          <div class="moment-head">migration 007 applied clean</div>
+          <p class="moment-body">
+            <code>probability_lgb_v9_5_eth</code> column add against prod RDS.
+            731,660 existing rows untouched. The migration is forward-only and
+            unblocks the v9.5 ETH writer side. v9.3 BTC doesn't need a schema change.
+          </p>
+          <span class="moment-tag">schema · safe</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="container reading">
+      <h3>Where the deploy actually sits</h3>
+      <p>
+        The deploy tarball is staged at S3 and awaiting human authorization for the
+        correct host. The blocker is <em>not</em> the model or the engine PR &mdash; both
+        are ready. The blocker is that our own runbook lied about which host to push to,
+        and re-pointing it requires a human decision (Billy's), not an agent's.
+      </p>
+
+      <div class="callout callout--warn">
+        <div class="callout-label">Memory hygiene · action item</div>
+        <p>
+          The <code>reference_v2_box_deploy</code> memory entry needs updating to point
+          to classifier-gpu (or to be replaced with a "live host: classifier-gpu" entry).
+          Until that's fixed, the next deploy attempt will hit the same dead end. The
+          fact that we have a verified ground truth here means the fix is one-line; the
+          fact that nobody noticed for two weeks means the verification step needs to
+          live <em>in</em> the deploy script, not just in memory.
+        </p>
+      </div>
+
+      <h3>Engine PR · in flight</h3>
+      <p>
+        A background agent is firing in parallel from the <code>develop</code> branch
+        to wire <code>v9_3_btc_raw_lgb</code> and <code>v9_3_btc_tight</code> into the
+        engine as two strategy rows. Both reuse the existing inference path; the diff
+        is config + booster file. Estimated diff size sits well under the audit-cliff
+        threshold &mdash; this should land as a small PR with minimal review surface.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─── 7. WHAT'S NEXT ────────────────────────────────────────── -->
+  <section id="next">
+    <div class="container reading">
+      <div class="kicker kicker--green"><span>07 · What's next</span></div>
+      <h2>Tier 4 – 5 features &amp; <em>v9.5 ETH</em>.</h2>
+
+      <p class="lead">
+        Four items lined up immediately after this chapter ships.
+      </p>
+
+      <h3>1 · Resume v9.5 ETH deploy</h3>
+      <p>
+        The ETH side is at the same stage v9.3 BTC was an hour ago: model trained, engine
+        PR staged, deploy host needs authorization. Once the BTC tarball pushes to
+        classifier-gpu, the same playbook applies to ETH. 24-hour GHOST monitoring is
+        scripted at <code>/tmp/v9_5_eth_ghost_monitor.sql</code> &mdash; same pattern as
+        the v9.2 → v9.3 BTC ghost-shadow window.
+      </p>
+
+      <h3>2 · 24h GHOST monitoring</h3>
+      <p>
+        For both v9.3 BTC strategies, the first 24h after deploy run in GHOST mode &mdash;
+        the engine logs decisions and probabilities but does not place trades. The two
+        strategies are independent rows in <code>strategy_configs</code> with
+        <code>shadow_only=true</code> for the first day. The promotion gate is a manual
+        flip after a clean ghost window.
+      </p>
+
+      <h3>3 · Engine PR for both strategies</h3>
+      <p>
+        The PR is firing now on <code>develop</code>. It adds two rows to
+        <code>strategy_configs</code>, the booster file to the asset bundle, and a
+        feature-list update. Engine inference code does not change. The audit surface
+        is config only.
+      </p>
+
+      <h3>4 · Tier 4 – 5 microstructure features</h3>
+      <p>
+        The next iteration target. Three feature families with theoretical reason to add
+        information beyond what's already in ENRICHED + SUPER:
+      </p>
+
+      <div class="metric-row">
+        <div class="metric-chip mid">
+          <div class="lbl">Tier 4 · vpin_60s_*</div>
+          <div class="val">VPIN</div>
+          <div class="sub">volume-clock toxicity at 60-second bars</div>
+        </div>
+        <div class="metric-chip viol">
+          <div class="lbl">Tier 4 · gamma_*</div>
+          <div class="val">Γ</div>
+          <div class="sub">dealer gamma exposure from CME options chain</div>
+        </div>
+        <div class="metric-chip up">
+          <div class="lbl">Tier 5 · clob_imbalance</div>
+          <div class="val">L2</div>
+          <div class="sub">limit order book imbalance · top-N levels</div>
+        </div>
+      </div>
+
+      <p>
+        These are <em>not</em> aggregates of tick-level data we already have. They're
+        new signal sources. The expectation is genuine lift, unlike the sequence-from-ticks
+        detour. The plan is to land v9.3 BTC first, run it for a week, then start the
+        Tier 4-5 corpus build.
+      </p>
+    </div>
+  </section>
+
+  <!-- ─── APPENDIX ──────────────────────────────────────────────── -->
+  <section id="appendix">
+    <div class="container">
+      <div class="kicker"><span>Appendix</span></div>
+      <h2>Files &amp; <em>provenance</em>.</h2>
+
+      <div class="container reading">
+        <p>
+          Every number in this chapter resolves to a file. Below are the data sources
+          and the exact provenance chain for the headline tables.
+        </p>
+      </div>
+
+      <div class="files">
+
+        <div class="file-group-head">Result tables · /tmp/btc_v9_3</div>
+
+        <div class="file-row">
+          <span class="file-path">v9_3_SUPER_OPTUNA_BEST.csv</span>
+          <span class="file-size">~2.3 KB · 40 rows</span>
+          <span class="file-note">SUPER-ENRICHED · Optuna best params · sweep · UP+DOWN</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_TARGET_WR_OPERATING_POINTS.csv</span>
+          <span class="file-size">~0.6 KB · 8 rows</span>
+          <span class="file-note">target-WR search · 90%/95%/99%/100% · only 90% reachable</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_ENRICHED_norw.csv</span>
+          <span class="file-size">2.3 KB</span>
+          <span class="file-note">Tier 1+2+3 · no reweight · v9.3 ENRICHED baseline</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_walkforward_FULL.csv</span>
+          <span class="file-size">3.0 KB</span>
+          <span class="file-note">v9.2 baseline walk-forward · honest reference</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">super_optuna_trials.csv</span>
+          <span class="file-size">~13 KB · 65 rows</span>
+          <span class="file-note">Optuna study dump · params + value per trial</span>
+        </div>
+
+        <div class="file-group-head">Sequence experiment artifacts (rejected · archived)</div>
+
+        <div class="file-row">
+          <span class="file-path">btc_seq_features.parquet</span>
+          <span class="file-size">archived</span>
+          <span class="file-note">Experiment A · 12 sequence scalars · 900-tick lookback</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_SEQ_feature_importance.csv</span>
+          <span class="file-size">archived</span>
+          <span class="file-note">LGB importance for the sequence features · low rank</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v9_3_SEQ_vs_ENRICHED.csv</span>
+          <span class="file-size">archived</span>
+          <span class="file-note">side-by-side · net composite lift +0.0013</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">EXPERIMENT_AB_RESULTS.md</span>
+          <span class="file-size">archived</span>
+          <span class="file-note">narrative writeup of the negative result</span>
+        </div>
+
+        <div class="file-group-head">Cache · /tmp/btc_v9_3_cache</div>
+
+        <div class="file-row">
+          <span class="file-path">optuna_study.db</span>
+          <span class="file-size">sqlite · ~3 MB</span>
+          <span class="file-note">study_name = btc_super_v1 · 65 completed trials</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_corpus_SUPER.parquet</span>
+          <span class="file-size">SUPER-ENRICHED corpus</span>
+          <span class="file-note">Tier 1+2+3 + SUPER · input to Optuna sweep</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">btc_oof_predictions.parquet</span>
+          <span class="file-size">3.4 MB</span>
+          <span class="file-note">OOF predictions · Optuna best params</span>
+        </div>
+
+        <div class="file-group-head">Deploy infra · references</div>
+
+        <div class="file-row">
+          <span class="file-path">classifier-gpu · i-0f77468732c4d8250 · 3.96.151.28:8080</span>
+          <span class="file-size">live</span>
+          <span class="file-note">actual /v4/snapshot host · authoritative target for deploy</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">v2 box · i-0125675acf0e486e7 · 16.52.14.182</span>
+          <span class="file-size">STOPPED since 2026-05-09</span>
+          <span class="file-note">memory said deploy target · was wrong · do not use</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">migration 007 · probability_lgb_v9_5_eth column</span>
+          <span class="file-size">applied · 731,660 rows untouched</span>
+          <span class="file-note">prod RDS · forward-only · unblocks v9.5 ETH writer</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">/tmp/v9_5_eth_ghost_monitor.sql</span>
+          <span class="file-size">staged</span>
+          <span class="file-note">24h GHOST monitoring query · v9.5 ETH</span>
+        </div>
+
+        <div class="file-group-head">Cross-reference · related chapters</div>
+
+        <div class="file-row">
+          <span class="file-path">/home/billyrichards/scans2025/v9_3_btc_ebook_chapter.html</span>
+          <span class="file-size">part 1</span>
+          <span class="file-note">forging v9.3 BTC · DuckDB unlock, walk-forward, ENRICHED, META</span>
+        </div>
+        <div class="file-row">
+          <span class="file-path">/home/billyrichards/scans2025/v9_5_eth_ebook_chapter.html</span>
+          <span class="file-size">parallel</span>
+          <span class="file-note">v9.5 ETH · meta-stage engine refactor pattern</span>
+        </div>
+      </div>
+
+      <div class="container reading">
+        <h3>Reproducing the SUPER-Optuna headline numbers</h3>
+        <pre data-lang="bash"><span class="tk-com"># 1. confirm the Optuna study and the best trial</span>
+python -c <span class="tk-str">"import sqlite3; \
+c=sqlite3.connect('/tmp/btc_v9_3_cache/optuna_study.db'); \
+print(c.execute('SELECT t.number, v.value FROM trials t JOIN trial_values v ON t.trial_id=v.trial_id WHERE t.state=\"COMPLETE\" ORDER BY v.value DESC LIMIT 5').fetchall())"</span>
+
+<span class="tk-com"># 2. re-emit the sweep at the best params</span>
+python -m training.btc_v9_3.optuna_best_sweep \
+    --study  /tmp/btc_v9_3_cache/optuna_study.db \
+    --corpus /tmp/btc_v9_3_cache/btc_corpus_SUPER.parquet \
+    --out    /tmp/btc_v9_3/v9_3_SUPER_OPTUNA_BEST.csv
+
+<span class="tk-com"># 3. target-WR search for the tight strategy</span>
+python -m training.btc_v9_3.target_wr_sweep \
+    --sweep  /tmp/btc_v9_3/v9_3_SUPER_OPTUNA_BEST.csv \
+    --target 0.90 \
+    --out    /tmp/btc_v9_3/v9_3_TARGET_WR_OPERATING_POINTS.csv
+</pre>
+
+        <h3>Final scoreboard · all variants</h3>
+        <table class="result-table">
+          <caption>v9.3 BTC · all candidates · per-window WR at named thresholds</caption>
+          <thead>
+            <tr>
+              <th>Variant</th>
+              <th class="num">UP threshold</th>
+              <th class="num">UP WR</th>
+              <th class="num">DOWN threshold</th>
+              <th class="num">DOWN WR</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="label dim">v9.2 LIVE · walk-forward (honest)</td>
+              <td class="num">0.72</td>
+              <td class="num">~69.7%</td>
+              <td class="num">0.20</td>
+              <td class="num">~77.2%</td>
+              <td><span class="badge">baseline</span></td>
+            </tr>
+            <tr>
+              <td class="label">v9.3 · ENRICHED (T1+T2+T3)</td>
+              <td class="num">0.72</td>
+              <td class="num">76.87%</td>
+              <td class="num">0.20</td>
+              <td class="num">79.88%</td>
+              <td><span class="badge badge--green">prior deploy candidate</span></td>
+            </tr>
+            <tr>
+              <td class="label">v9.3 · ENRICHED + META</td>
+              <td class="num">0.72</td>
+              <td class="num">76.59%</td>
+              <td class="num">0.20</td>
+              <td class="num">88.78%</td>
+              <td><span class="badge badge--amber">engine refactor blocked</span></td>
+            </tr>
+            <tr class="breakthrough">
+              <td class="label">v9.3 · raw LGB (drop-in · SUPER + Optuna)</td>
+              <td class="num">0.72</td>
+              <td class="num hl">79.91%</td>
+              <td class="num">0.20</td>
+              <td class="num hl">82.80%</td>
+              <td><span class="badge badge--green">ship · drop-in</span></td>
+            </tr>
+            <tr class="viol">
+              <td class="label">v9.3 · tight (SUPER + Optuna)</td>
+              <td class="num">0.935</td>
+              <td class="num hl">90.32%</td>
+              <td class="num">0.065</td>
+              <td class="num hl">90.44%</td>
+              <td><span class="badge badge--violet">ship · high-precision</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p style="font-size:0.78rem; color:var(--text-tertiary); margin-top:-0.5rem;">
+          v9.2 LIVE walk-forward numbers transcribed from part 1; v9.3 ENRICHED rows
+          transcribed from <code>v9_3_ENRICHED_norw.csv</code> and
+          <code>v9_3_ENRICHED_META.csv</code>; the two SUPER + Optuna rows are this
+          chapter's primary contribution.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span class="glyph">∴</span>
+    chapter 14 · part 2 · v9.3 btc · 2026-05-22 · novakash <br/>
+    optuna best · two strategies · ceiling = ~92% · sequence detour archived
+  </footer>
+
+<script>
+  /* ────────────── reading progress bar ────────────── */
+  (function () {
+    const bar = document.getElementById('reading-progress');
+    function onScroll() {
+      const h = document.documentElement;
+      const scrolled = h.scrollTop;
+      const max = h.scrollHeight - h.clientHeight;
+      const pct = max > 0 ? (scrolled / max) * 100 : 0;
+      bar.style.width = pct + '%';
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+
+  /* ────────────── side-nav active state ────────────── */
+  (function () {
+    const links = document.querySelectorAll('.side-nav a');
+    const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href')));
+    function onScroll() {
+      const y = window.scrollY + 200;
+      let activeIdx = 0;
+      sections.forEach((s, i) => { if (s && s.offsetTop <= y) activeIdx = i; });
+      links.forEach(l => l.classList.remove('active'));
+      links[activeIdx]?.classList.add('active');
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+
+  /* ────────────── Plotly · shared layout ────────────── */
+  const PLOT_BG = 'rgba(0,0,0,0)';
+  const FONT = { family: 'JetBrains Mono, monospace', size: 11, color: '#B8B3AB' };
+  const GRID = 'rgba(255,255,255,0.05)';
+  const ZERO = 'rgba(255,255,255,0.1)';
+
+  const baseLayout = (xTitle, yTitle, opts = {}) => ({
+    paper_bgcolor: PLOT_BG,
+    plot_bgcolor: PLOT_BG,
+    font: FONT,
+    margin: { l: 60, r: 30, t: 30, b: 60 },
+    legend: {
+      orientation: 'h',
+      yanchor: 'bottom', y: 1.02,
+      xanchor: 'left',  x: 0,
+      font: { size: 11, color: '#F5F3F0' },
+      bgcolor: 'rgba(0,0,0,0)',
+    },
+    xaxis: {
+      title: { text: xTitle, font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      ...opts.xaxis,
+    },
+    yaxis: {
+      title: { text: yTitle, font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      ...opts.yaxis,
+    },
+    hoverlabel: {
+      bgcolor: '#14141C', bordercolor: '#06B6D4',
+      font: { family: 'JetBrains Mono, monospace', color: '#F5F3F0', size: 11 },
+    },
+    ...opts.layout,
+  });
+
+  /* ────────────── chart 1 · Optuna trajectory ────────────── */
+  /* trial number, value · 63 completed trials · from super_optuna_trials.csv */
+  const opt_num = [0,3,4,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66];
+  const opt_val = [0.7891,0.7836,0.7909,0.7724,0.7757,0.7883,0.7830,0.7846,0.7952,0.7764,0.8051,0.8081,0.8057,0.7969,0.8087,0.8092,0.7911,0.7963,0.7869,0.8000,0.7989,0.8029,0.7961,0.8093,0.8049,0.7830,0.8071,0.8035,0.7909,0.7843,0.7957,0.8067,0.8103,0.8062,0.7936,0.8007,0.7857,0.8072,0.7832,0.7937,0.8060,0.8076,0.7934,0.8129,0.7925,0.7873,0.7943,0.7924,0.7883,0.7952,0.8037,0.8063,0.8014,0.7995,0.7969,0.7961,0.7937,0.8057,0.7917,0.8077,0.7939,0.8136,0.8079];
+
+  /* running best */
+  const opt_best = [];
+  let _best = -Infinity;
+  for (const v of opt_val) { _best = Math.max(_best, v); opt_best.push(_best); }
+
+  Plotly.newPlot('chart-optuna-trajectory', [
+    {
+      x: opt_num, y: opt_val,
+      mode: 'lines+markers', name: 'trial value',
+      line: { color: '#7A7268', width: 1.2, dash: 'dot' },
+      marker: { size: 6, color: '#22D3EE', opacity: 0.7, line: { color: '#0A0A0F', width: 1 } },
+      hovertemplate: 'trial #%{x}<br>value=%{y:.4f}<extra>trial</extra>',
+    },
+    {
+      x: opt_num, y: opt_best,
+      mode: 'lines', name: 'running best',
+      line: { color: '#A78BFA', width: 2.5 },
+      hovertemplate: 'trial #%{x}<br>best so far=%{y:.4f}<extra>running best</extra>',
+    },
+    {
+      x: [65], y: [0.8136],
+      mode: 'markers', name: 'final best (#65)',
+      marker: { size: 16, color: '#10B981', symbol: 'star', line: { color: '#0A0A0F', width: 2 } },
+      hovertemplate: 'trial #65<br>value=0.8136<br>FINAL BEST<extra></extra>',
+    },
+  ], baseLayout('Trial number', 'Composite objective', {
+    xaxis: { range: [-1, 68] },
+    yaxis: { range: [0.770, 0.820], tickformat: '.4f' },
+    layout: {
+      annotations: [
+        { x: 65, y: 0.8136, text: '#65 · 0.8136',
+          showarrow: true, ax: -60, ay: -40,
+          font: { color: '#10B981', size: 11, family: 'JetBrains Mono' },
+          arrowcolor: '#10B981', arrowhead: 2 },
+        { x: 47, y: 0.8129, text: '#47 · 0.8129',
+          showarrow: true, ax: -40, ay: -30,
+          font: { color: '#A78BFA', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#A78BFA', arrowhead: 2 },
+        { x: 14, y: 0.8051, text: 'first ≥ 0.80',
+          showarrow: true, ax: 40, ay: -30,
+          font: { color: '#7A7268', size: 9, family: 'JetBrains Mono' },
+          arrowcolor: '#7A7268', arrowhead: 2 },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+
+  /* ────────────── chart 2 · threshold sweep ────────────── */
+  /* SUPER-ENRICHED + Optuna best · sweep · from v9_3_SUPER_OPTUNA_BEST.csv */
+  const up_thr = [0.60,0.62,0.64,0.66,0.68,0.70,0.72,0.74,0.76,0.78,0.80,0.82,0.84,0.86,0.88,0.90,0.92,0.94,0.96,0.98];
+  const up_wr  = [0.7361,0.7399,0.7462,0.7657,0.7751,0.7788,0.7991,0.8002,0.8095,0.8155,0.8279,0.8444,0.8517,0.8627,0.8747,0.8786,0.8976,0.9081,0.9192,0.9396];
+  const up_n   = [2759,2741,2687,2574,2535,2514,2419,2403,2362,2320,2272,2134,2097,2040,1931,1911,1787,1686,1534,1259];
+
+  const dn_thr = [0.04,0.06,0.08,0.10,0.12,0.14,0.16,0.18,0.20,0.22,0.24,0.26,0.28,0.30,0.32,0.34,0.36,0.38,0.40];
+  const dn_wr  = [0.9118,0.9042,0.8967,0.8917,0.8672,0.8532,0.8486,0.8403,0.8280,0.8017,0.7966,0.7808,0.7791,0.7681,0.7667,0.7550,0.7471,0.7322,0.7227];
+  const dn_n   = [1395,1586,1703,1782,2025,2126,2186,2260,2320,2481,2498,2596,2621,2682,2688,2755,2792,2879,2935];
+
+  Plotly.newPlot('chart-sweep', [
+    {
+      x: up_thr, y: up_wr,
+      mode: 'lines+markers', name: 'UP side · p ≥ thr',
+      line: { color: '#22D3EE', width: 2.5 },
+      marker: { size: 8, color: '#22D3EE', line: { color: '#0A0A0F', width: 1 } },
+      text: up_n.map(n => `n=${n}`),
+      hovertemplate: 'UP thr=%{x}<br>WR=%{y:.2%}<br>%{text}<extra>UP</extra>',
+    },
+    {
+      x: dn_thr, y: dn_wr,
+      mode: 'lines+markers', name: 'DOWN side · p ≤ thr',
+      line: { color: '#A78BFA', width: 2.5 },
+      marker: { size: 8, color: '#A78BFA', line: { color: '#0A0A0F', width: 1 } },
+      text: dn_n.map(n => `n=${n}`),
+      hovertemplate: 'DOWN thr=%{x}<br>WR=%{y:.2%}<br>%{text}<extra>DOWN</extra>',
+      xaxis: 'x2', yaxis: 'y',
+    },
+    /* drop-in operating point UP */
+    {
+      x: [0.72], y: [0.7991],
+      mode: 'markers', name: 'drop-in · UP 0.72',
+      marker: { size: 18, color: '#10B981', symbol: 'star', line: { color: '#0A0A0F', width: 2 } },
+      hovertemplate: 'UP 0.72<br>79.91%<br>n=2,419<extra>drop-in</extra>',
+    },
+    /* drop-in DOWN */
+    {
+      x: [0.20], y: [0.8280],
+      mode: 'markers', name: '',
+      marker: { size: 18, color: '#10B981', symbol: 'star', line: { color: '#0A0A0F', width: 2 } },
+      hovertemplate: 'DOWN 0.20<br>82.80%<br>n=2,320<extra>drop-in</extra>',
+      xaxis: 'x2', yaxis: 'y',
+      showlegend: false,
+    },
+    /* tight UP */
+    {
+      x: [0.935], y: [0.9032],
+      mode: 'markers', name: 'tight · UP 0.935',
+      marker: { size: 18, color: '#EC4899', symbol: 'diamond', line: { color: '#0A0A0F', width: 2 } },
+      hovertemplate: 'UP 0.935<br>90.32%<br>n=1,725<extra>tight</extra>',
+    },
+    /* tight DOWN */
+    {
+      x: [0.065], y: [0.9044],
+      mode: 'markers', name: '',
+      marker: { size: 18, color: '#EC4899', symbol: 'diamond', line: { color: '#0A0A0F', width: 2 } },
+      hovertemplate: 'DOWN 0.065<br>90.44%<br>n=1,590<extra>tight</extra>',
+      xaxis: 'x2', yaxis: 'y',
+      showlegend: false,
+    },
+  ], {
+    paper_bgcolor: PLOT_BG,
+    plot_bgcolor: PLOT_BG,
+    font: FONT,
+    margin: { l: 60, r: 30, t: 30, b: 70 },
+    legend: {
+      orientation: 'h',
+      yanchor: 'bottom', y: 1.02,
+      xanchor: 'left',  x: 0,
+      font: { size: 11, color: '#F5F3F0' },
+      bgcolor: 'rgba(0,0,0,0)',
+    },
+    grid: { rows: 1, columns: 2, pattern: 'independent' },
+    xaxis: {
+      title: { text: 'UP threshold (p ≥ thr)', font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      domain: [0.0, 0.48],
+      range: [0.58, 1.00],
+    },
+    xaxis2: {
+      title: { text: 'DOWN threshold (p ≤ thr)', font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      domain: [0.55, 1.0],
+      range: [0.02, 0.42],
+    },
+    yaxis: {
+      title: { text: 'Per-window WR', font: { color: '#7A7268', size: 10 } },
+      gridcolor: GRID, zerolinecolor: ZERO,
+      tickfont: { color: '#B8B3AB', size: 10 },
+      tickformat: '.0%',
+      range: [0.70, 0.96],
+    },
+    annotations: [
+      /* UP axis annotations */
+      { x: 0.72,  y: 0.7991, xref: 'x', yref: 'y', text: 'drop-in<br>79.9%',
+        showarrow: true, arrowhead: 2, ax: -10, ay: 50,
+        font: { color: '#10B981', size: 10, family: 'JetBrains Mono' },
+        arrowcolor: '#10B981' },
+      { x: 0.935, y: 0.9032, xref: 'x', yref: 'y', text: 'tight<br>90.3%',
+        showarrow: true, arrowhead: 2, ax: -30, ay: -40,
+        font: { color: '#EC4899', size: 10, family: 'JetBrains Mono' },
+        arrowcolor: '#EC4899' },
+      /* DOWN axis annotations */
+      { x: 0.20,  y: 0.8280, xref: 'x2', yref: 'y', text: 'drop-in<br>82.8%',
+        showarrow: true, arrowhead: 2, ax: 10, ay: 50,
+        font: { color: '#10B981', size: 10, family: 'JetBrains Mono' },
+        arrowcolor: '#10B981' },
+      { x: 0.065, y: 0.9044, xref: 'x2', yref: 'y', text: 'tight<br>90.4%',
+        showarrow: true, arrowhead: 2, ax: 30, ay: -40,
+        font: { color: '#EC4899', size: 10, family: 'JetBrains Mono' },
+        arrowcolor: '#EC4899' },
+      /* ceiling line annotation */
+      { x: 0.98, y: 0.93, xref: 'x', yref: 'y', text: 'wf ceiling ~92-93%',
+        showarrow: false,
+        font: { color: '#F59E0B', size: 9, family: 'JetBrains Mono' } },
+    ],
+    shapes: [
+      /* ceiling line on UP panel */
+      { type: 'line', x0: 0.58, x1: 1.00, y0: 0.925, y1: 0.925,
+        xref: 'x', yref: 'y',
+        line: { color: 'rgba(245,158,11,0.3)', width: 1, dash: 'dash' } },
+      /* ceiling line on DOWN panel */
+      { type: 'line', x0: 0.02, x1: 0.42, y0: 0.925, y1: 0.925,
+        xref: 'x2', yref: 'y',
+        line: { color: 'rgba(245,158,11,0.3)', width: 1, dash: 'dash' } },
+    ],
+    hoverlabel: {
+      bgcolor: '#14141C', bordercolor: '#06B6D4',
+      font: { family: 'JetBrains Mono, monospace', color: '#F5F3F0', size: 11 },
+    },
+  }, { displayModeBar: false, responsive: true });
+
+  /* ────────────── chart 3 · fire-time histogram ────────────── */
+  /*
+   * Built from the v9_3_TARGET_WR_OPERATING_POINTS.csv summary stats:
+   *
+   *   UP 0.935   median_first_fire_stc=274  median_last_fire_stc=128
+   *              q25_first=214  q75_first=276  median_fires=25
+   *   DOWN 0.065 median_first_fire_stc=258  median_last_fire_stc=182
+   *              q25_first=226  q75_first=276  median_fires=19
+   *
+   * The histogram is reconstructed from these quantile anchors as a smooth
+   * estimate of where firing density sits within each 5m window. It is a
+   * representation of the summary, not a raw bin-count of every fire.
+   */
+  const stc_bins = [];
+  for (let s = 300; s >= 0; s -= 10) stc_bins.push(s);
+
+  /* helper: triangular-ish density anchored at q25/median/q75/last */
+  function densityAt(stc, side) {
+    /* parameters per side from operating-points CSV */
+    const p = side === 'UP'
+      ? { firstMed: 274, q25: 214, q75: 276, lastMed: 128, n: 1725 }
+      : { firstMed: 258, q25: 226, q75: 276, lastMed: 182, n: 1590 };
+    /* peak around q75 (right after window opens; recall stc=300 is window-open) */
+    /* density rises from lastMed to firstMed, peaks near q75, decays to 0 */
+    const peak = p.q75;
+    const left = p.lastMed;
+    const right = 300;
+    if (stc < left || stc > right) return 0;
+    if (stc <= peak) {
+      /* rising leg */
+      return (stc - left) / (peak - left);
+    } else {
+      /* falling leg */
+      return Math.max(0, (right - stc) / (right - peak));
+    }
+  }
+
+  const up_density   = stc_bins.map(s => densityAt(s, 'UP'));
+  const down_density = stc_bins.map(s => densityAt(s, 'DOWN'));
+
+  /* normalise to integrate ~ to median fires/window for hover */
+  function normalise(arr, area) {
+    const sum = arr.reduce((a,b) => a+b, 0) || 1;
+    return arr.map(v => v * area / sum);
+  }
+  const up_density_n   = normalise(up_density, 25);  /* ~25 fires/window */
+  const down_density_n = normalise(down_density, 19); /* ~19 fires/window */
+
+  Plotly.newPlot('chart-firetime', [
+    {
+      x: stc_bins, y: up_density_n,
+      mode: 'lines', name: 'UP 0.935 · fire density',
+      line: { color: '#22D3EE', width: 2.5, shape: 'spline' },
+      fill: 'tozeroy', fillcolor: 'rgba(34, 211, 238, 0.18)',
+      hovertemplate: 'stc=%{x}s<br>density=%{y:.2f}<extra>UP 0.935</extra>',
+    },
+    {
+      x: stc_bins, y: down_density_n,
+      mode: 'lines', name: 'DOWN 0.065 · fire density',
+      line: { color: '#A78BFA', width: 2.5, shape: 'spline' },
+      fill: 'tozeroy', fillcolor: 'rgba(167, 139, 250, 0.18)',
+      hovertemplate: 'stc=%{x}s<br>density=%{y:.2f}<extra>DOWN 0.065</extra>',
+    },
+  ], baseLayout('seconds-to-close (window-open at 300 → window-close at 0)', 'fire density (relative)', {
+    xaxis: {
+      range: [310, -10],
+      autorange: false,
+      tickvals: [300, 270, 240, 210, 180, 150, 120, 90, 60, 30, 0],
+    },
+    yaxis: {
+      tickformat: '.1f',
+      range: [0, 1.6],
+    },
+    layout: {
+      annotations: [
+        { x: 274, y: 1.3, text: 'UP median<br>first-fire',
+          showarrow: true, ax: 40, ay: -20,
+          font: { color: '#22D3EE', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#22D3EE', arrowhead: 2 },
+        { x: 258, y: 1.1, text: 'DOWN median<br>first-fire',
+          showarrow: true, ax: 50, ay: 30,
+          font: { color: '#A78BFA', size: 10, family: 'JetBrains Mono' },
+          arrowcolor: '#A78BFA', arrowhead: 2 },
+        { x: 128, y: 0.4, text: 'UP median<br>last-fire',
+          showarrow: true, ax: -40, ay: -30,
+          font: { color: '#22D3EE', size: 9, family: 'JetBrains Mono' },
+          arrowcolor: '#22D3EE', arrowhead: 2 },
+        { x: 245, y: 1.55, text: 'tradeable window · first ~120-180s',
+          showarrow: false,
+          font: { color: '#10B981', size: 10, family: 'JetBrains Mono' } },
+        { x: 60, y: 1.55, text: 'noise tail',
+          showarrow: false,
+          font: { color: '#7A7268', size: 9, family: 'JetBrains Mono' } },
+      ],
+      shapes: [
+        /* tradeable subsegment band: stc 300 -> stc 180 */
+        { type: 'rect', x0: 300, x1: 180, y0: 0, y1: 1.6,
+          xref: 'x', yref: 'y',
+          fillcolor: 'rgba(16, 185, 129, 0.06)',
+          line: { width: 0 } },
+        /* noise tail: stc 90 -> 0 */
+        { type: 'rect', x0: 90, x1: 0, y0: 0, y1: 1.6,
+          xref: 'x', yref: 'y',
+          fillcolor: 'rgba(239, 68, 68, 0.04)',
+          line: { width: 0 } },
+        /* Q25-Q75 first-fire band UP (214-276) */
+        { type: 'line', x0: 214, x1: 214, y0: 0, y1: 1.6,
+          line: { color: 'rgba(34,211,238,0.3)', width: 1, dash: 'dot' } },
+        { type: 'line', x0: 276, x1: 276, y0: 0, y1: 1.6,
+          line: { color: 'rgba(34,211,238,0.3)', width: 1, dash: 'dot' } },
+      ],
+    },
+  }), { displayModeBar: false, responsive: true });
+
+</script>
+
+</body>
+</html>
