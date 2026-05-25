@@ -298,6 +298,8 @@ class PolymarketClient:
         stake_usd: float,
         token_id: Optional[str] = None,
         seconds_to_expiry: Optional[int] = None,
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
     ) -> str:
         """Place a directional order on a binary market.
 
@@ -309,6 +311,8 @@ class PolymarketClient:
             stake_usd: Notional USD amount to risk.
             token_id: CLOB token ID for the outcome token. Required for live
                       mode; ignored in paper mode.
+            min_fill_price: For UP/YES, reject fills below this (entry_floor_up).
+            max_fill_price: For DOWN/NO, reject fills above this (entry_cap_down).
 
         Returns:
             Order ID string (paper: "paper-<uuid>", live: CLOB order ID).
@@ -316,6 +320,33 @@ class PolymarketClient:
         direction = direction.upper()
         if direction not in {"YES", "NO"}:
             raise ValueError(f"direction must be YES or NO, got {direction!r}")
+
+        # ── Fill-band guard (RDS note #703) ──────────────────────────
+        if not self.paper_mode:
+            best_ask = await self.get_clob_best_ask(token_id) if token_id else None
+            if best_ask is not None:
+                if direction in ("YES", "UP"):
+                    floor = float(min_fill_price) if min_fill_price is not None else 0.30
+                    if best_ask < floor:
+                        self._log.warning("place_order.fill_band_floor_rejected",
+                            direction=direction,
+                            best_ask=f"${best_ask:.4f}",
+                            floor=f"${floor:.4f}",
+                            note="fill outside entry_floor_up band")
+                        raise ValueError(
+                            f"Token price {price} would fill below entry_floor_up {floor}"
+                        )
+                elif direction in ("NO", "DOWN"):
+                    cap = float(max_fill_price) if max_fill_price is not None else 0.82
+                    if best_ask >= cap:
+                        self._log.warning("place_order.fill_band_cap_rejected",
+                            direction=direction,
+                            best_ask=f"${best_ask:.4f}",
+                            cap=f"${cap:.4f}",
+                            note="fill outside entry_cap_down band")
+                        raise ValueError(
+                            f"Token price {price} would fill above entry_cap_down {cap}"
+                        )
 
         self._log.info(
             "place_order.requested",
@@ -683,6 +714,9 @@ class PolymarketClient:
         token_id: str,
         price: float,
         size: float,
+        direction: str = "YES",
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
     ) -> dict:
         """Place a Fill-or-Kill (FOK) order on the CLOB.
 
@@ -718,8 +752,40 @@ class PolymarketClient:
                 "order_id": simulated_order_id,
             }
 
+        # ── Fill-band guard (RDS note #703) ─────────────────────────────
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
+
+        # Fetch best ask to check fill-band limits
+        best_ask = await self.get_clob_best_ask(token_id)
+        if direction in ("YES", "UP"):
+            floor = float(min_fill_price) if min_fill_price is not None else 0.30
+            if best_ask < floor:
+                self._log.warning("place_fok_order.fill_band_floor_rejected",
+                    direction=direction,
+                    best_ask=f"${best_ask:.4f}",
+                    floor=f"${floor:.4f}",
+                    note="fill outside entry_floor_up band - order not submitted")
+                return {
+                    "filled": False,
+                    "size_matched": 0,
+                    "order_id": None,
+                    "abort_reason": f"best_ask ${best_ask:.4f} < floor ${floor:.4f}",
+                }
+        elif direction in ("NO", "DOWN"):
+            cap = float(max_fill_price) if max_fill_price is not None else 0.82
+            if best_ask >= cap:
+                self._log.warning("place_fok_order.fill_band_cap_rejected",
+                    direction=direction,
+                    best_ask=f"${best_ask:.4f}",
+                    cap=f"${cap:.4f}",
+                    note="fill outside entry_cap_down band - order not submitted")
+                return {
+                    "filled": False,
+                    "size_matched": 0,
+                    "order_id": None,
+                    "abort_reason": f"best_ask ${best_ask:.4f} >= cap ${cap:.4f}",
+                }
 
         # Safety cap check
         stake_usd = price * size
@@ -861,6 +927,8 @@ class PolymarketClient:
         price: float,
         size: float,
         order_type: str = "FAK",
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
     ) -> dict:
         """Submit a market order with configurable type (FAK/FOK).
 
@@ -869,9 +937,12 @@ class PolymarketClient:
 
         Args:
             token_id: CLOB outcome token ID.
-            price: Worst-price limit (slippage cap).
-            size: Number of shares to buy.
+            price: Limit price (MAX for BUY, MIN for SELL).
+            size: Number of shares to buy/sell.
             order_type: "FAK" (Fill-And-Kill) or "FOK" (Fill-Or-Kill).
+            min_fill_price: For BUY, reject fills below this (UP/YES).
+            max_fill_price: For BUY, reject fills above this (DOWN/NO).
+                           Not all order types honor these; FAK/FOK do.
 
         Returns:
             dict with keys: filled (bool), size_matched (float), order_id (str).
@@ -909,6 +980,43 @@ class PolymarketClient:
             raise ValueError(
                 f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}"
             )
+
+        # ── Fill-band guard (RDS note #703) ─────────────────────────────
+        # Before submitting, check best_ask against fill-band limits.
+        # UP/YES: best_ask must be >= min_fill_price (entry_floor_up)
+        # DOWN/NO: best_ask must be < max_fill_price (entry_cap_down)
+        # We fetch the current best ask to verify the order will fill within bounds.
+        best_ask = await self.get_clob_best_ask(token_id)
+        
+        # Note: direction here is "YES"/"NO" from the outer caller, not "BUY"/"SELL"
+        if direction in ("YES", "UP"):
+            floor = float(min_fill_price) if min_fill_price is not None else 0.30
+            if best_ask < floor:
+                self._log.warning("place_market_order.fill_band_floor_rejected",
+                    direction=direction,
+                    best_ask=f"${best_ask:.4f}",
+                    floor=f"${floor:.4f}",
+                    note="fill outside entry_floor_up band - order not submitted")
+                return {
+                    "filled": False,
+                    "size_matched": 0,
+                    "order_id": None,
+                    "abort_reason": f"best_ask ${best_ask:.4f} < floor ${floor:.4f}",
+                }
+        elif direction in ("NO", "DOWN"):
+            cap = float(max_fill_price) if max_fill_price is not None else 0.82
+            if best_ask >= cap:
+                self._log.warning("place_market_order.fill_band_cap_rejected",
+                    direction=direction,
+                    best_ask=f"${best_ask:.4f}",
+                    cap=f"${cap:.4f}",
+                    note="fill outside entry_cap_down band - order not submitted")
+                return {
+                    "filled": False,
+                    "size_matched": 0,
+                    "order_id": None,
+                    "abort_reason": f"best_ask ${best_ask:.4f} >= cap ${cap:.4f}",
+                }
 
         from py_clob_client_v2.clob_types import OrderArgs, OrderType
         from py_clob_client_v2.order_builder.constants import BUY

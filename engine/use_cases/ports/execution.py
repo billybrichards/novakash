@@ -30,6 +30,8 @@ class OrderExecutionPort(abc.ABC):
         stake_usd: float,
         entry_cap: float,
         price_floor: float,
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
         strategy_id: str = "",
         window_close_ts: float | None = None,
     ) -> ExecutionResult:
@@ -39,6 +41,11 @@ class OrderExecutionPort(abc.ABC):
         GTC dedup so independent strategies can both place their own
         resting orders on the same (token_id, side). Defaults to "" for
         backwards compatibility with legacy tests that don't set it.
+
+        ``min_fill_price`` / ``max_fill_price`` are the band limits that
+        the FAK/FOK order should reject fills outside of. For UP/YES
+        directions, min_fill_price is the floor (reject fills below it).
+        For DOWN/NO directions, max_fill_price is the cap (reject fills above it).
 
         Returns an ExecutionResult with fill details or failure info.
         MUST NOT raise -- all exceptions are caught and returned as

@@ -120,6 +120,8 @@ class FOKLadder:
         stake_usd: float,
         max_price: float = 0.65,
         min_price: float = 0.30,
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
     ) -> FOKResult:
         """
         Execute N-rung FAK/FOK ladder.
@@ -131,6 +133,13 @@ class FOKLadder:
           rung whose computed price exceeds FAK_LADDER_MAX_PRICE
           (default 0.92) is dropped. If the env is empty or malformed,
           fall back to the legacy 2-rung [cap, cap+π] behaviour.
+
+        Fill-band guards (RDS note #703):
+          ``min_fill_price`` / ``max_fill_price`` are the band limits
+          that the FAK should reject fills outside of. For UP/YES
+          directions, ``min_fill_price`` (default 0.30) is the floor
+          (reject fills below this). For DOWN/NO, ``max_fill_price``
+          (default 0.82) is the cap (reject fills above this).
 
         Returns FOKResult with fill details or filled=False.
         """
@@ -183,15 +192,39 @@ class FOKLadder:
         if isinstance(best_ask, FOKResult):
             return best_ask
 
-        if best_ask < min_price:
-            self._log.warning("price_ladder.abort_floor",
-                best_ask=f"${best_ask:.4f}", floor=f"${min_price:.4f}")
-            return FOKResult(
-                filled=False, fill_price=None, fill_step=None, shares=None,
-                attempts=0, order_id=None,
-                abort_reason=f"best_ask ${best_ask:.4f} < floor ${min_price:.4f}",
-                order_type=order_type,
-            )
+        # ── Fill-band guard (RDS note #703) ─────────────────────────────
+        # For YES tokens (UP): best_ask must be >= min_fill_price (entry_floor_up)
+        # For NO tokens (DOWN): best_ask must be < max_fill_price (entry_cap_down)
+        if direction in ("YES", "UP"):
+            floor = float(min_fill_price) if min_fill_price is not None else min_price
+            if best_ask < floor:
+                self._log.warning("price_ladder.fill_band_floor",
+                    direction=direction,
+                    best_ask=f"${best_ask:.4f}",
+                    floor=f"${floor:.4f}",
+                    min_fill_price=min_fill_price,
+                    note="rejecting FAK - fill below entry_floor_up")
+                return FOKResult(
+                    filled=False, fill_price=None, fill_step=None, shares=None,
+                    attempts=0, order_id=None,
+                    abort_reason=f"best_ask ${best_ask:.4f} < floor ${floor:.4f}",
+                    order_type=order_type,
+                )
+        elif direction in ("NO", "DOWN"):
+            cap = float(max_fill_price) if max_fill_price is not None else max_price
+            if best_ask >= cap:
+                self._log.warning("price_ladder.fill_band_cap",
+                    direction=direction,
+                    best_ask=f"${best_ask:.4f}",
+                    cap=f"${cap:.4f}",
+                    max_fill_price=max_fill_price,
+                    note="rejecting FAK - fill above entry_cap_down")
+                return FOKResult(
+                    filled=False, fill_price=None, fill_step=None, shares=None,
+                    attempts=0, order_id=None,
+                    abort_reason=f"best_ask ${best_ask:.4f} >= cap ${cap:.4f}",
+                    order_type=order_type,
+                )
 
         self._log.info(
             "price_ladder.start",

@@ -180,6 +180,8 @@ class FAKLadderExecutor(OrderExecutionPort):
         stake_usd: float,
         entry_cap: float,
         price_floor: float,
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
         gtc_cap: Optional[float] = None,
         strategy_id: str = "",
         window_close_ts: Optional[float] = None,
@@ -248,6 +250,8 @@ class FAKLadderExecutor(OrderExecutionPort):
                 stake_usd=stake_usd,
                 max_price=entry_cap,
                 min_price=price_floor,
+                min_fill_price=min_fill_price,
+                max_fill_price=max_fill_price,
             )
             fak_prices = fok_result.attempted_prices
 
@@ -331,6 +335,8 @@ class FAKLadderExecutor(OrderExecutionPort):
                 entry_cap,
                 price_floor,
                 start,
+                min_fill_price,
+                max_fill_price,
             )
             if rfq_result is not None:
                 return rfq_result
@@ -381,6 +387,8 @@ class FAKLadderExecutor(OrderExecutionPort):
             entry_cap,
             start,
             fak_prices,
+            min_fill_price,
+            max_fill_price,
             gtc_cap=gtc_cap,
             strategy_id=strategy_id,
             window_close_ts=window_close_ts,
@@ -395,8 +403,33 @@ class FAKLadderExecutor(OrderExecutionPort):
         entry_cap: float,
         price_floor: float,
         start: float,
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
     ) -> Optional[ExecutionResult]:
         """Attempt RFQ fill. Returns None if no fill."""
+        # ── Fill-band guard (RDS note #703) ──────────────────────────
+        # RFQ prices must also respect entry_floor_up / entry_cap_down.
+        best_ask = await self._poly.get_clob_best_ask(token_id)
+        if best_ask is not None:
+            if side in ("YES", "UP"):
+                floor = float(min_fill_price) if min_fill_price is not None else 0.30
+                if best_ask < floor:
+                    logger.info("fak_ladder.rfq_rejected_fill_band",
+                        direction=side,
+                        best_ask=f"${best_ask:.4f}",
+                        floor=f"${floor:.4f}",
+                        note="RFQ skipped - fill below entry_floor_up")
+                    return None
+            elif side in ("NO", "DOWN"):
+                cap = float(max_fill_price) if max_fill_price is not None else 0.82
+                if best_ask >= cap:
+                    logger.info("fak_ladder.rfq_rejected_fill_band",
+                        direction=side,
+                        best_ask=f"${best_ask:.4f}",
+                        cap=f"${cap:.4f}",
+                        note="RFQ skipped - fill above entry_cap_down")
+                    return None
+        
         try:
             shares = math.floor(stake_usd / entry_cap * 100) / 100
             rfq_id, rfq_price = await self._poly.place_rfq_order(
@@ -569,6 +602,8 @@ class FAKLadderExecutor(OrderExecutionPort):
         entry_cap: float,
         start: float,
         fak_prices: list[float],
+        min_fill_price: float | None = None,
+        max_fill_price: float | None = None,
         gtc_cap: Optional[float] = None,
         strategy_id: str = "",
         window_close_ts: Optional[float] = None,
@@ -611,7 +646,38 @@ class FAKLadderExecutor(OrderExecutionPort):
                 execution_end=time.time(),
             )
 
-        gtc_price = round(gtc_cap if gtc_cap is not None else (entry_cap + self._pi_bonus), 2)
+        # ── GTC price with fill-band guard (RDS note #703) ─────────────
+        # For UP/YES: GTC price must be >= min_fill_price (entry_floor_up)
+        # For DOWN/NO: GTC price must be < max_fill_price (entry_cap_down)
+        default_gtc_price = entry_cap + self._pi_bonus
+        gtc_price = round(gtc_cap if gtc_cap is not None else default_gtc_price, 2)
+        
+        # Clamp GTC price to respect fill-band bounds
+        if side in ("YES", "UP"):
+            floor = float(min_fill_price) if min_fill_price is not None else None
+            if floor is not None and gtc_price < floor:
+                # GTC price would be below floor - use floor as GTC price
+                gtc_price = round(floor, 2)
+        elif side in ("NO", "DOWN"):
+            cap = float(max_fill_price) if max_fill_price is not None else None
+            if cap is not None and gtc_price >= cap:
+                # GTC price would be at/below cap - reject
+                logger.warning("fak_ladder.gtc_rejected_fill_band",
+                    direction=side,
+                    gtc_price=f"${gtc_price:.4f}",
+                    cap=f"${cap:.4f}",
+                    note="GTC price outside entry_cap_down band")
+                return ExecutionResult(
+                    success=False,
+                    failure_reason=f"gtc_price ${gtc_price:.4f} >= cap ${cap:.4f}",
+                    stake_usd=stake_usd,
+                    execution_mode="none",
+                    fak_attempts=len(fak_prices),
+                    fak_prices=fak_prices,
+                    token_id=token_id,
+                    execution_start=start,
+                    execution_end=time.time(),
+                )
         market_slug = ""  # Not needed for CLOB submission
 
         # ── TTL on every GTC (orphan-fix, 2026-05-16) ──────────────────────

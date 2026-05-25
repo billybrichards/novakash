@@ -1408,6 +1408,14 @@ class ExecuteTradeUseCase:
                 # potentially leave a CLOB order half-submitted.
                 _log_step("pre_execute_order")
                 gtc_cap = getattr(decision, "gtc_cap", None)
+                
+                # Fill-band limits from decision metadata (RDS note #703).
+                # For UP/YES: min_fill_price = entry_floor_up (reject below this).
+                # For DOWN/NO: max_fill_price = entry_cap_down (reject above this).
+                meta = getattr(decision, "metadata", {}) or {}
+                min_fill_price = meta.get("entry_floor_up")
+                max_fill_price = meta.get("entry_cap_down")
+                
                 # Compute window close timestamp so the executor can bound
                 # any GTC fallback's lifetime to the remaining window (orphan
                 # GTC fix, 2026-05-16 incident). Falls back to None on weird
@@ -1424,6 +1432,8 @@ class ExecuteTradeUseCase:
                     stake_usd=stake.adjusted_stake,
                     entry_cap=entry_cap,
                     price_floor=PRICE_FLOOR,
+                    min_fill_price=float(min_fill_price) if min_fill_price is not None else None,
+                    max_fill_price=float(max_fill_price) if max_fill_price is not None else None,
                     gtc_cap=gtc_cap,
                     strategy_id=decision.strategy_id,
                     window_close_ts=_exec_close_ts,
