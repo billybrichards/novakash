@@ -34,6 +34,7 @@ class OrderExecutionPort(abc.ABC):
         max_fill_price: float | None = None,
         strategy_id: str = "",
         window_close_ts: float | None = None,
+        execution_method: str = "fak_standard",
     ) -> ExecutionResult:
         """Execute a single order using the configured strategy.
 
@@ -46,6 +47,11 @@ class OrderExecutionPort(abc.ABC):
         the FAK/FOK order should reject fills outside of. For UP/YES
         directions, min_fill_price is the floor (reject fills below it).
         For DOWN/NO directions, max_fill_price is the cap (reject fills above it).
+
+        ``execution_method`` selects the execution style: 'fak_standard'
+        (default, fixed anchor) or 'fak_epsilon' (CLOB re-anchored).
+        When 'fak_epsilon' and EPSILON_ENABLED is False, falls back to
+        'fak_standard' — see RuntimeConfig for details.
 
         Returns an ExecutionResult with fill details or failure info.
         MUST NOT raise -- all exceptions are caught and returned as

@@ -54,6 +54,10 @@ DEFAULT_GTC_MAX_WAIT = 180
 # Pi bonus for GTC after FAK exhaustion
 DEFAULT_PI_BONUS = 0.0314
 
+# Execution mode defaults
+_DEFAULT_EXEC_METHOD = "fak_standard"
+_EPSILON_ENABLED = False
+
 # Seconds after window close before a resting GTC is considered expired.
 # 30s grace ensures we don't cancel during the final-fill window when the
 # market is still resolving. Cancel loop fires every 30s — worst-case a
@@ -119,6 +123,8 @@ class FAKLadderExecutor(OrderExecutionPort):
         enable_gtc_fallback: Optional[bool] = None,
         enable_rfq: Optional[bool] = None,
         max_ladder_elapsed_s: Optional[float] = None,
+        execution_method: Optional[str] = None,
+        epsilon_enabled: Optional[bool] = None,
     ) -> None:
         self._poly = poly_client
         self._pi_bonus = pi_bonus_cents
@@ -158,18 +164,20 @@ class FAKLadderExecutor(OrderExecutionPort):
                 extra={"rfq": "disabled (FAK_LADDER_ENABLE_RFQ=false)"},
             )
 
-        # Always log init config so deploys can be verified in engine.log.
-        logger.info(
-            "fak_ladder.init",
-            extra={
-                "gtc_poll_interval_s": self._gtc_poll_interval,
-                "gtc_max_wait_s": self._gtc_max_wait,
-                "pi_bonus": self._pi_bonus,
-                "max_ladder_elapsed_s": self._max_ladder_elapsed_s,
-                "fak_ladder_rungs_env": os.environ.get("FAK_LADDER_RUNGS", "(unset → default 0.0,0.02,0.04,0.07)"),
-                "fak_ladder_max_price_env": os.environ.get("FAK_LADDER_MAX_PRICE", "(unset → default 0.92)"),
-            },
-        )
+        # ── Execution method selection (epsilon ladder feature) ─────
+        # Priority: constructor arg > env var > default 'fak_standard'
+        if execution_method is not None:
+            self._exec_method = execution_method
+        else:
+            env_val = os.environ.get("DEFAULT_EXEC_METHOD", "").strip().lower()
+            self._exec_method = env_val if env_val else _DEFAULT_EXEC_METHOD
+
+        # Epsilon ladder can only activate when globally enabled
+        if epsilon_enabled is not None:
+            self._epsilon_enabled = bool(epsilon_enabled)
+        else:
+            env_eps = os.environ.get("EPSILON_ENABLED", "").strip().lower()
+            self._epsilon_enabled = env_eps in ("1", "true", "yes", "on")
 
         # GTC dedup registry: (token_id, side) -> _GTCEntry
         # Enforces max 1 GTC per window+direction. Entries removed on
@@ -180,6 +188,60 @@ class FAKLadderExecutor(OrderExecutionPort):
         # added 2026-05-14 so independent strats (v9_2_raw_lgb +
         # v9_2_v12_combo) don't block each other on shared windows.
         self._active_gtc: dict[tuple[str, str, str], _GTCEntry] = {}
+
+        # Always log init config so deploys can be verified in engine.log.
+        logger.info(
+            "fak_ladder.init",
+            extra={
+                "gtc_poll_interval_s": self._gtc_poll_interval,
+                "gtc_max_wait_s": self._gtc_max_wait,
+                "pi_bonus": self._pi_bonus,
+                "max_ladder_elapsed_s": self._max_ladder_elapsed_s,
+                "fak_ladder_rungs_env": os.environ.get("FAK_LADDER_RUNGS", "(unset → default 0.0,0.02,0.04,0.07)"),
+                "fak_ladder_max_price_env": os.environ.get("FAK_LADDER_MAX_PRICE", "(unset → default 0.92)"),
+                "execution_method": self._exec_method,
+                "epsilon_enabled": self._epsilon_enabled,
+            },
+        )
+
+    def _try_write_attempt(self, data: dict) -> None:
+        """Attempt to write a focus ladder attempt via pg_signal_repo shim.
+        
+        This is a convenience bridge that tries pg_signal_repo first, then
+        falls back to the legacy db_client writer. Never raises.
+        """
+        try:
+            # Try pg_signal_repo adapter first
+            from adapters.persistence import pg_signal_repo
+            repo = getattr(pg_signal_repo, "pg_signal_repo", None) or getattr(pg_signal_repo, "signal_repo", None)
+            if repo and hasattr(repo, "write_fok_ladder_attempt"):
+                # If it's async, wrap with create_task; if sync, call directly
+                import asyncio
+                if asyncio.iscoroutinefunction(repo.write_fok_ladder_attempt):
+                    asyncio.create_task(repo.write_fok_ladder_attempt(data))
+                else:
+                    repo.write_fok_ladder_attempt(data)
+                return
+        except Exception:
+            pass
+        try:
+            from persistence import db_client
+            db = getattr(db_client, "db_client", None) or getattr(db_client, "DbClient", None)
+            if db is None:
+                # Module-level instance — common pattern
+                for name, obj in vars(db_client).items():
+                    if isinstance(obj, object) and hasattr(obj, "write_fok_ladder_attempt"):
+                        if not name[0].isupper():
+                            db = obj
+                            break
+            if db and hasattr(db, "write_fok_ladder_attempt"):
+                import asyncio
+                if asyncio.iscoroutinefunction(db.write_fok_ladder_attempt):
+                    asyncio.create_task(db.write_fok_ladder_attempt(data))
+                else:
+                    db.write_fok_ladder_attempt(data)
+        except Exception:
+            pass
 
     async def execute_order(
         self,
@@ -193,6 +255,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         gtc_cap: Optional[float] = None,
         strategy_id: str = "",
         window_close_ts: Optional[float] = None,
+        execution_method: Optional[str] = None,
     ) -> ExecutionResult:
         """Execute using the FAK -> RFQ -> GTC ladder.
 
@@ -202,15 +265,41 @@ class FAKLadderExecutor(OrderExecutionPort):
         Same-strategy retries within a window still hit the dedup as
         intended (anti-phantom-fill safeguard from 2026-04-17 incident).
 
+        ``execution_method`` overrides the instance default for this call
+        only. Accepted values: 'fak_standard', 'fak_epsilon'. Defaults to
+        the instance ``_exec_method`` (default 'fak_standard').
+
         Returns ExecutionResult. Does not raise.
         """
+        resolve_exec_method = (
+            execution_method
+            if execution_method is not None
+            else self._exec_method
+        )
+
+        # Validate execution_method
+        if resolve_exec_method not in ("fak_standard", "fak_epsilon"):
+            logger.warning(
+                "fak_ladder.invalid_exec_method",
+                extra={"method": resolve_exec_method, "fallback": "fak_standard"},
+            )
+            resolve_exec_method = "fak_standard"
+
+        # Epsilon ladder requires global epsilon_enabled flag
+        if resolve_exec_method == "fak_epsilon" and not self._epsilon_enabled:
+            logger.info(
+                "fak_ladder.epsilon_disabled_globally",
+                extra={"exec_method": "fak_epsilon", "fallback": "fak_standard"},
+            )
+            resolve_exec_method = "fak_standard"
+
         start = time.time()
         fak_prices: list[float] = []
 
         def _elapsed() -> float:
             return time.time() - start
 
-        def _timeout_result(elapsed: float) -> ExecutionResult:
+        def _timeout_result(elapsed: float, method: str = "fak_standard") -> ExecutionResult:
             """Build a skip-style ExecutionResult for a ladder-timeout abort.
 
             Intentionally uses execution_mode='none' + a clearly-prefixed
@@ -225,6 +314,7 @@ class FAKLadderExecutor(OrderExecutionPort):
                     "elapsed_s": round(elapsed, 2),
                     "max_s": self._max_ladder_elapsed_s,
                     "fak_prices": fak_prices,
+                    "execution_method": method,
                 },
             )
             return ExecutionResult(
@@ -240,30 +330,44 @@ class FAKLadderExecutor(OrderExecutionPort):
                 token_id=token_id,
                 execution_start=start,
                 execution_end=time.time(),
+                execution_method=method,
             )
 
         # ── Phase 1: FAK ladder ─────────────────────────────────────────
         # Pre-entry timeout check is cheap; abort-after checks bound
         # the remaining phases.
         if _elapsed() > self._max_ladder_elapsed_s:
-            return _timeout_result(_elapsed())
+            return _timeout_result(_elapsed(), resolve_exec_method)
 
         try:
             from execution.fok_ladder import FOKLadder
 
             ladder = FOKLadder(self._poly)
-            fok_result = await ladder.execute(
-                token_id=token_id,
-                direction="BUY",
-                stake_usd=stake_usd,
-                max_price=entry_cap,
-                min_price=price_floor,
-                min_fill_price=min_fill_price,
-                max_fill_price=max_fill_price,
-            )
+
+            fok_result: FOKResult
+            if resolve_exec_method == "fak_epsilon":
+                fok_result = await ladder.epsilon_ladder(
+                    token_id=token_id,
+                    direction="BUY",
+                    stake_usd=stake_usd,
+                    max_price=entry_cap,
+                    min_price=price_floor,
+                    write_attempt_fn=self._try_write_attempt,
+                )
+            else:
+                fok_result = await ladder.execute(
+                    token_id=token_id,
+                    direction="BUY",
+                    stake_usd=stake_usd,
+                    max_price=entry_cap,
+                    min_price=price_floor,
+                    min_fill_price=min_fill_price,
+                    max_fill_price=max_fill_price,
+                )
             fak_prices = fok_result.attempted_prices
 
             if fok_result.filled:
+                fak_method = resolve_exec_method if resolve_exec_method == "fak_epsilon" else "fak_standard"
                 fee = self._calc_fee(
                     fok_result.fill_price or entry_cap,
                     stake_usd,
@@ -281,6 +385,7 @@ class FAKLadderExecutor(OrderExecutionPort):
                     token_id=token_id,
                     execution_start=start,
                     execution_end=time.time(),
+                    execution_method=fak_method,
                 )
 
             # Surface CLOB auth/infra abort reasons so they propagate to
@@ -306,6 +411,7 @@ class FAKLadderExecutor(OrderExecutionPort):
                     token_id=token_id,
                     execution_start=start,
                     execution_end=time.time(),
+                    execution_method=resolve_exec_method,
                 )
 
             logger.info(
@@ -327,7 +433,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         # is quick. Aborting here means RFQ + GTC fallbacks don't stack
         # more wall-clock on top of an already-slow ladder.
         if _elapsed() > self._max_ladder_elapsed_s:
-            return _timeout_result(_elapsed())
+            return _timeout_result(_elapsed(), resolve_exec_method)
 
         # ── Phase 2: RFQ ────────────────────────────────────────────────
         # Gate added 2026-04-17: RFQ started returning 404s with
@@ -351,7 +457,7 @@ class FAKLadderExecutor(OrderExecutionPort):
             # Post-RFQ timeout check — only relevant when RFQ bailed out
             # with no fill. Skip GTC entirely if we're already over budget.
             if _elapsed() > self._max_ladder_elapsed_s:
-                return _timeout_result(_elapsed())
+                return _timeout_result(_elapsed(), resolve_exec_method)
         else:
             logger.info(
                 "fak_ladder.rfq_skipped",
@@ -359,6 +465,34 @@ class FAKLadderExecutor(OrderExecutionPort):
                     "reason": "FAK_LADDER_ENABLE_RFQ=false",
                     "token_id": token_id[:20],
                 },
+            )
+
+        # ── Phase 3: GTC ───────────────────────────
+        # Disabled by default after 2026-04-17 phantom-fill incident
+        # (see Hub note 64 / audit-task #218). The GTC path can return a
+        # success=True ExecutionResult with no real on-chain fill ("gtc_resting"),
+        # which propagates as an engine_optimistic phantom trade. Cost overnight:
+        # 20/20 phantom + -$77.90 booked vs zero on-chain match.
+        if not self._enable_gtc_fallback:
+            logger.info(
+                "fak_ladder.gtc_skipped",
+                extra={
+                    "reason": "FAK_LADDER_ENABLE_GTC not set",
+                    "fak_attempts": len(fak_prices),
+                    "fak_prices": fak_prices,
+                },
+            )
+            return ExecutionResult(
+                success=False,
+                failure_reason="fak_rfq_exhausted; gtc_fallback_disabled",
+                stake_usd=stake_usd,
+                execution_mode="none",
+                fak_attempts=len(fak_prices),
+                fak_prices=fak_prices,
+                token_id=token_id,
+                execution_start=start,
+                execution_end=time.time(),
+                execution_method=resolve_exec_method,
             )
 
         # ── Phase 3: GTC ────────────────────────────────────────────────

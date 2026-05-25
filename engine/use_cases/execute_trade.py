@@ -1437,6 +1437,7 @@ class ExecuteTradeUseCase:
                     gtc_cap=gtc_cap,
                     strategy_id=decision.strategy_id,
                     window_close_ts=_exec_close_ts,
+                    execution_method=runtime.config_get_exec_method("fak_standard"),
                 )
                 _log_step(
                     "post_execute_order",
