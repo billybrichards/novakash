@@ -1,0 +1,104 @@
+name: v9_5_xrp_up_solo
+strategy_id: v9_5_xrp_up_solo
+version: "1.0.0"
+# v9_5_xrp_up_solo — 2026-05-25 (GHOST, Billy promotes manually)
+#
+# UP-only XRP 5m strategy reading probability_lgb_v9_5_xrp (BLEND column).
+# Fires UP at p >= 0.82, within eval_offset [60, 180].
+# NO DOWN side — XRP DOWN shows no signal today, needs research.
+#
+# COLUMN PROVENANCE (data_surface.py line 371):
+#   probability_lgb_v9_5_xrp = BLEND column for the v9.5 XRP-trained model
+#   (timesfm PR #160, merged 2026-05-23). This is the same column read by
+#   v9_5_xrp_blend (UP p>=0.82 / DOWN p<=0.20) and v9_5_xrp_tight_blend.
+#   This strategy reads the SAME column as v9_5_xrp_blend at the same UP
+#   threshold, but is DOWN-disabled and uses the tighter eval_offset [60,180]
+#   vs v9_5_xrp_blend's [60,240].
+#
+# THRESHOLD RATIONALE (RDS note #694 exhaustive sweep, 2026-05-25):
+#   Today's live signal evaluation audit:
+#     UP p >= 0.82: 85%  WR n=20  (today)
+#     UP p >= 0.86: 90%  WR n=10  (tighter threshold, smaller n)
+#   Threshold set at p >= 0.82 (default) for fire rate; p >= 0.86 available
+#   as a Billy override via strategy_runtime_overrides if tighter precision
+#   preferred after shadow soak.
+#
+# WHY UP-ONLY?
+#   XRP DOWN at available thresholds shows no stable signal today (RDS note
+#   #694). This needs further research; scaffolding DOWN side now would add
+#   noise. This strategy concentrates on the UP pocket where today's data
+#   shows genuine edge (85-90% WR). If DOWN develops a signal, Billy can
+#   create a companion v9_5_xrp_down_solo.
+#
+# RELATION TO v9_5_xrp_late_band_AB_blend:
+#   v9_5_xrp_late_band_AB_blend was supposed to cover the XRP UP signal using
+#   a late-band composite gate. Today's sweep (RDS note #694) shows the TIGHT
+#   raw threshold approach (p >= 0.82, eval_offset [60,180]) provides the same
+#   or better WR with simpler logic. This strategy effectively replaces the
+#   functional goal of v9_5_xrp_late_band_AB_blend at the operating threshold
+#   directly, without the composite gate complexity.
+#
+# EVAL_OFFSET BAND (2026-05-25 sweep, RDS note #694):
+#   [60, 180] — tighter than v9_5_xrp_blend's [60, 240]. The Δ=240s tail
+#   adds stale ticks with lower WR. Today's analysis confirms the [60, 180]
+#   band captures the strong conviction zone.
+#
+# FILL-BAND GATES (RDS note #664, 2026-05-25):
+#   entry_floor_up: 0.60 — skip UP/YES fires where YES fill < 0.60
+#                          (low-fill entries are typically resolution-locked
+#                          ghost markets). Applied to UP fires.
+#   entry_cap_down: 0.90 — present in YAML but unused (no DOWN fires).
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak until 20+ GHOST fires.
+#   If 20+ GHOST UP WR >= 85%, promote to LIVE at $5.
+#   After 30 LIVE fires, consider raising to $10-15.
+#   If UP WR < 80% after 30+ GHOST fires, kill or tighten to p >= 0.86.
+#
+# References:
+#   RDS note #694 — exhaustive threshold sweep (2026-05-25), today's findings
+#   RDS note #664 — direction-aware fill-band gate spec
+#   data_surface.py line 371 — probability_lgb_v9_5_xrp definition
+#   Sibling strategies: v9_5_xrp_blend (UP p>=0.82 / DOWN p<=0.20, eval [60,240])
+#                       v9_5_xrp_tight_blend (UP p>=0.95 / DOWN p<=0.05)
+#                       v9_5_xrp_late_band_AB_blend (composite gate approach)
+#
+status: GHOST
+description: |
+  UP-only XRP 5m strategy reading probability_lgb_v9_5_xrp (BLEND column,
+  data_surface.py line 371). UP at p >= 0.82, eval_offset [60, 180].
+  NO DOWN side (XRP DOWN shows no signal today — needs research). Direction-
+  aware fill gate: UP floor 0.60. GHOST mode, $5 max_position_usd.
+  Today's live WR (RDS #694): UP 85% n=20 (p>=0.82), 90% n=10 (p>=0.86).
+  Replaces the functional goal of v9_5_xrp_late_band_AB_blend at tight raw
+  threshold instead of late-band composite gate. 7d shadow soak required.
+mode: GHOST
+asset: XRP
+timescale: 5m
+
+hooks_file: v9_5_xrp_up_solo.py
+pre_gate_hook: evaluate_v9_5_xrp_up_solo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.82           # today WR: 85% n=20; p>=0.86 gives 90% n=10
+  eval_offset_min: 60          # tighter than v9_5_xrp_blend's [60,240] — drops weak tail
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 1
+  expected_asset: XRP
+  entry_cap: 0.90              # cap fill at 0.90 per Billy "max bet 0.9"
+  entry_floor_up: 0.60         # skip UP/YES fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90         # present but unused — no DOWN fires in this strategy
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5          # START LOW — 7d shadow soak before any promotion
+  max_daily_loss_usd: 20

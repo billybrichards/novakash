@@ -89,6 +89,8 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     # SIG-05: V4 Asian UP strategy (UP-only, Asian session, medium conviction)
     "V4_UP_ASIAN_MODE": ("v4_up_asian_mode", str),
     "V4_UP_ASIAN_ENABLED": ("v4_up_asian_enabled", bool),
+    # SP-06: Execution method resolution (hot-reloadable)
+    "DEFAULT_EXEC_METHOD": ("default_exec_method", str),
 }
 
 

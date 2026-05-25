@@ -1,0 +1,115 @@
+name: v9_5_eth_pure_down_solo
+strategy_id: v9_5_eth_pure_down_solo
+version: "1.0.0"
+# v9_5_eth_pure_down_solo — 2026-05-25 (GHOST, Billy promotes manually)
+#
+# DOWN-only ETH 5m strategy reading probability_lgb_v9_5_eth_pure.
+# Fires DOWN at p <= 0.25, within eval_offset [60, 180].
+# NO UP side — v9_5_eth_pure UP is 42-50% WR (dead signal, excluded).
+#
+# COLUMN PROVENANCE (RDS notes #666, #694):
+#   probability_lgb_v9_5_eth_pure = PURE raw LGB+iso output for the ETH-trained
+#   v9.5-style model. NO HF classifier blend (contrast with probability_lgb_v9_5_eth
+#   which IS blended and capped at ~0.92 per the "blend bug" in RDS notes
+#   #631/#632). Because v9_5_eth_pure does NOT pass through the HF classifier,
+#   it is free to reach the full 0-1 raw-model probability range. This column
+#   is emitted by timesfm-service when V9_5_ETH_PURE_ENABLED=true on the
+#   /v4/snapshot.timescales.5m endpoint.
+#
+# THRESHOLD RATIONALE (RDS note #694 exhaustive sweep, post-13:51 deploy fix):
+#   Post-13:51 train-serve fix resolved the stale-model bug (RDS note #666)
+#   in which probability_lgb_v9_5_eth_pure was being served from a stale
+#   checkpoint. After the fix:
+#     DOWN p <= 0.25: 100% WR n=6  (last 2h post-deploy, 2026-05-25)
+#                     92.9% WR n=14 (last 7h post-deploy, 2026-05-25)
+#   The UP side at p >= 0.75 sits at 42-50% WR — below random, excluded.
+#   This is a DOWN-only strategy as a result.
+#
+# WHY DOWN-ONLY?
+#   Post-train-serve-fix analysis (RDS note #694) shows the PURE ETH UP
+#   signal is structurally weak at all evaluated thresholds (42-50% WR).
+#   The DOWN side shows strong separation. Scaffolding UP side would add
+#   noise; shadow soak is for DOWN only. If UP recovers with more data,
+#   Billy can promote UP later by extending this strategy or creating a
+#   companion.
+#
+# EVAL_OFFSET BAND (2026-05-25 sweep, RDS note #694):
+#   [60, 180] — consistent with v9_2_eth_solo's best band from the same
+#   5-way sweep. The Δ=240s tail adds stale ticks with lower WR; excluded.
+#
+# FILL-BAND GATES (RDS note #664, 2026-05-25):
+#   entry_floor_up: 0.60 — present in YAML but unused (no UP fires).
+#   entry_cap_down: 0.90 — skip DOWN/NO fires where YES fill >= 0.90
+#                          (YES side near resolved; NO entry should be well
+#                          below 0.90).
+#
+# SISTER STRATEGIES (for market conflict awareness):
+#   v9_5_eth_pure_lgb: bidirectional, eval_offset [60, 210], p >= 0.915 / p <= 0.095.
+#     Stricter thresholds; only a subset of v9_5_eth_pure_lgb DOWN fires
+#     overlap this strategy. Both GHOST — no capital conflict.
+#   v9_5_eth_blend: bidirectional, eval_offset [60, 210], blended column.
+#     Different column — no statistical overlap.
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak until 20+ GHOST fires.
+#   If 20+ GHOST DOWN WR >= 90%, promote to LIVE at $5.
+#   After 30 LIVE fires, raise to $10-15.
+#   If DOWN WR < 85% after 30+ GHOST fires, kill or tighten threshold.
+#   Note: post-deploy n is small (n=14 over 7h). Shadow data is PRIMARY
+#   validation source before any LIVE promotion.
+#
+# IMPORTANT CAVEAT — SMALL POST-DEPLOY n:
+#   The 100% WR (n=6) and 92.9% WR (n=14) are from <8h of post-fix data.
+#   The train-serve fix (resolved 13:51 2026-05-25) may shift the distribution;
+#   treat early post-fix WR as directionally encouraging but insufficient
+#   for promotion. Require >= 20 GHOST fires and >= 85% WR before any
+#   LIVE promotion discussion.
+#
+# References:
+#   RDS note #666 — train-serve fix context + pure/blend column provenance
+#   RDS note #694 — exhaustive threshold sweep (2026-05-25), post-fix findings
+#   RDS notes #631/#632 — blend-bug discovery (v9_5_eth classifier saturation)
+#   RDS note #664 — direction-aware fill-band gate spec
+#   data_surface.py lines 285-298 — probability_lgb_v9_5_eth_pure definition
+#   Sibling strategies: v9_5_eth_pure_lgb, v9_5_eth_blend
+#
+status: GHOST
+description: |
+  DOWN-only ETH 5m strategy reading raw probability_lgb_v9_5_eth_pure (PURE
+  LGB+iso output, no HF classifier blend). DOWN at p <= 0.25, eval_offset
+  [60, 180]. NO UP side (UP is 42-50% WR at all evaluated thresholds — dead
+  signal). Direction-aware fill gate: DOWN cap 0.90. GHOST mode, $5
+  max_position_usd for initial shadow soak.
+  Post-train-serve-fix WR (RDS #694): DOWN 92.9% n=14 (7h), 100% n=6 (2h).
+  CAUTION: n is small (<8h post-fix data). Require >= 20 GHOST fires
+  and >= 85% WR before any LIVE promotion.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_5_eth_pure_down_solo.py
+pre_gate_hook: evaluate_v9_5_eth_pure_down_solo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  down_threshold: 0.25         # post-13:51 fix WR: 92.9% n=14 (7h), 100% n=6 (2h)
+  eval_offset_min: 60          # best band from 5-way sweep (consistent w/ v9_2_eth_solo)
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+  entry_cap: 0.90              # cap fill at 0.90 per Billy "max bet 0.9"
+  entry_floor_up: 0.60         # present but unused — no UP fires in this strategy
+  entry_cap_down: 0.90         # skip DOWN/NO fires if YES fill >= 0.90 (RDS #664)
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5          # START LOW — shadow soak first (20+ GHOST fires)
+  max_daily_loss_usd: 20

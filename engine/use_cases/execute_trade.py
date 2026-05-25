@@ -2347,35 +2347,56 @@ class ExecuteTradeUseCase:
     # path is dispatched via ``asyncio.create_task`` so ``execute()``
     # returns immediately. Failures are caught and logged inside the
     # background task — the trading path never sees them.
-    def _fire_alert_async(
+    async def _fire_alert_async(
         self, label: str, coro: Coroutine[Any, Any, Any]
-    ) -> None:
-        """Run an alerter coroutine in the background, swallow & log errors.
+    ) -> bool:
+        """Run an alerter coroutine with retry and exponential backoff.
 
+        Returns True on success, False if all retries exhausted.
         ``label`` identifies which alerter call emitted the warning if
         the coroutine raises (e.g. ``"strategy_trade_alert"``).
         """
 
-        async def _runner() -> None:
-            try:
-                await coro
-            except Exception as exc:
-                log.warning(
-                    "execute_trade.alerter_send_failed",
-                    label=label,
-                    error=str(exc)[:200],
-                )
+        async def _runner_with_retry(attempts: int = 3, base_delay: float = 0.5) -> bool:
+            last_exc: Exception | None = None
+            for attempt in range(1, attempts + 1):
+                try:
+                    await coro
+                    return True
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < attempts:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        log.warning(
+                            "execute_trade.alerter_retry",
+                            label=label,
+                            attempt=attempt,
+                            max_attempts=attempts,
+                            delay=delay,
+                            error=str(exc)[:200],
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        log.error(
+                            "execute_trade.alerter_send_failed",
+                            label=label,
+                            attempt=attempt,
+                            max_attempts=attempts,
+                            error=str(exc)[:200],
+                        )
+            return False
 
         try:
-            asyncio.create_task(_runner())
+            return await _runner_with_retry()
         except RuntimeError:
             # No running loop (e.g. during a sync test path). Close the
             # coroutine to avoid a "coroutine was never awaited" warning
-            # and bail silently — this branch never hits in production.
+            # and return False.
             try:
                 coro.close()
             except Exception:
                 pass
+            return False
 
     # ─── Helpers ───────────────────────────────────────────────────────
 

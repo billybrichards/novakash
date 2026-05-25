@@ -292,12 +292,20 @@ class TelegramRenderer(AlertRendererPort):
         live = [s for s in p.strategies if s.mode == "LIVE"]
         ghost = [s for s in p.strategies if s.mode == "GHOST"]
         disabled = [s for s in p.strategies if s.mode == "DISABLED"]
+
+        asset = "UNKNOWN"
+        if p.header.window_id:
+            parts = p.header.window_id.split("-", 1)
+            if len(parts) >= 1:
+                asset = parts[0]
+        asset_tag = f" [{asset}]" if asset != "UNKNOWN" else ""
+
         if live:
-            strat_lines.append("*LIVE:*")
+            strat_lines.append(f"🔥 LIVE{asset_tag}:")
             for s in live:
                 strat_lines.append(f"  {self._render_strategy(s)}")
         if ghost:
-            strat_lines.append("*GHOST (shadow):*")
+            strat_lines.append(f"👻 GHOST (shadow){asset_tag}:")
             for s in ghost:
                 strat_lines.append(f"  {self._render_strategy(s)}")
         if disabled:

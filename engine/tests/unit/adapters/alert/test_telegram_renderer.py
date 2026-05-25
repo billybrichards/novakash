@@ -251,8 +251,10 @@ class TestRenderWindowSignal:
             strategies=tuple(strats),
         )
         out = TelegramRenderer().render(p)
-        assert "*LIVE:*" in out
-        assert "*GHOST (shadow):*" in out
+        assert "🔥 LIVE" in out
+        assert "👻 GHOST" in out
+        assert "[BTC]:" in out
+        assert "GHOST (shadow) [BTC]:" in out
         assert "v4_fusion" in out
         assert "v10_gate" in out
         assert "SKIP" in out

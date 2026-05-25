@@ -1,0 +1,101 @@
+name: v9_3_btc_down_solo
+strategy_id: v9_3_btc_down_solo
+version: "1.0.0"
+# v9_3_btc_down_solo — 2026-05-25 (GHOST, Billy promotes manually)
+#
+# DOWN-only BTC 5m strategy reading probability_lgb_v9_3_btc (BLEND column).
+# Fires DOWN at p <= 0.50, within eval_offset [60, 180].
+# NO UP side — v9_3_btc UP is 55% WR today (weak). DOWN-only.
+#
+# COLUMN PROVENANCE (data_surface.py line 314):
+#   probability_lgb_v9_3_btc = BLEND column for the v9.3 BTC-trained model.
+#   This is the same column read by v9_3_btc_blend (UP p>=0.72 / DOWN p<=0.20)
+#   and v9_3_btc_tight_blend (UP p>=0.935 / DOWN p<=0.065). However, today's
+#   sweep (RDS note #694) reveals a different pocket of edge: the DOWN side
+#   at p <= 0.50 sits at 83.3% WR (n=18 today). The existing strategies do
+#   NOT cover this pocket — they require p <= 0.20 / p <= 0.065 DOWN.
+#   This strategy fills that gap.
+#
+# THRESHOLD RATIONALE (RDS note #694 exhaustive sweep, 2026-05-25):
+#   Today's live signal evaluation audit:
+#     DOWN p <= 0.50: 83.3% WR n=18  (today)
+#     DOWN p <= 0.48: 80.0% WR n=15  (tighter threshold as alternative)
+#   The UP side at p >= 0.65 sits at ~55% WR — too close to random, excluded.
+#   Threshold set at p <= 0.50 (primary) with p <= 0.48 as an alternative
+#   Billy can override via strategy_runtime_overrides if he wants tighter.
+#
+# WHY DOWN-ONLY?
+#   v9_3_btc UP (55% WR today) is structurally weak at today's available
+#   thresholds. The DOWN side shows genuine separation at p <= 0.50.
+#   No UP fires in this strategy. If UP recovers with more data or at
+#   higher thresholds, Billy can create a companion v9_3_btc_up_solo.
+#
+# SISTER STRATEGY COVERAGE GAP:
+#   v9_3_btc_blend:       DOWN p <= 0.20 (82.8% WR n=2320, walk-forward CV)
+#   v9_3_btc_tight_blend: DOWN p <= 0.065 (higher precision corner)
+#   THIS STRATEGY:        DOWN p <= 0.50 — covers the 0.20 < p <= 0.50 zone
+#                         where today's data shows 83.3% WR. Importantly,
+#                         these fires do NOT overlap with v9_3_btc_blend
+#                         (which requires p <= 0.20) — no market conflict.
+#
+# EVAL_OFFSET BAND (2026-05-25 sweep, RDS note #694):
+#   [60, 180] — consistent with v9_2_eth_solo's best band from the same
+#   5-way sweep. Avoids the weak Δ=240s tail.
+#
+# FILL-BAND GATES (RDS note #664, 2026-05-25):
+#   entry_floor_up: 0.60 — present in YAML but unused (no UP fires).
+#   entry_cap_down: 0.90 — skip DOWN/NO fires where YES fill >= 0.90
+#                          (YES side near resolved; NO entry should be well
+#                          below 0.90).
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak until 20+ GHOST fires.
+#   If 20+ GHOST DOWN WR >= 80%, promote to LIVE at $5.
+#   If DOWN WR < 75% after 30+ GHOST fires, kill or tighten threshold.
+#   Note: today's n=18 is promising but is a single day's data; shadow
+#   soak over 7d is required before any LIVE promotion.
+#
+# References:
+#   RDS note #694 — exhaustive threshold sweep (2026-05-25), today's findings
+#   data_surface.py line 314 — probability_lgb_v9_3_btc definition
+#   Sibling strategies: v9_3_btc_blend (DOWN p<=0.20), v9_3_btc_tight_blend
+#
+status: GHOST
+description: |
+  DOWN-only BTC 5m strategy reading probability_lgb_v9_3_btc (BLEND column,
+  data_surface.py line 314). DOWN at p <= 0.50, eval_offset [60, 180].
+  NO UP side (v9_3_btc UP is ~55% WR today — excluded). Direction-aware fill
+  gate: DOWN cap 0.90. GHOST mode, $5 max_position_usd for initial shadow soak.
+  Today's live WR (RDS #694): DOWN 83.3% n=18. Note: single-day data;
+  7d shadow soak required. Fills coverage gap between v9_3_btc_blend (p<=0.20)
+  and the wider p<=0.50 zone.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_3_btc_down_solo.py
+pre_gate_hook: evaluate_v9_3_btc_down_solo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  down_threshold: 0.50         # today WR: 83.3% n=18; alt p<=0.48 = 80% n=15
+  eval_offset_min: 60          # best band consistent with v9_2_eth_solo sweep
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 2  # bumped from 1 per Billy — extra confirmation tick on new BTC DOWN column
+  expected_asset: BTC
+  entry_cap: 0.90              # cap fill at 0.90 per Billy "max bet 0.9"
+  entry_floor_up: 0.60         # present but unused — no UP fires in this strategy
+  entry_cap_down: 0.90         # skip DOWN/NO fires if YES fill >= 0.90 (RDS #664)
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5          # START LOW — 7d shadow soak before any promotion
+  max_daily_loss_usd: 20
