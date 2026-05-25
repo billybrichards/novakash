@@ -17,6 +17,24 @@ It is a belt-and-suspenders fix while audit #369 lands a real PR. Once the
 real fix ships and a 24h soak shows zero detections, this cron can be
 removed.
 
+Multi-asset fix (2026-05-25, audit #353 follow-up)
+===================================================
+The original DETECT_SQL and DETECT_GAMMA_CANDIDATES_SQL hard-coded
+``asset = 'BTC'`` in the window_snapshots LATERAL join and the
+market_data join.  This made the detector blind to ETH/XRP/SOL
+misclassifications.
+
+Root cause of trades 9200 and 9221 (v9_2_eth_late_band_AB_blend):
+  * Both are ETH YES bets.  ETH oracle says DOWN → they are genuine LOSSes.
+  * BTC oracle at the SAME window_ts says UP.
+  * DETECT_SQL looked up window_snapshots WHERE asset='BTC' and found UP,
+    concluded outcome=WIN was correct, and skipped the rows.
+  * The ETH oracle was never consulted.
+
+Fix: derive the asset from each trade's own market_slug using
+``UPPER(split_part(market_slug, '-', 1))`` so ETH/XRP/SOL trades consult
+their own asset's oracle row, not BTC's.
+
 Gamma fallback (2026-05-19, audit #XXX follow-up)
 -------------------------------------------------
 ``populate_oracle_outcomes`` runs every 2 min in the reconciler and only
@@ -98,7 +116,9 @@ PATCH_FLOOR_TS = "2026-05-04 21:47:00 UTC"
 # closed" and waste the request. Cap concurrency so we don't hammer Gamma
 # from cron.
 GAMMA_BASE = "https://gamma-api.polymarket.com"
-SLUG_PREFIX = "btc-updown-5m-"
+# SLUG_PREFIX removed — the detect queries now use the market_slug asset
+# prefix extracted from trades.market_slug so all assets (BTC, ETH, XRP,
+# SOL) are covered.  See gamma_outcome_for_slug().
 GAMMA_MAX_LOOKUPS_PER_RUN = 20
 GAMMA_TIMEOUT_SECS = 10.0
 # Only run Gamma fallback on trades >= this old (cost_fallback already had
@@ -126,6 +146,21 @@ GAMMA_MIN_TRADE_AGE_SECS = 120
 # trade — sub-second on RDS prod. Picks ANY non-NULL value for the
 # window (UP/DOWN are mutually exclusive per market — only one will
 # ever be present), or NULL if no row has been written yet.
+#
+# Multi-asset fix (audit #353 follow-up, 2026-05-25):
+# The prior queries hard-coded ``asset = 'BTC'`` in both the
+# window_snapshots LATERAL join and the market_data join.  ETH/XRP/SOL
+# trades were therefore invisible to the detector: for an ETH YES trade
+# at window_ts T where BTC oracle_outcome = UP, the query concluded
+# the trade was correctly stamped WIN — even when the ETH oracle said
+# DOWN.  Trades 9200 and 9221 (v9_2_eth_late_band_AB_blend, 2026-05-25)
+# are the confirmed casualty.
+#
+# Fix: derive the asset ticker from the trade's own market_slug
+# (``split_part(t.market_slug, '-', 1)`` returns 'btc', 'eth', etc.)
+# and UPPER() it before the comparison.  The market_slug format is
+# <asset>-updown-<tf>-<window_ts> so this is unambiguous.
+# The timeframe is derived similarly: split_part(t.market_slug, '-', 3).
 DETECT_SQL = """
 SELECT t.id,
        t.strategy_id,
@@ -136,20 +171,18 @@ SELECT t.id,
        COALESCE(ws.oracle_outcome, md.outcome) AS canonical
 FROM trades t
 LEFT JOIN LATERAL (
-    -- Per-trade lookup: ANY row for the trade's window with non-NULL
-    -- oracle_outcome wins. idx_ws_ts covers ``window_ts``, so this is a
-    -- bounded index scan per trade (typically 1-5 rows scanned before
-    -- a non-NULL is found). Avoids the full-table aggregate that
-    -- choked on RDS prod.
+    -- Per-trade lookup: ANY row for THIS trade's asset + window_ts
+    -- with non-NULL oracle_outcome.  Asset is parsed from market_slug
+    -- so ETH/XRP/SOL trades are covered alongside BTC.
     SELECT oracle_outcome FROM window_snapshots
-    WHERE asset = 'BTC'
+    WHERE asset = UPPER(split_part(t.market_slug, '-', 1))
       AND window_ts = (regexp_replace(t.market_slug, '.*-', ''))::bigint
       AND oracle_outcome IS NOT NULL
     LIMIT 1
 ) ws ON TRUE
 LEFT JOIN market_data md
-    ON md.asset = 'BTC'
-    AND md.timeframe = '5m'
+    ON md.asset = UPPER(split_part(t.market_slug, '-', 1))
+    AND md.timeframe = split_part(t.market_slug, '-', 3)
     AND md.window_ts = (regexp_replace(t.market_slug, '.*-', ''))::bigint
     AND md.resolved = TRUE
 WHERE t.created_at > %s::timestamptz
@@ -173,9 +206,16 @@ WHERE t.created_at > %s::timestamptz
 # Pre-filter trades to the last 60 min where the writer might not have
 # caught up yet, then use indexed NOT EXISTS probes on window_snapshots
 # / market_data. Bounded scan; runs in single-digit seconds on RDS prod.
+#
+# Multi-asset fix (2026-05-25): removed ``market_slug LIKE 'btc-updown-5m-%%'``
+# filter and the BTC-only NOT EXISTS probes.  The asset is now derived
+# from the slug prefix so ETH/XRP/SOL candidates surface alongside BTC.
 DETECT_GAMMA_CANDIDATES_SQL = """
 WITH recent_trades AS (
     SELECT id, strategy_id, direction, fill_price, stake_usd, outcome,
+           market_slug,
+           UPPER(split_part(market_slug, '-', 1)) AS asset,
+           split_part(market_slug, '-', 3)         AS timeframe,
            (regexp_replace(market_slug, '.*-', ''))::bigint AS window_ts
     FROM trades
     WHERE created_at > %s::timestamptz
@@ -184,7 +224,7 @@ WITH recent_trades AS (
       AND mode = 'live'
       AND fill_price IS NOT NULL
       AND stake_usd IS NOT NULL
-      AND market_slug LIKE 'btc-updown-5m-%%'
+      AND market_slug ~ '^[a-z]+-updown-[0-9]+m-[0-9]+$'
 )
 SELECT rt.id,
        rt.strategy_id,
@@ -192,19 +232,20 @@ SELECT rt.id,
        rt.fill_price,
        rt.stake_usd,
        rt.outcome AS db_outcome,
-       rt.window_ts
+       rt.window_ts,
+       rt.market_slug
 FROM recent_trades rt
 WHERE rt.window_ts < EXTRACT(EPOCH FROM NOW())::bigint - %s
   AND NOT EXISTS (
       SELECT 1 FROM window_snapshots ws
-      WHERE ws.asset = 'BTC'
+      WHERE ws.asset = rt.asset
         AND ws.window_ts = rt.window_ts
         AND ws.oracle_outcome IS NOT NULL
   )
   AND NOT EXISTS (
       SELECT 1 FROM market_data md
-      WHERE md.asset = 'BTC'
-        AND md.timeframe = '5m'
+      WHERE md.asset = rt.asset
+        AND md.timeframe = rt.timeframe
         AND md.window_ts = rt.window_ts
         AND md.resolved = TRUE
         AND md.outcome IS NOT NULL
@@ -214,13 +255,19 @@ LIMIT %s
 """
 
 
-def gamma_outcome_for_window(client, window_ts: int) -> Optional[str]:
-    """Return 'UP' / 'DOWN' / None for a 5m BTC window, via Polymarket Gamma.
+def gamma_outcome_for_slug(client, market_slug: str) -> Optional[str]:
+    """Return 'UP' / 'DOWN' / None for any Polymarket updown window via Gamma.
 
-    Same parsing logic as ``engine.adapters.persistence.pg_window_repo.populate_oracle_outcomes``
-    — keep these aligned. Read-only (no auth required).
+    Replaces the old ``gamma_outcome_for_window`` which hard-coded
+    ``SLUG_PREFIX = 'btc-updown-5m-'`` and therefore only handled BTC 5m.
+    Now accepts the full market_slug (e.g. ``eth-updown-5m-1779667800``)
+    so ETH/XRP/SOL markets are covered.
+
+    Same parsing logic as ``engine.adapters.persistence.pg_window_repo
+    .populate_oracle_outcomes`` — keep these aligned.  Read-only (no auth
+    required).
     """
-    slug = f"{SLUG_PREFIX}{window_ts}"
+    slug = market_slug
     try:
         r = client.get(
             f"{GAMMA_BASE}/events",
@@ -424,8 +471,9 @@ def main() -> int:
         with httpx.Client(
             headers={"User-Agent": "novakash-auto-patch/gamma-fallback"},
         ) as client:
-            for tid, sid, direction, fp, stake, db_outcome, window_ts in gamma_candidates:
-                gamma_out = gamma_outcome_for_window(client, int(window_ts))
+            # DETECT_GAMMA_CANDIDATES_SQL now returns 8 columns (market_slug added).
+            for tid, sid, direction, fp, stake, db_outcome, window_ts, market_slug in gamma_candidates:
+                gamma_out = gamma_outcome_for_slug(client, market_slug)
                 if gamma_out not in ("UP", "DOWN"):
                     gamma_unresolved += 1
                     continue
@@ -455,7 +503,7 @@ def main() -> int:
                     f"  [gamma] id={tid} {sid} {direction} fill=${fp_f:.3f} "
                     f"stake=${stake_f:.2f} db={db_outcome} -> {new_outcome} "
                     f"pnl=${new_pnl:+.2f} (Δ${delta:+.2f}) "
-                    f"window_ts={window_ts} gamma={gamma_out}"
+                    f"slug={market_slug} gamma={gamma_out}"
                 )
 
                 if args.dry_run:
