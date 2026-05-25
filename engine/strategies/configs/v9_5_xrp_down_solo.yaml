@@ -1,0 +1,102 @@
+name: v9_5_xrp_down_solo
+strategy_id: v9_5_xrp_down_solo
+version: "1.0.0"
+# v9_5_xrp_down_solo — 2026-05-25 (GHOST, Billy promotes manually)
+#
+# DOWN-only XRP 5m strategy reading probability_lgb_v9_5_xrp (PURE column).
+# Fires DOWN at p <= 0.10 (= DOWN @ 0.90 confidence), within eval_offset [60, 180].
+# NO UP side — companion to v9_5_xrp_up_solo.
+#
+# COLUMN PROVENANCE:
+#   probability_lgb_v9_5_xrp = PURE column for the v9.5.1 XRP retrain.
+#   The v9.5.1 retrain (481K OOF records, 2026-05-25) refreshed the model
+#   behind this SAME column — there is NO separate _pure column for XRP.
+#   The PURE values now emit to probability_lgb_v9_5_xrp directly.
+#   Same column as v9_5_xrp_up_solo (UP at p >= 0.82).
+#
+# THRESHOLD RATIONALE (Billy's v9.5.1 XRP OOF sweep, 2026-05-25 — RDS note #710):
+#   DOWN @ p <= 0.15 (= 0.85 confidence): 90.6% WR  n=48K
+#   DOWN @ p <= 0.10 (= 0.90 confidence): 93.7% WR  n=27K  ← operating point
+#   Operating point: down_threshold=0.10 (93.7% WR n=27K).
+#   down_threshold=0.15 available via strategy_runtime_overrides for more volume
+#   (90.6% WR n=48K), at the cost of ~3pp WR.
+#
+# WHY DOWN @ 0.10?
+#   93.7% WR at n=27K OOF is above Billy's 90% steady-state target.
+#   The n=27K sample is sufficient for statistical confidence.
+#   The tighter threshold (0.10 vs 0.15) is appropriate for a conservative
+#   first DOWN deployment — shadow soak at $5 before any promotion.
+#
+# FILL-BAND GATES (RDS note #664, 2026-05-25):
+#   entry_floor_up: 0.70 — present for YAML parity but UNUSED (no UP fires).
+#   entry_cap_down: 0.85 — skip DOWN/NO fires where NO fill > 0.85
+#                          (high-fill NO = YES would be < 0.15, likely
+#                          resolution-locked or ghost market).
+#   entry_cap:      0.90 — hard cap per Billy convention.
+#
+# EVAL_OFFSET BAND:
+#   [60, 180] — mirrors v9_5_xrp_up_solo (tighter than v9_5_xrp_blend's [60,240]).
+#
+# CONSECUTIVE TICK CONFIRMATION:
+#   min_consecutive_pass_ticks=2 — extra confirmation tick for DOWN direction.
+#   DOWN is a new direction for this asset; 2-tick gate adds conservative
+#   confirmation before first live fire. (UP solo uses 1.)
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak until 20+ GHOST fires.
+#   If 20+ GHOST DOWN WR >= 90%, promote to LIVE at $5.
+#   After 30 LIVE fires, consider raising to $10-15.
+#   If DOWN WR < 87% after 30+ GHOST fires, tighten to down_threshold=0.08
+#   or reduce position until further research.
+#
+# CLOSES XRP DOWN COVERAGE GAP:
+#   Prior to this strategy, XRP DOWN coverage existed only via the 15m
+#   classifier (v7_15m_sniper_xrp, v_xrp_15m_classifier_top10/top20).
+#   This adds 5m DOWN coverage using the v9.5.1 PURE model probabilities.
+#
+# References:
+#   RDS note #710 — v9.5.1 XRP OOF table (2026-05-25), DOWN sweep data
+#   RDS note #664 — direction-aware fill-band gate spec
+#   data_surface.py line 371 — probability_lgb_v9_5_xrp definition
+#   Sister strategy: v9_5_xrp_up_solo (UP p>=0.82, 1-tick, $5 max)
+#   Sibling strategies: v9_5_xrp_blend (UP p>=0.82 / DOWN p<=0.20, eval [60,240])
+#                       v9_5_xrp_tight_blend (UP p>=0.95 / DOWN p<=0.05)
+#
+status: GHOST
+description: |
+  DOWN-only XRP 5m strategy reading probability_lgb_v9_5_xrp (PURE values,
+  v9.5.1 retrain, same column as up_solo). DOWN at p <= 0.10 (93.7% WR n=27K
+  OOF, RDS note #710). NO UP side. 2-tick consecutive gate for conservative
+  DOWN confirmation. eval_offset [60, 180]. Fill gate: NO cap 0.85.
+  GHOST mode, $5 max_position_usd. Closes XRP DOWN coverage gap (prior
+  coverage only via 15m classifier). Billy promotes manually.
+mode: GHOST
+asset: XRP
+timescale: 5m
+
+hooks_file: v9_5_xrp_down_solo.py
+pre_gate_hook: evaluate_v9_5_xrp_down_solo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  down_threshold: 0.10          # DOWN @ 0.90 confidence: 93.7% WR n=27K (RDS #710)
+  eval_offset_min: 60
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 2  # conservative 2-tick gate for new DOWN direction
+  expected_asset: XRP
+  entry_cap: 0.90               # hard cap per Billy convention
+  entry_floor_up: 0.70          # present for YAML parity — UNUSED (no UP fires)
+  entry_cap_down: 0.85          # skip DOWN/NO fires if NO fill > 0.85 (RDS #664)
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5           # START LOW — shadow soak before any promotion
+  max_daily_loss_usd: 20
