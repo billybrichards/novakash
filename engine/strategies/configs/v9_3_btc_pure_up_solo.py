@@ -1,53 +1,52 @@
-"""v9_3_btc_down_solo — DOWN-only BTC 5m strategy on probability_lgb_v9_3_btc_pure (GHOST).
+"""v9_3_btc_pure_up_solo — UP-only BTC 5m strategy on probability_lgb_v9_3_btc_pure (GHOST).
 
-v2.0.0 — COLUMN SWITCH: probability_lgb_v9_3_btc (BLEND) → probability_lgb_v9_3_btc_pure (PURE)
-         THRESHOLD TIGHTENED: p <= 0.50 → p <= 0.20 (= DOWN @ 0.80 confidence per v9.3.1 OOF)
-
-Fires ONLY on the DOWN side reading probability_lgb_v9_3_btc_pure — the PURE LGB+iso
+Fires ONLY on the UP side reading probability_lgb_v9_3_btc_pure — the PURE LGB+iso
 output BEFORE the blend_ensemble step in app/v2_scorer.py (data_surface.py line 349).
-
-MIGRATION from v1.0.0 (BLEND-based):
-  v1.0.0 read probability_lgb_v9_3_btc at p <= 0.50 (83.3% WR n=18 — single day,
-          limited reliability due to small n).
-  v2.0.0 reads probability_lgb_v9_3_btc_pure at p <= 0.20 (87.0% WR n=130K OOF,
-          v9.3.1 overnight retrain, 468K total OOF records, 2026-05-25).
-  The PURE column is not subject to TimesFM HF classifier saturation (~0.916 blend cap);
-  it occupies the full 0-1 probability range. The DOWN @ p <= 0.20 PURE pocket is
-  equivalent to DOWN @ 0.80 confidence, which is the primary threshold from the OOF audit.
+The existing BLEND column (probability_lgb_v9_3_btc) is capped at ~0.916 due to
+TimesFM HF classifier saturation; the PURE column reaches the full 0-1 range,
+enabling the high-conviction UP tail that was invisible on BLEND.
 
 Asset: BTC only. Strategy will SKIP defensively on any non-BTC surface.
 
-WHY DOWN-ONLY?
-  The UP side is covered by companion strategy v9_3_btc_pure_up_solo (p >= 0.85,
-  94.3% WR n=90K per v9.3.1 OOF). Both read probability_lgb_v9_3_btc_pure but in
-  opposite directions with no threshold overlap (DOWN p<=0.20; UP p>=0.85) — no
-  market conflict.
+WHY UP-ONLY?
+  v9.3.1 overnight OOF retrain (468K records, 2026-05-25) shows strong UP signal:
+    UP p >= 0.80 conf: 91.3% WR n=115K
+    UP p >= 0.85 conf: 94.3% WR n=90K  ← PRIMARY THRESHOLD (this strategy)
+    UP p >= 0.90 conf: 95.2% WR n=61K  (tighten via runtime_overrides)
+  The DOWN side is covered by companion strategy v9_3_btc_down_solo (p <= 0.20,
+  87.0% WR n=130K). Both read probability_lgb_v9_3_btc_pure but fire in opposite
+  directions with no threshold overlap — no market conflict.
+
+COVERAGE GAP THIS FILLS:
+  v9_3_btc_pure_lgb fires UP only when p >= 0.935. This strategy fires UP when
+  p is in [0.85, 0.935) — a zone that v9_3_btc_pure_lgb misses but the v9.3.1
+  OOF confirms at 94.3% WR (n=90K). No fire overlap with v9_3_btc_pure_lgb at
+  the same window.
 
 Operating point (v9.3.1 OOF retrain, 468K records, 2026-05-25):
-  - DOWN when probability_lgb_v9_3_btc_pure <= 0.20
-           -> 87.0% WR n=130K (DOWN @ 0.80 confidence)
-           -> 92.7% WR n=83K  (DOWN @ 0.85 confidence, p<=0.15 override)
-           -> 94.2% WR n=63K  (DOWN @ 0.90 confidence, p<=0.10 override)
-  - NO UP side — covered by v9_3_btc_pure_up_solo
+  - UP when probability_lgb_v9_3_btc_pure >= 0.85
+           -> 94.3% WR n=90K  (UP @ 0.85 confidence)
+  - NO DOWN side — covered by v9_3_btc_down_solo (p<=0.20, 87.0% WR n=130K)
   - eval_offset in [60, 180]  — best band consistent with v9_2_eth_solo sweep
-  - min_consecutive_pass_ticks=2 (conservative for PURE column migration)
+  - min_consecutive_pass_ticks=2  (conservative for new column)
 
 Direction-aware fill-band gate (RDS note #664, 2026-05-25):
-  - DOWN (NO): skip if YES fill >= entry_cap_down (default 0.90)
-  - UP  (YES): entry_floor_up present in YAML for parity but UNUSED here
-               (there are no UP fires in this DOWN-only strategy).
+  - UP  (YES): skip if fill < entry_floor_up (default 0.65)
+               skip if fill >= entry_cap (default 0.90 — near-resolved market)
+  - DOWN (NO): entry_cap_down present in YAML for parity but UNUSED here
+               (there are no DOWN fires in this UP-only strategy).
 
 Sized by Kelly (collateral_pct) capped at max_position_usd via YAML.
 GHOST mode by default — Billy promotes manually
 (per feedback_no_auto_promote.md). $5 max_position_usd for shadow window.
 
 References:
-  v9.3.1 OOF retrain (2026-05-25) — 468K records, DOWN p<=0.20 = 87.0% WR n=130K
+  v9.3.1 OOF retrain (2026-05-25) — 468K records, UP p>=0.85 = 94.3% WR n=90K
   data_surface.py line 349 — probability_lgb_v9_3_btc_pure definition
   RDS note #664 — direction-aware fill-band gate spec
-  Sibling strategy: v9_3_btc_pure_up_solo (UP p>=0.85, 94.3% WR n=90K)
+  Sibling strategy: v9_3_btc_down_solo (DOWN p<=0.20, 87.0% WR n=130K)
   v9_3_btc_pure_lgb: UP p>=0.935 / DOWN p<=0.065 (also reads PURE column)
-  Engine precedent: v9_2_eth_solo.py (PR #604)
+  Engine precedent: v9_5_xrp_up_solo.py (UP-only solo pattern)
 """
 
 from __future__ import annotations
@@ -61,14 +60,15 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
-_STRATEGY_ID = "v9_3_btc_down_solo"
-_VERSION = "2.0.0"
+_STRATEGY_ID = "v9_3_btc_pure_up_solo"
+_VERSION = "1.0.0"
 
 # v9.3.1 OOF retrain operating point (468K records, 2026-05-25).
-# DOWN p <= 0.20 = 87.0% WR n=130K (DOWN @ 0.80 confidence).
-# Tighten via runtime_overrides: p<=0.15 = 92.7% WR n=83K, p<=0.10 = 94.2% WR n=63K.
-# NO up threshold — UP side covered by v9_3_btc_pure_up_solo.
-_DEFAULT_DOWN_THRESHOLD = 0.20
+# UP p >= 0.85 = 94.3% WR n=90K (UP @ 0.85 confidence).
+# Tighten via runtime_overrides: p>=0.90 = 95.2% WR n=61K.
+# Loosen: p>=0.80 = 91.3% WR n=115K (more fire rate, lower precision).
+# NO down threshold — DOWN side covered by v9_3_btc_down_solo.
+_DEFAULT_UP_THRESHOLD = 0.85
 
 # Best eval-offset band from 5-way sweep (consistent with v9_2_eth_solo,
 # 2026-05-25): [60, 180] avoids the weak Δ=240s tail.
@@ -76,19 +76,19 @@ _DEFAULT_EVAL_OFFSET_MIN = 60
 _DEFAULT_EVAL_OFFSET_MAX = 180
 
 # Fill-band gate defaults (RDS note #664).
-# entry_floor_up: present for YAML parity but UNUSED — no UP fires here.
-# entry_cap_down: block NO fills at 0.90+ (near-resolved YES).
-_DEFAULT_ENTRY_FLOOR_UP = 0.65    # UNUSED — no UP fires in this strategy
-_DEFAULT_ENTRY_CAP_DOWN = 0.90    # block NO fills at 0.90+ (near-resolved YES)
-_DEFAULT_ENTRY_CAP = 0.90
+# entry_floor_up: skip UP/YES fires if fill < 0.65 (ghost markets / low liquidity).
+# entry_cap_down: present for YAML parity but UNUSED — no DOWN fires here.
+_DEFAULT_ENTRY_FLOOR_UP = 0.65    # skip UP/YES fires if fill < 0.65 (universal floor)
+_DEFAULT_ENTRY_CAP_DOWN = 0.90    # UNUSED — no DOWN fires in this strategy
+_DEFAULT_ENTRY_CAP = 0.90         # skip UP/YES fills >= 0.90 (near-resolved)
 _DEFAULT_COLLATERAL_PCT = 0.025
 _DEFAULT_GTC_CAP = 0.96
-_DEFAULT_MIN_CONSEC_TICKS = 2     # conservative for PURE column migration
+_DEFAULT_MIN_CONSEC_TICKS = 2     # conservative for new column
 _DEFAULT_ASSET = "BTC"
 
 # Consecutive-tick state. Module-local so this strategy's state cannot
 # collide with sibling strategies (v9_3_btc_pure_lgb, v9_3_btc_blend,
-# v9_3_btc_tight_blend, v9_3_btc_pure_up_solo).
+# v9_3_btc_tight_blend, v9_3_btc_down_solo).
 # Maps (window_ts, direction) -> (count, last_seen_ts).
 _consec_state: dict[tuple[int, str], tuple[int, float]] = {}
 _MAX_GAP_S = 5.0
@@ -134,9 +134,7 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
-def evaluate_v9_3_btc_down_solo(surface: "FullDataSurface") -> StrategyDecision:
-    # v2.0.0: reads probability_lgb_v9_3_btc_pure (PURE column, data_surface.py line 349).
-    # v1.0.0 read probability_lgb_v9_3_btc (BLEND column) — migrated 2026-05-25.
+def evaluate_v9_3_btc_pure_up_solo(surface: "FullDataSurface") -> StrategyDecision:
     p_btc_pure = getattr(surface, "probability_lgb_v9_3_btc_pure", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
@@ -159,14 +157,14 @@ def evaluate_v9_3_btc_down_solo(surface: "FullDataSurface") -> StrategyDecision:
 
     p_btc_pure = float(p_btc_pure)
 
-    down_threshold = _gp.get_float("down_threshold", None, _DEFAULT_DOWN_THRESHOLD)
+    up_threshold = _gp.get_float("up_threshold", None, _DEFAULT_UP_THRESHOLD)
     eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
     eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
 
     meta = {
         "probability_lgb_v9_3_btc_pure": p_btc_pure,
         "eval_offset": eval_offset,
-        "down_threshold": down_threshold,
+        "up_threshold": up_threshold,
         "eval_offset_min": eval_min,
         "eval_offset_max": eval_max,
         "asset": asset,
@@ -175,16 +173,16 @@ def evaluate_v9_3_btc_down_solo(surface: "FullDataSurface") -> StrategyDecision:
     if eval_offset is None or eval_offset < eval_min or eval_offset > eval_max:
         return _skip("outside_eval_band", meta)
 
-    # DOWN-only strategy. UP side covered by v9_3_btc_pure_up_solo (p>=0.85).
-    if p_btc_pure <= down_threshold:
-        direction = "DOWN"
+    # UP-only strategy. DOWN side covered by v9_3_btc_down_solo (p<=0.20).
+    if p_btc_pure >= up_threshold:
+        direction = "UP"
     else:
         return _skip("conviction_below_threshold", meta)
 
     meta["direction"] = direction
 
     # N-consecutive-tick confirmation gate (runtime-tunable via
-    # gate_params.min_consecutive_pass_ticks). Mirrors v9_2_eth_solo.
+    # gate_params.min_consecutive_pass_ticks). Conservative default of 2.
     window_ts = getattr(surface, "window_ts", None)
     min_consec = _gp.get_int(
         "min_consecutive_pass_ticks", None, _DEFAULT_MIN_CONSEC_TICKS
@@ -199,20 +197,28 @@ def evaluate_v9_3_btc_down_solo(surface: "FullDataSurface") -> StrategyDecision:
         )
 
     # Direction-aware fill-band gate (RDS note #664, 2026-05-25).
-    # DOWN (NO): skip if YES fill >= entry_cap_down (default 0.90).
-    # UP  (YES): entry_floor_up is present in YAML for parity but UNUSED here
-    #            (there are no UP fires in this DOWN-only strategy).
+    # UP (YES): skip if fill < entry_floor_up (default 0.65) — ghost markets.
+    #           skip if fill >= entry_cap (default 0.90) — near-resolved.
+    # DOWN (NO): entry_cap_down is present in YAML for parity but UNUSED here
+    #            (there are no DOWN fires in this UP-only strategy).
     fill_price = getattr(surface, "fill_price", None)
     if fill_price is None:
         fill_price = getattr(surface, "clob_implied_up", None)
     if fill_price is not None:
         fill_price = float(fill_price)
-        entry_cap_down = float(_gp.get_float("entry_cap_down", None, _DEFAULT_ENTRY_CAP_DOWN))
+        entry_floor_up = float(_gp.get_float("entry_floor_up", None, _DEFAULT_ENTRY_FLOOR_UP))
         meta["fill_price"] = fill_price
-        meta["entry_cap_down"] = entry_cap_down
-        if direction in ("DOWN", "NO") and fill_price >= entry_cap_down:
+        meta["entry_floor_up"] = entry_floor_up
+        if direction in ("UP", "YES") and fill_price < entry_floor_up:
             return _skip(
-                f"fill_above_down_cap:{fill_price:.3f}>={entry_cap_down:.3f}",
+                f"fill_below_up_floor:{fill_price:.3f}<{entry_floor_up:.3f}",
+                meta,
+            )
+        entry_cap_check = float(_gp.get_float("entry_cap", None, _DEFAULT_ENTRY_CAP))
+        meta["entry_cap_used"] = entry_cap_check
+        if direction in ("UP", "YES") and fill_price >= entry_cap_check:
+            return _skip(
+                f"fill_above_up_cap:{fill_price:.3f}>={entry_cap_check:.3f}",
                 meta,
             )
 
@@ -238,7 +244,7 @@ def evaluate_v9_3_btc_down_solo(surface: "FullDataSurface") -> StrategyDecision:
         gtc_cap=gtc_cap,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="v9_3_btc_down_solo_pass",
+        entry_reason="v9_3_btc_pure_up_solo_pass",
         skip_reason=None,
         metadata=meta,
     )
