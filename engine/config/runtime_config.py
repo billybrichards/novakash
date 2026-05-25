@@ -89,6 +89,8 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     # SIG-05: V4 Asian UP strategy (UP-only, Asian session, medium conviction)
     "V4_UP_ASIAN_MODE": ("v4_up_asian_mode", str),
     "V4_UP_ASIAN_ENABLED": ("v4_up_asian_enabled", bool),
+    # SP-06: Execution method resolution (hot-reloadable)
+    "DEFAULT_EXEC_METHOD": ("default_exec_method", str),
 }
 
 
@@ -357,6 +359,21 @@ class RuntimeConfig:
             os.environ.get("V4_UP_ASIAN_ENABLED", "false").lower() == "true"
         )
 
+        # ── SP-06: Execution method (hot-reloadable, default fak_standard) ──
+        # DEFAULT_EXEC_METHOD: env var override for the default execution method.
+        #   Value: 'fak_standard' (default) or 'fak_epsilon'
+        #   Priority: DB config > env var > 'fak_standard'
+        self.default_exec_method: str = os.environ.get(
+            "DEFAULT_EXEC_METHOD", "fak_standard"
+        ).lower()
+
+        # EPSILON_ENABLED: Global master switch for epsilon ladder.
+        #   Must be 'true' for any epsilon ladder to activate (even if DB says so).
+        #   This is a kill-switch — prevents accidental epsilon activation on prod.
+        self.epsilon_enabled: bool = (
+            os.environ.get("EPSILON_ENABLED", "false").lower() == "true"
+        )
+
         # ── PR #464 sister: Polymarket canonical priceToBeat rollout ──────
         # OPEN_PRICE_USE_PRICE_TO_BEAT controls whether downstream consumers
         # (timesfm-service primarily) recompute their delta_* family against
@@ -398,6 +415,21 @@ class RuntimeConfig:
         self._active_config_name: Optional[str] = None
         self._sync_count: int = 0
         self._last_sync_error: Optional[str] = None
+
+    def config_get_exec_method(self, default: str = "fak_standard") -> str:
+        """Resolve the effective execution method with full priority chain.
+        
+        Priority order (highest wins):
+          1. DB config `DEFAULT_EXEC_METHOD` column (via sync)
+          2. runtime.default_exec_method (env var DEFAULT_EXEC_METHOD)
+          3. Passed `default` arg (always 'fak_standard')
+        
+        Only returns 'fak_epsilon' if runtime.epsilon_enabled is True.
+        """
+        candidate = self.default_exec_method
+        if candidate == "fak_epsilon" and not self.epsilon_enabled:
+            candidate = "fak_standard"
+        return candidate
 
     async def sync(self, pool, paper_mode: bool = True) -> bool:
         """
@@ -509,6 +541,8 @@ class RuntimeConfig:
             "cascade_enabled": self.cascade_enabled,
             "preferred_venue": self.preferred_venue,
             # Execution
+            "execution_method": self.default_exec_method,
+            "epsilon_enabled": self.epsilon_enabled,
             "fok_enabled": self.fok_enabled,
             # Guardrails
             "order_stagger_seconds": self.order_stagger_seconds,

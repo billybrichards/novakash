@@ -32,6 +32,7 @@ class OrderExecutionPort(abc.ABC):
         price_floor: float,
         strategy_id: str = "",
         window_close_ts: float | None = None,
+        execution_method: str = "fak_standard",
     ) -> ExecutionResult:
         """Execute a single order using the configured strategy.
 
@@ -39,6 +40,11 @@ class OrderExecutionPort(abc.ABC):
         GTC dedup so independent strategies can both place their own
         resting orders on the same (token_id, side). Defaults to "" for
         backwards compatibility with legacy tests that don't set it.
+
+        ``execution_method`` selects the execution style: 'fak_standard'
+        (default, fixed anchor) or 'fak_epsilon' (CLOB re-anchored).
+        When 'fak_epsilon' and EPSILON_ENABLED is False, falls back to
+        'fak_standard' — see RuntimeConfig for details.
 
         Returns an ExecutionResult with fill details or failure info.
         MUST NOT raise -- all exceptions are caught and returned as
