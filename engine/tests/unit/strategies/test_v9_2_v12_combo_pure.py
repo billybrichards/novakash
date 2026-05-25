@@ -314,3 +314,137 @@ class TestMetadataShape:
         assert d.metadata["down_v12_threshold"] == pytest.approx(0.27)
         assert d.metadata["entry_cap"] == pytest.approx(0.93)
         assert d.metadata["gtc_cap"] == pytest.approx(0.96)
+
+
+# ── Direction-aware fill-band gate (RDS note #664, 2026-05-25) ─────────────
+
+
+class TestDirectionAwareFillBandGate:
+    """entry_floor_up=0.60 blocks UP fires at fill < 0.60.
+    entry_cap_down=0.90 blocks DOWN fires at fill >= 0.90.
+    The gate is DIRECTION-AWARE — it does NOT mirror: UP at fill>=0.90 is
+    100% WR (5W/0L today) and DOWN at fill<0.60 is 100% WR (3W/0L today);
+    a symmetric band would wrongly block those wins.
+    """
+
+    # ── UP gate (entry_floor_up) ────────────────────────────────────────────
+
+    def test_up_fill_below_floor_skips(self):
+        """UP fire at fill=0.55 < 0.60 — should SKIP (25% WR zone per RDS #664)."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.80,
+            probability_lgb_v12_pure=0.75,
+            clob_implied_up=0.55,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "SKIP"
+        assert d.skip_reason is not None
+        assert "fill_below_up_floor" in d.skip_reason
+        assert "0.550" in d.skip_reason
+        assert "0.600" in d.skip_reason
+
+    def test_up_fill_at_floor_exact_trades(self):
+        """UP fire at fill=0.60 exactly — boundary inclusive, should TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.80,
+            probability_lgb_v12_pure=0.75,
+            clob_implied_up=0.60,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_up_fill_above_floor_trades(self):
+        """UP fire at fill=0.65 (well above floor) — TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.80,
+            probability_lgb_v12_pure=0.75,
+            clob_implied_up=0.65,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_up_high_fill_above_090_still_trades(self):
+        """UP at fill=0.92 (above 0.90) must TRADE — 100% WR zone (5W/0L today).
+        Symmetric gate would wrongly block this; direction-aware gate does NOT."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.80,
+            probability_lgb_v12_pure=0.75,
+            clob_implied_up=0.92,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    # ── DOWN gate (entry_cap_down) ──────────────────────────────────────────
+
+    def test_down_fill_at_cap_skips(self):
+        """DOWN fire at fill=0.90 (>= 0.90) — should SKIP (33% WR per RDS #664)."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.20,
+            probability_lgb_v12_pure=0.20,
+            clob_implied_up=0.90,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "SKIP"
+        assert d.skip_reason is not None
+        assert "fill_above_down_cap" in d.skip_reason
+        assert "0.900" in d.skip_reason
+
+    def test_down_fill_just_below_cap_trades(self):
+        """DOWN fire at fill=0.89 (< 0.90) — boundary inclusive on allow side, TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.20,
+            probability_lgb_v12_pure=0.20,
+            clob_implied_up=0.89,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "DOWN"
+
+    def test_down_low_fill_below_060_still_trades(self):
+        """DOWN at fill=0.55 (below 0.60) must TRADE — 100% WR zone (3W/0L today).
+        Symmetric gate would wrongly block this; direction-aware gate does NOT."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.20,
+            probability_lgb_v12_pure=0.20,
+            clob_implied_up=0.55,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "DOWN"
+
+    # ── Default permissive: strats without these params unaffected ──────────
+
+    def test_no_fill_price_skips_gate_entirely(self):
+        """When clob_implied_up is None, fill gate is bypassed — TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.80,
+            probability_lgb_v12_pure=0.75,
+            clob_implied_up=None,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_default_permissive_params_allow_all_fills(self):
+        """entry_floor_up=0.0, entry_cap_down=1.0 (defaults) allow all fills."""
+        # Very low fill — would be blocked by explicit floor but not by defaults.
+        surface = _make_surface(
+            probability_lgb_v9_2_pure=0.80,
+            probability_lgb_v12_pure=0.75,
+            clob_implied_up=0.10,
+        )
+        with _params():  # no entry_floor_up / entry_cap_down set
+            d = evaluate_v9_2_v12_combo_pure(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"

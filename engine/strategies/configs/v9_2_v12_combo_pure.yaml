@@ -92,6 +92,8 @@ gate_params:
   min_consecutive_pass_ticks: 1
   expected_asset: BTC
   entry_cap: 0.93
+  entry_floor_up: 0.60    # skip UP/YES fires if fill < this (RDS note #664: 25% WR below 0.60)
+  entry_cap_down: 0.90    # skip DOWN/NO fires if fill >= this (RDS note #664: 33% WR at 0.90+)
   collateral_pct: 0.025
   gtc_cap: 0.96
 
