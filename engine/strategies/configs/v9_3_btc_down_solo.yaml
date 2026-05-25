@@ -88,9 +88,9 @@ gate_params:
   down_threshold: 0.50         # today WR: 83.3% n=18; alt p<=0.48 = 80% n=15
   eval_offset_min: 60          # best band consistent with v9_2_eth_solo sweep
   eval_offset_max: 180
-  min_consecutive_pass_ticks: 1
+  min_consecutive_pass_ticks: 2  # bumped from 1 per Billy — extra confirmation tick on new BTC DOWN column
   expected_asset: BTC
-  entry_cap: 0.93              # standard overall max fill
+  entry_cap: 0.90              # cap fill at 0.90 per Billy "max bet 0.9"
   entry_floor_up: 0.60         # present but unused — no UP fires in this strategy
   entry_cap_down: 0.90         # skip DOWN/NO fires if YES fill >= 0.90 (RDS #664)
   collateral_pct: 0.025

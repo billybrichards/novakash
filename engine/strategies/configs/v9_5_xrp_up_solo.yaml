@@ -93,7 +93,7 @@ gate_params:
   eval_offset_max: 180
   min_consecutive_pass_ticks: 1
   expected_asset: XRP
-  entry_cap: 0.93              # standard overall max fill
+  entry_cap: 0.90              # cap fill at 0.90 per Billy "max bet 0.9"
   entry_floor_up: 0.60         # skip UP/YES fires if fill < 0.60 (RDS #664)
   entry_cap_down: 0.90         # present but unused — no DOWN fires in this strategy
   collateral_pct: 0.025
