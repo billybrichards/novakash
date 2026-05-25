@@ -416,15 +416,13 @@ class RuntimeConfig:
         self._sync_count: int = 0
         self._last_sync_error: Optional[str] = None
 
-    def config_get_exec_method(self, default: str = "fak_standard") -> str:
-        """Resolve the effective execution method with full priority chain.
+    def config_get_exec_method(self) -> str:
+        """Resolve the effective execution method.
         
         Priority order (highest wins):
-          1. DB config `DEFAULT_EXEC_METHOD` column (via sync)
-          2. runtime.default_exec_method (env var DEFAULT_EXEC_METHOD)
-          3. Passed `default` arg (always 'fak_standard')
+          1. runtime.default_exec_method (DB config > env var > code default)
         
-        Only returns 'fak_epsilon' if runtime.epsilon_enabled is True.
+        Only returns 'fak_epsilon' if epsilon_enabled is True.
         """
         candidate = self.default_exec_method
         if candidate == "fak_epsilon" and not self.epsilon_enabled:

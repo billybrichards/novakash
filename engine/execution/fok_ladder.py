@@ -509,7 +509,7 @@ class FOKLadder:
         deltas -- the anchor is always the current best ask.
 
         Args:
-            epsilon_step: Step size between rungs (default: 0.005 = Polymarket tick).
+            epsilon_step: Step size between rungs (default: 0.005 ≈ Polymarket binary tick).
             max_attempts: Maximum number of ladder rungs (default: 4).
             write_attempt_fn: Optional async callable(data: dict) for attempt logging.
 

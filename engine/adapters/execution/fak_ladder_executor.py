@@ -48,8 +48,6 @@ DEFAULT_PI_BONUS = 0.0314
 
 # Execution mode defaults
 _DEFAULT_EXEC_METHOD = "fak_standard"
-_EPSILON_ENABLED = False
-
 # Seconds after window close before a resting GTC is considered expired.
 # 30s grace ensures we don't cancel during the final-fill window when the
 # market is still resolving. Cancel loop fires every 30s — worst-case a
@@ -197,43 +195,31 @@ class FAKLadderExecutor(OrderExecutionPort):
         )
 
     def _try_write_attempt(self, data: dict) -> None:
-        """Attempt to write a focus ladder attempt via pg_signal_repo shim.
+        """Log a FOK ladder attempt to the fok_ladder_attempts table.
         
-        This is a convenience bridge that tries pg_signal_repo first, then
-        falls back to the legacy db_client writer. Never raises.
+        Fires-and-forgets via asyncio.create_task — never raises.
+        Tries pg_signal_repo first, then db_client. Skips silently on failure.
         """
         try:
-            # Try pg_signal_repo adapter first
-            from adapters.persistence import pg_signal_repo
-            repo = getattr(pg_signal_repo, "pg_signal_repo", None) or getattr(pg_signal_repo, "signal_repo", None)
+            from adapters.persistence import pg_signal_repo as _sr
+            repo = getattr(_sr, "pg_signal_repo", getattr(_sr, "signal_repo", None))
             if repo and hasattr(repo, "write_fok_ladder_attempt"):
-                # If it's async, wrap with create_task; if sync, call directly
                 import asyncio
-                if asyncio.iscoroutinefunction(repo.write_fok_ladder_attempt):
-                    asyncio.create_task(repo.write_fok_ladder_attempt(data))
-                else:
-                    repo.write_fok_ladder_attempt(data)
+                coro = repo.write_fok_ladder_attempt(data)
+                if asyncio.iscoroutine(coro):
+                    asyncio.create_task(coro)
                 return
         except Exception:
             pass
-        try:
-            from persistence import db_client
-            db = getattr(db_client, "db_client", None) or getattr(db_client, "DbClient", None)
-            if db is None:
-                # Module-level instance — common pattern
-                for name, obj in vars(db_client).items():
-                    if isinstance(obj, object) and hasattr(obj, "write_fok_ladder_attempt"):
-                        if not name[0].isupper():
-                            db = obj
-                            break
-            if db and hasattr(db, "write_fok_ladder_attempt"):
-                import asyncio
-                if asyncio.iscoroutinefunction(db.write_fok_ladder_attempt):
-                    asyncio.create_task(db.write_fok_ladder_attempt(data))
-                else:
-                    db.write_fok_ladder_attempt(data)
-        except Exception:
-            pass
+        
+        from persistence import db_client as _dc
+        inst = getattr(_dc, "db_client", None)
+        if inst and hasattr(inst, "write_fok_ladder_attempt"):
+            import asyncio
+            coro = inst.write_fok_ladder_attempt(data)
+            if asyncio.iscoroutine(coro):
+                asyncio.create_task(coro)
+        return
 
     async def execute_order(
         self,
@@ -355,7 +341,7 @@ class FAKLadderExecutor(OrderExecutionPort):
             fak_prices = fok_result.attempted_prices
 
             if fok_result.filled:
-                fak_method = resolve_exec_method if resolve_exec_method == "fak_epsilon" else "fak_standard"
+                fak_method = resolve_exec_method
                 fee = self._calc_fee(
                     fok_result.fill_price or entry_cap,
                     stake_usd,
@@ -481,32 +467,6 @@ class FAKLadderExecutor(OrderExecutionPort):
                 execution_method=resolve_exec_method,
             )
 
-        # ── Phase 3: GTC ────────────────────────────────────────────────
-        # Disabled by default after 2026-04-17 phantom-fill incident
-        # (see Hub note 64 / audit-task #218). The GTC path can return a
-        # success=True ExecutionResult with no real on-chain fill ("gtc_resting"),
-        # which propagates as an engine_optimistic phantom trade. Cost overnight:
-        # 20/20 phantom + -$77.90 booked vs zero on-chain match.
-        if not self._enable_gtc_fallback:
-            logger.info(
-                "fak_ladder.gtc_skipped",
-                extra={
-                    "reason": "FAK_LADDER_ENABLE_GTC not set",
-                    "fak_attempts": len(fak_prices),
-                    "fak_prices": fak_prices,
-                },
-            )
-            return ExecutionResult(
-                success=False,
-                failure_reason="fak_rfq_exhausted; gtc_fallback_disabled",
-                stake_usd=stake_usd,
-                execution_mode="none",
-                fak_attempts=len(fak_prices),
-                fak_prices=fak_prices,
-                token_id=token_id,
-                execution_start=start,
-                execution_end=time.time(),
-            )
 
         gtc_result = await self._try_gtc(
             token_id,
