@@ -42,3 +42,5 @@ gate_params:
   down_v12_threshold: 0.40
   eval_offset_min: 60
   eval_offset_max: 210
+  entry_floor_up: 0.60    # skip UP/YES fires if fill < this (RDS note #664 preventative: same family as combo_pure)
+  entry_cap_down: 0.90    # skip DOWN/NO fires if fill >= this (RDS note #664 preventative)

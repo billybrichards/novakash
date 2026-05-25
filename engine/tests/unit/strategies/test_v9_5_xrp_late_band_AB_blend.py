@@ -412,3 +412,83 @@ class TestCrossStrategyIndependence:
         assert len(late_band._consec_state) >= 1
         # blend's state remains untouched.
         assert len(blend._consec_state) == 0
+
+
+# ── Direction-aware fill-band gate (RDS note #664, 2026-05-25) ─────────────
+
+
+class TestDirectionAwareFillBandGate:
+    """entry_floor_up=0.60 blocks UP fires at fill < 0.60.
+    entry_cap_down=0.90 blocks DOWN fires at fill >= 0.90.
+    XRP late-band is UP-only so only the UP gate applies in practice;
+    the DOWN gate is a no-op but must remain permissive (default 1.0).
+    """
+
+    def test_up_fill_055_below_floor_skips(self):
+        """UP fire at fill=0.55 < 0.60 — SKIP."""
+        surface = _make_surface(
+            probability_lgb_v9_5_xrp=0.93,
+            clob_implied_up=0.55,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
+        assert d.action == "SKIP"
+        assert d.skip_reason is not None
+        assert "fill_below_up_floor" in d.skip_reason
+        assert "0.550" in d.skip_reason
+        assert "0.600" in d.skip_reason
+
+    def test_up_fill_at_060_exact_trades(self):
+        """UP fire at fill=0.60 exactly — boundary inclusive, TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_5_xrp=0.93,
+            clob_implied_up=0.60,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_up_fill_above_floor_trades(self):
+        """UP fire at fill=0.65 — inside safe zone, TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_5_xrp=0.93,
+            clob_implied_up=0.65,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_up_fill_092_above_090_still_trades(self):
+        """UP at fill=0.92 must TRADE — 100% WR zone; direction-aware gate does NOT block."""
+        surface = _make_surface(
+            probability_lgb_v9_5_xrp=0.93,
+            clob_implied_up=0.92,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_none_clob_implied_up_bypasses_gate(self):
+        """When clob_implied_up is None, fill gate is skipped — TRADE."""
+        surface = _make_surface(
+            probability_lgb_v9_5_xrp=0.93,
+            clob_implied_up=None,
+        )
+        with _params(entry_floor_up=0.60, entry_cap_down=0.90):
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"
+
+    def test_default_permissive_params_allow_all_fills(self):
+        """Without explicit gate params (defaults: 0.0/1.0), all fills pass."""
+        surface = _make_surface(
+            probability_lgb_v9_5_xrp=0.93,
+            clob_implied_up=0.10,
+        )
+        with _params():  # no entry_floor_up / entry_cap_down
+            d = evaluate_v9_5_xrp_late_band_AB_blend(surface)
+        assert d.action == "TRADE"
+        assert d.direction == "UP"

@@ -71,6 +71,8 @@ gate_params:
   min_consecutive_pass_ticks: 1
   expected_asset: XRP
   entry_cap: 0.93
+  entry_floor_up: 0.60    # skip UP/YES fires if fill < this (RDS note #664 preventative: XRP late-band)
+  entry_cap_down: 0.90    # skip DOWN/NO fires if fill >= this (RDS note #664 preventative)
   collateral_pct: 0.025
   gtc_cap: 0.93
 
