@@ -1,0 +1,100 @@
+name: v9_3_btc_pure_up_solo
+strategy_id: v9_3_btc_pure_up_solo
+version: "1.0.0"
+# v9_3_btc_pure_up_solo — 2026-05-25 (GHOST, Billy promotes manually)
+#
+# UP-only BTC 5m strategy reading probability_lgb_v9_3_btc_pure (PURE column).
+# Fires UP at p >= 0.85, within eval_offset [60, 180].
+# NO DOWN side — covered by companion v9_3_btc_down_solo (p <= 0.20, 87.0% WR).
+#
+# COLUMN PROVENANCE (data_surface.py line 349):
+#   probability_lgb_v9_3_btc_pure = PURE LGB+iso output BEFORE the blend_ensemble
+#   step in app/v2_scorer.py. The BLEND column (probability_lgb_v9_3_btc) is capped
+#   at ~0.916 due to TimesFM HF classifier saturation. The PURE column reaches the
+#   full 0-1 range, enabling the high-conviction UP tail (p >= 0.85, 0.90, etc.)
+#   that the BLEND column cannot express.
+#
+# WHY NEW STRATEGY?
+#   v9.3.1 overnight retrain (468K OOF records, 2026-05-25) reveals strong UP
+#   signal on the PURE column that was invisible on BLEND due to the 0.916 cap:
+#     UP p >= 0.80 (= 0.80 conf): 91.3% WR n=115K
+#     UP p >= 0.85 (= 0.85 conf): 94.3% WR n=90K   ← PRIMARY THRESHOLD
+#     UP p >= 0.90 (= 0.90 conf): 95.2% WR n=61K
+#   The existing v9_3_btc_pure_lgb covers UP p >= 0.935 / DOWN p <= 0.065 (tighter
+#   corners). This strategy fills the broader UP pocket at p >= 0.85 which is NOT
+#   covered by v9_3_btc_pure_lgb (its UP gate requires p >= 0.935).
+#
+# THRESHOLD RATIONALE (v9.3.1 OOF retrain, 468K records, 2026-05-25):
+#   Threshold set at p >= 0.85 (UP @ 0.85 confidence):
+#     94.3% WR n=90K — strong OOF base; well above the 90% live target.
+#   Billy can tighten to p >= 0.90 (95.2% WR n=61K) via strategy_runtime_overrides.
+#   Billy can loosen to p >= 0.80 (91.3% WR n=115K) for more fire rate.
+#   Does NOT overlap v9_3_btc_pure_lgb's UP gate (p >= 0.935) — fires between
+#   p=0.85 and p=0.935 are exclusive to this strategy.
+#
+# SISTER STRATEGY COVERAGE:
+#   v9_3_btc_down_solo:  DOWN p <= 0.20, PURE col (87.0% WR n=130K) — this PR
+#   v9_3_btc_pure_lgb:   UP p >= 0.935 / DOWN p <= 0.065 (tight OOF corners)
+#   THIS STRATEGY:       UP  p >= 0.85 PURE col — covers [0.85, 0.935) gap
+#   No threshold overlap between any two of these strategies on the UP side.
+#
+# EVAL_OFFSET BAND (2026-05-25 sweep, RDS note #694):
+#   [60, 180] — consistent with v9_2_eth_solo's best band. Avoids the weak Δ=240s tail.
+#
+# FILL-BAND GATES (RDS note #664, 2026-05-25):
+#   entry_floor_up: 0.65 — skip UP/YES fires where YES fill < 0.65
+#                          (universal floor per Billy "min bet 0.65").
+#   entry_cap: 0.90        — skip UP/YES fills above 0.90 (near-resolved market).
+#   entry_cap_down: 0.90   — present in YAML but unused (no DOWN fires).
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak until 20+ GHOST fires.
+#   If 20+ GHOST UP WR >= 90%, promote to LIVE at $5.
+#   After 30 LIVE fires at >= 90% WR, consider raising to $10-15.
+#   If UP WR < 85% after 30+ GHOST fires, kill or tighten to p >= 0.90.
+#
+# References:
+#   v9.3.1 OOF retrain (2026-05-25) — 468K records, UP p>=0.85 = 94.3% WR n=90K
+#   data_surface.py line 349 — probability_lgb_v9_3_btc_pure definition
+#   Sibling strategy: v9_3_btc_down_solo (DOWN p<=0.20, 87.0% WR n=130K)
+#   v9_3_btc_pure_lgb: UP p>=0.935 / DOWN p<=0.065 (tight corners, also reads PURE)
+#   RDS note #664 — direction-aware fill-band gate spec
+#
+status: GHOST
+description: |
+  UP-only BTC 5m strategy reading probability_lgb_v9_3_btc_pure (PURE column,
+  data_surface.py line 349). UP at p >= 0.85 -> 94.3% WR n=90K (v9.3.1 OOF
+  retrain, 468K records, 2026-05-25). NO DOWN side — covered by companion
+  v9_3_btc_down_solo. Direction-aware fill gate: UP floor 0.65, UP cap 0.90.
+  GHOST mode, $5 max_position_usd. Covers UP [0.85, 0.935) gap not occupied
+  by v9_3_btc_pure_lgb (which requires p >= 0.935).
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_3_btc_pure_up_solo.py
+pre_gate_hook: evaluate_v9_3_btc_pure_up_solo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.85           # v9.3.1 OOF: UP p>=0.85 = 94.3% WR n=90K; tighten to 0.90 (95.2%) via runtime_overrides
+  eval_offset_min: 60          # best band consistent with v9_2_eth_solo sweep
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 2  # extra confirmation tick — conservative for new column
+  expected_asset: BTC
+  entry_cap: 0.90              # skip UP/YES fills >= 0.90 (near-resolved market)
+  entry_floor_up: 0.65         # skip UP/YES fires if fill < 0.65 (universal floor)
+  entry_cap_down: 0.90         # present but unused — no DOWN fires in this strategy
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5          # START LOW — shadow soak before any promotion
+  max_daily_loss_usd: 20
