@@ -1,0 +1,119 @@
+name: v9_2_eth_solo
+strategy_id: v9_2_eth_solo
+version: "1.0.0"
+# v9_2_eth_solo — 2026-05-25 (GHOST, Billy promotes manually)
+#
+# Bidirectional ETH 5m strategy reading probability_lgb_v9_2_eth.
+# Fires UP at p >= 0.80 and DOWN at p <= 0.45, within eval_offset [60, 180].
+#
+# COLUMN PROVENANCE (investigated 2026-05-25, RDS note #666):
+#   probability_lgb_v9_2_eth = PURE raw LGB output for the ETH-trained
+#   v9.2-style model. NO HF classifier blend. The field is populated by
+#   timesfm-service when V9_2_ETH_ENABLED=true and served at
+#   /v4/snapshot.timescales.5m. Contrast with probability_lgb_v9_5_eth
+#   (which IS a blend of LGB + HF classifier, capped at ~0.92 per the
+#   blend-bug discovery in RDS notes #631/#632). Because v9_2_eth does NOT
+#   go through the HF classifier, it is free to reach the full raw-model
+#   probability range — which is why thresholds of 0.80/0.45 are sensible
+#   here (blend would saturate before reaching 0.80 usefully in many tails).
+#
+# THRESHOLD RATIONALE (RDS note #665 + 2026-05-25 re-check):
+#   Billy requested UP >= 0.80 and DOWN <= 0.45.
+#   7d tick-level WR at these thresholds (eval_offset 60-180):
+#     UP   p >= 0.80: n=5825 ticks, 4890 wins → 83.9% WR
+#     DOWN p <= 0.45: n=5190 ticks, 4303 wins → 82.9% WR
+#   Window-level last-qualifying-tick dedup (7d):
+#     UP n=367 windows, 291 wins → 79.3% WR
+#     DOWN n=470 windows, 326 wins → 69.4% WR
+#   NOTE: RDS note #665 reported DOWN p<=0.45 at n=13 with 100% WR — that
+#   was from a shorter/different lookback window. The 7d data shows n=470
+#   windows with 69.4% WR. Billy still wants the DOWN side enabled because
+#   the tick-level WR is solid at 82.9% and the direction-aware fill gate
+#   (entry_cap_down=0.90) provides an additional safety layer. Shadow soak
+#   will reveal true live performance; promote UP first if DOWN disappoints.
+#
+# EVAL_OFFSET BAND SELECTION (2026-05-25 sweep):
+#   Bands swept: [60,240], [60,180], [90,180], [90,150], [120,180].
+#   Best combined WR with n >= 30: [60, 180] — UP 83.9% / DOWN 82.9%
+#   vs [60,240] which adds stale late ticks and drops DOWN WR to 78.8%.
+#   120_180 collapses fire rate severely. 60_180 chosen.
+#
+# FILL-BAND GATES (RDS note #664, 2026-05-25):
+#   Historical ETH YES fills: avg 0.730, p5=0.366, p95=0.865 (n=56).
+#   Historical ETH NO  fills: avg 0.773, p5=0.634, p95=0.873 (n=4).
+#   entry_floor_up=0.60 — skip UP/YES fires where fill < 0.60 (low-fill
+#     entries are typically resolution-locked ghost markets).
+#   entry_cap_down=0.90 — skip DOWN/NO fires where fill >= 0.90 (the YES
+#     side is almost resolved; NO fill should be well below 0.90).
+#
+# SISTER STRATEGIES (overlapping eval bands — watch for market conflicts):
+#   v9_2_eth_late_band_AB_blend: UP-only, [60,90], p >= 0.82.
+#     Overlap: [60,90] and UP p>=0.82 windows. Registry dedup or sister-
+#     veto may apply if Billy enables that later. For now GHOST = logged-only,
+#     no real capital conflict.
+#   v9_2_eth_raw_lgb: both dirs, [120,210], p >= 0.96 / p <= 0.04.
+#     No overlap with v9_2_eth_solo's band [60,180] on UP side for the
+#     [120,180] intersection (raw_lgb fires at 0.96 vs solo at 0.80 — raw_lgb
+#     fires are a strict subset).
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak for 7 days.
+#   If 7d GHOST WR >= 85% on UP AND >= 80% on DOWN (min 20 fires each),
+#   promote to LIVE at $5. After 30 LIVE fires, raise to $10-15.
+#   If DOWN WR < 80% after 50 GHOST fires, kill DOWN side, keep UP only.
+#
+# IMPORTANT CAVEAT — DOWN n=13 in original note #665:
+#   The 100% DOWN WR in note #665 was from a short lookback. The 7d dataset
+#   gives n=470 windows at 69.4% WR — well below the promotion bar. The
+#   direction-aware fill gate (entry_cap_down=0.90) is active to filter the
+#   worst NO fills. Billy should review DOWN performance separately after 50+
+#   GHOST fires before any LIVE promotion of the DOWN side.
+#
+# References:
+#   RDS note #665 — broad sweep finding (source of Billy's request)
+#   RDS note #666 — this strategy's design rationale + pure/blend verdict
+#   RDS notes #631/#632 — blend-bug discovery (v9_5_eth context)
+#   RDS note #664 — direction-aware fill-band gate spec
+#   data_surface.py lines 246-256 — probability_lgb_v9_2_eth definition
+#   Sibling strategies: v9_2_eth_late_band_AB_blend, v9_2_eth_raw_lgb
+#
+status: GHOST
+description: |
+  Bidirectional ETH 5m strategy reading raw probability_lgb_v9_2_eth (pure
+  LGB output, no HF classifier blend). UP at p >= 0.80, DOWN at p <= 0.45,
+  eval_offset [60, 180]. Direction-aware fill gates: UP floor 0.60, DOWN
+  cap 0.90. GHOST mode, $5 max_position_usd for initial shadow soak.
+  7d tick WR: UP 83.9% (n=5825), DOWN 82.9% (n=5190).
+  CAUTION: DOWN 100% from note #665 used short lookback (n=13); 7d data
+  shows 69.4% WR at window level — shadow soak required.
+mode: GHOST
+asset: ETH
+timescale: 5m
+
+hooks_file: v9_2_eth_solo.py
+pre_gate_hook: evaluate_v9_2_eth_solo
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.80          # Billy's requested threshold; 83.9% tick WR
+  down_threshold: 0.45        # Billy's requested threshold; 82.9% tick WR
+  eval_offset_min: 60         # best band from 5-way sweep (60-180)
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 1
+  expected_asset: ETH
+  entry_cap: 0.93             # standard overall max fill
+  entry_floor_up: 0.60        # skip UP/YES fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90        # skip DOWN/NO fires if fill >= 0.90 (RDS #664)
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5         # START LOW — shadow soak first (7 days GHOST)
+  max_daily_loss_usd: 20
