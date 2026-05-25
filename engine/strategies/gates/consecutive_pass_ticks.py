@@ -111,12 +111,24 @@ class ConsecutivePassTicksGate(Gate):
         # before this gate runs. For direction-agnostic strategies, the
         # consecutive logic still works -- we count consecutive passes
         # within the same direction and reset on flip.
+        #
+        # Hub #546 regression fix (2026-05-25): 15m /v4/snapshot payloads do
+        # not include the polymarket_live_recommended_outcome block, so
+        # poly_direction is always None for 15m classifier strategies.  Fall
+        # back to deriving direction from probability_classifier: prob > 0.5 →
+        # UP, prob < 0.5 → DOWN.  This unblocks v_eth/v_xrp × top10/top20
+        # from the consecutive-tick gate which was the last barrier to firing
+        # after the ConfidenceGate source=classifier fix in PR #558.
         direction = getattr(surface, "poly_direction", None)
+        if direction not in ("UP", "DOWN"):
+            p_cls = getattr(surface, "probability_classifier", None)
+            if p_cls is not None and p_cls != 0.5:
+                direction = "UP" if p_cls > 0.5 else "DOWN"
         if direction not in ("UP", "DOWN"):
             return GateResult(
                 passed=False,
                 gate_name=self.name,
-                reason=f"poly_direction={direction!r} not actionable",
+                reason=f"poly_direction={getattr(surface, 'poly_direction', None)!r} not actionable and probability_classifier unavailable",
             )
 
         window_ts = getattr(surface, "window_ts", None)
