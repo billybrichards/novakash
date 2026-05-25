@@ -532,16 +532,16 @@ class TelegramAlerter:
         synthetic placeholder this method previously used. The batched
         summary still fires unaffected.
 
-        Dedup: key on ``(trade_id or window_ts, condition_id)`` — the
-        same resolved trade re-seen on a subsequent reconciler pass
-        won't fire a second card. LRU cap = 512 entries.
+        Dedup: key on ``(trade_id or (window_ts, strategy), condition_id)`` to
+        prevent double-firing when the same trade is re-seen across multiple
+        reconciler passes or eval ticks. Window_id displayed includes asset.
         """
         if not self._v2_ready():
             return
 
         # ── LRU dedup ────────────────────────────────────────────────
         # Prefer trade_id when we have it (stable identity); fall back
-        # to window_ts which is unique per window-per-asset.
+        # to window_ts + condition_id to dedup re-seen trades.
         _dedup_key = (trade_id or int(window_ts or 0), condition_id or "")
         if _dedup_key in self._resolved_dedup:
             self._log.debug(
