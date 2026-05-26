@@ -981,42 +981,11 @@ class PolymarketClient:
                 f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}"
             )
 
-        # ── Fill-band guard (RDS note #703) ─────────────────────────────
-        # Before submitting, check best_ask against fill-band limits.
-        # UP/YES: best_ask must be >= min_fill_price (entry_floor_up)
-        # DOWN/NO: best_ask must be < max_fill_price (entry_cap_down)
-        # We fetch the current best ask to verify the order will fill within bounds.
-        best_ask = await self.get_clob_best_ask(token_id)
-        
-        # Note: direction here is "YES"/"NO" from the outer caller, not "BUY"/"SELL"
-        if direction in ("YES", "UP"):
-            floor = float(min_fill_price) if min_fill_price is not None else 0.30
-            if best_ask < floor:
-                self._log.warning("place_market_order.fill_band_floor_rejected",
-                    direction=direction,
-                    best_ask=f"${best_ask:.4f}",
-                    floor=f"${floor:.4f}",
-                    note="fill outside entry_floor_up band - order not submitted")
-                return {
-                    "filled": False,
-                    "size_matched": 0,
-                    "order_id": None,
-                    "abort_reason": f"best_ask ${best_ask:.4f} < floor ${floor:.4f}",
-                }
-        elif direction in ("NO", "DOWN"):
-            cap = float(max_fill_price) if max_fill_price is not None else 0.82
-            if best_ask >= cap:
-                self._log.warning("place_market_order.fill_band_cap_rejected",
-                    direction=direction,
-                    best_ask=f"${best_ask:.4f}",
-                    cap=f"${cap:.4f}",
-                    note="fill outside entry_cap_down band - order not submitted")
-                return {
-                    "filled": False,
-                    "size_matched": 0,
-                    "order_id": None,
-                    "abort_reason": f"best_ask ${best_ask:.4f} >= cap ${cap:.4f}",
-                }
+        # Fill-band guard for FAK/FOK is enforced by fok_ladder.execute()
+        # before reaching this method (lines 198-227 of fok_ladder.py).
+        # The duplicate guard previously here referenced `direction` which
+        # is not a parameter of place_market_order, causing NameError on
+        # every FAK attempt and silently breaking all live orders.
 
         from py_clob_client_v2.clob_types import OrderArgs, OrderType
         from py_clob_client_v2.order_builder.constants import BUY
