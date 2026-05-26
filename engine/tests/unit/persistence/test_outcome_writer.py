@@ -484,6 +484,60 @@ async def test_populate_oracle_outcomes_covers_eth_5m(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_populate_oracle_outcomes_covers_xrp_and_sol_5m(monkeypatch):
+    """XRP and SOL 5m must be polled too. 2026-05-26 (RDS note #712): both
+    assets had 0% ``signal_evaluations.outcome`` coverage (39,318 SOL +
+    68,874 XRP rows over the prior 7d) because the forward writer was
+    hardcoded BTC/ETH-only. Polymarket publishes ``xrp-updown-5m-<ts>`` and
+    ``sol-updown-5m-<ts>`` markets so the same Gamma path resolves them —
+    only the slug registry needed extending.
+    """
+    from adapters.persistence import pg_window_repo as repo_mod
+
+    # _GAMMA_SLUG_PREFIXES is the contract: which pairs the bulk writer
+    # actually polls. XRP/SOL 5m must be present.
+    assert ("XRP", "5m") in repo_mod._GAMMA_SLUG_PREFIXES
+    assert repo_mod._GAMMA_SLUG_PREFIXES[("XRP", "5m")] == "xrp-updown-5m-"
+    assert ("SOL", "5m") in repo_mod._GAMMA_SLUG_PREFIXES
+    assert repo_mod._GAMMA_SLUG_PREFIXES[("SOL", "5m")] == "sol-updown-5m-"
+
+    pool = _RecordingPool(fetch_rows=[{"window_ts": 1779299100}])
+    repo = repo_mod.PgWindowRepository(pool)
+
+    # Stub Gamma so both XRP- and SOL-prefixed slugs resolve. If the writer
+    # is still BTC/ETH-only it will never ask for these slugs → the asset
+    # assertions below will fail on snap_calls == 0.
+    xrp_slug = f"xrp-updown-5m-1779299100"
+    sol_slug = f"sol-updown-5m-1779299100"
+    monkeypatch.setattr(
+        repo_mod.httpx,
+        "AsyncClient",
+        lambda **_kw: _StubHttpxClient(
+            {
+                xrp_slug: _gamma_resolved_payload(xrp_slug, "UP"),
+                sol_slug: _gamma_resolved_payload(sol_slug, "DOWN"),
+            }
+        ),
+    )
+
+    n = await repo.populate_oracle_outcomes()
+    assert n >= 2, "XRP + SOL 5m windows must each be resolved + written"
+
+    update_calls = [c for c in pool.conn.calls if c["sql"].lstrip().startswith("UPDATE")]
+    snap_calls = [c for c in update_calls if "window_snapshots" in c["sql"]]
+    xrp_snap = [c for c in snap_calls if "XRP" in c["args"] and "5m" in c["args"]]
+    sol_snap = [c for c in snap_calls if "SOL" in c["args"] and "5m" in c["args"]]
+    assert xrp_snap, "must UPDATE window_snapshots with asset=XRP timeframe=5m"
+    assert sol_snap, "must UPDATE window_snapshots with asset=SOL timeframe=5m"
+
+    se_calls = [c for c in update_calls if "signal_evaluations" in c["sql"]]
+    xrp_se = [c for c in se_calls if "XRP" in c["args"] and "5m" in c["args"]]
+    sol_se = [c for c in se_calls if "SOL" in c["args"] and "5m" in c["args"]]
+    assert xrp_se, "must also bulk-fill signal_evaluations.outcome for XRP 5m"
+    assert sol_se, "must also bulk-fill signal_evaluations.outcome for SOL 5m"
+
+
+@pytest.mark.asyncio
 async def test_populate_oracle_outcomes_no_resolutions_no_writes(monkeypatch):
     """If Gamma returns no resolved markets, no UPDATE statements should fire."""
     from adapters.persistence import pg_window_repo as repo_mod
