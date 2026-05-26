@@ -27,11 +27,19 @@ import time
 from decimal import Decimal
 from typing import Any, Optional, TypedDict
 
+import structlog
+
 from use_cases.ports.execution import OrderExecutionPort
 from domain.ports import PolymarketClientPort
 from domain.value_objects import ExecutionResult
 
-logger = logging.getLogger(__name__)
+# 2026-05-26: switched from stdlib `logging` to structlog because the
+# stdlib Logger._log() rejects arbitrary kwargs (`direction=`, `side=`,
+# etc.), which crashed every GTC/RFQ fill-band rejection path and surfaced
+# as `execution_error: Logger._log() got an unexpected keyword argument
+# 'direction'` overnight on 2026-05-25 -> 2026-05-26. structlog accepts
+# arbitrary kwargs by design; the rest of the engine already uses it.
+logger = structlog.get_logger(__name__)
 
 # Polymarket binary options fee
 FEE_MULTIPLIER = 0.072
