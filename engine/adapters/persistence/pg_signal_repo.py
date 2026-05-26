@@ -1651,6 +1651,69 @@ class PgSignalRepository(SignalRepository):
             )
             return 0
 
+    async def update_signal_evaluations_lgb_v9_5_xrp_pure(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_5_xrp_pure: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_5_xrp_pure`` on signal_evaluations row.
+
+        Mirror of DBClient.update_signal_evaluations_lgb_v9_5_xrp_pure for
+        parity (lesson from PR #439 — keep the two writers verbatim). Column
+        added by migration (applied 2026-05-26). Emitted by timesfm-service
+        when V9_5_XRP_PURE_ENABLED=true (commit e1ba39d). Idempotent via
+        COALESCE. RDS note #711 (overnight check).
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_5_xrp_pure is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_5_xrp_pure, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_lgb_v9_5_xrp_pure = COALESCE(
+                            signal_evaluations.probability_lgb_v9_5_xrp_pure,
+                            EXCLUDED.probability_lgb_v9_5_xrp_pure
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_5_xrp_pure),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_lgb_v9_5_xrp_pure_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_lgb_v9_5_xrp_pure_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     # -- Additional signal-related methods (not on port yet) ---------------
     # These are included here because they belong to the signal aggregate
     # even though the port interface uses placeholder VOs today.  Phase 1

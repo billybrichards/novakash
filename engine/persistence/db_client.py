@@ -2778,6 +2778,78 @@ class DBClient:
             )
             return 0
 
+    async def update_signal_evaluations_lgb_v9_5_xrp_pure(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v9_5_xrp_pure: Optional[float],
+    ) -> int:
+        """Upsert ``probability_lgb_v9_5_xrp_pure`` onto signal_evaluations row.
+
+        Sibling of update_signal_evaluations_lgb_v9_5_xrp for the un-blended
+        PURE variant. Column added by migration (applied 2026-05-26).
+        Emitted by timesfm-service when V9_5_XRP_PURE_ENABLED=true (timesfm
+        commit e1ba39d). Read by v9_5_xrp_up_solo strategy (switched from
+        BLEND to PURE 2026-05-26). Sample value confirmed: 0.403.
+
+        Idempotent: COALESCE preserves any existing value on conflict
+        (first-write-wins, mirrors all sibling writers). Returns row count
+        affected (1 = upsert ok, 0 = no-op).
+
+        RDS note #711 (overnight check). Mirrors eth_pure pattern exactly.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v9_5_xrp_pure is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire(timeout=5) as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_lgb_v9_5_xrp_pure, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        -- First-write-wins (mirrors sibling writers). The v9.5
+                        -- XRP PURE probability is computed once per tick by the
+                        -- timesfm scorer and is stable for (window, eval_offset).
+                        probability_lgb_v9_5_xrp_pure = COALESCE(
+                            signal_evaluations.probability_lgb_v9_5_xrp_pure,
+                            EXCLUDED.probability_lgb_v9_5_xrp_pure
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_lgb_v9_5_xrp_pure),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v9_5_xrp_pure_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v9_5_xrp_pure_failed",
+                window_ts=window_ts,
+                asset=asset,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     async def update_window_prices(
         self,
         window_ts: int,

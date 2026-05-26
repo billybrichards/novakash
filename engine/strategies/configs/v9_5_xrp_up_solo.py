@@ -1,9 +1,10 @@
-"""v9_5_xrp_up_solo — UP-only XRP 5m strategy on probability_lgb_v9_5_xrp (GHOST).
+"""v9_5_xrp_up_solo — UP-only XRP 5m strategy on probability_lgb_v9_5_xrp_pure (GHOST).
 
-Fires ONLY on the UP side reading probability_lgb_v9_5_xrp — the BLEND column
-for the v9.5 XRP-trained model (data_surface.py line 371, timesfm PR #160,
-merged 2026-05-23). This is the same column read by v9_5_xrp_blend and
-v9_5_xrp_tight_blend, but this strategy:
+Fires ONLY on the UP side reading probability_lgb_v9_5_xrp_pure — the PURE
+(un-blended) column for the v9.5 XRP-trained model. Switched from BLEND to
+PURE 2026-05-26 (timesfm commit e1ba39d, V9_5_XRP_PURE_ENABLED=true, column
+signal_evaluations.probability_lgb_v9_5_xrp_pure migration applied). This
+strategy:
   1. Is UP-only (no DOWN side — XRP DOWN shows no signal today, needs research)
   2. Uses the tighter eval_offset [60, 180] vs v9_5_xrp_blend's [60, 240]
 
@@ -25,9 +26,9 @@ RELATION TO v9_5_xrp_late_band_AB_blend:
   directly, without composite gate complexity.
 
 Operating point (RDS note #694, today's live sweep, 2026-05-25):
-  - UP   when probability_lgb_v9_5_xrp >= 0.82
-           -> 85% WR n=20  (today, p >= 0.82)
-           -> 90% WR n=10  (today, p >= 0.86 — tighter alternative)
+  - UP   when probability_lgb_v9_5_xrp_pure >= 0.90
+           (PURE threshold; BLEND threshold was 0.82 — PURE distributes
+            differently so threshold is set per Billy's review)
   - NO DOWN side (XRP DOWN shows no signal today — needs research)
   - eval_offset in [60, 180]  — tighter than v9_5_xrp_blend's [60, 240];
     drops the weak Δ=240s tail
@@ -65,9 +66,10 @@ from strategies import gate_params as _gp
 _STRATEGY_ID = "v9_5_xrp_up_solo"
 _VERSION = "1.0.0"
 
-# Operating point per RDS note #694 (today's live sweep, 2026-05-25).
+# Operating point — switched to PURE column 2026-05-26 (timesfm commit e1ba39d).
+# PURE threshold: p >= 0.90 (BLEND was 0.82; PURE distributes differently).
 # NO down threshold — DOWN side shows no signal today (needs research).
-_DEFAULT_UP_THRESHOLD = 0.82
+_DEFAULT_UP_THRESHOLD = 0.90
 
 # Best eval-offset band for XRP UP today (2026-05-25).
 # Tighter than v9_5_xrp_blend's [60, 240] — drops the weak Δ=240s tail.
@@ -134,7 +136,10 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
 
 
 def evaluate_v9_5_xrp_up_solo(surface: "FullDataSurface") -> StrategyDecision:
-    p_xrp = getattr(surface, "probability_lgb_v9_5_xrp", None)
+    # 2026-05-26: switched from BLEND (probability_lgb_v9_5_xrp) to PURE
+    # (probability_lgb_v9_5_xrp_pure) — timesfm commit e1ba39d,
+    # V9_5_XRP_PURE_ENABLED=true. Threshold adjusted to 0.90 for PURE.
+    p_xrp = getattr(surface, "probability_lgb_v9_5_xrp_pure", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
 
@@ -150,8 +155,8 @@ def evaluate_v9_5_xrp_up_solo(surface: "FullDataSurface") -> StrategyDecision:
 
     if p_xrp is None:
         return _skip(
-            "v9_5_xrp_model_not_loaded",
-            {"probability_lgb_v9_5_xrp": None},
+            "v9_5_xrp_pure_not_available",
+            {"probability_lgb_v9_5_xrp_pure": None},
         )
 
     p_xrp = float(p_xrp)
@@ -161,7 +166,7 @@ def evaluate_v9_5_xrp_up_solo(surface: "FullDataSurface") -> StrategyDecision:
     eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
 
     meta = {
-        "probability_lgb_v9_5_xrp": p_xrp,
+        "probability_lgb_v9_5_xrp_pure": p_xrp,
         "eval_offset": eval_offset,
         "up_threshold": up_threshold,
         "eval_offset_min": eval_min,

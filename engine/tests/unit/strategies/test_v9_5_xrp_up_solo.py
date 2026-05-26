@@ -1,10 +1,14 @@
 """Unit tests for v9_5_xrp_up_solo GHOST strategy.
 
+2026-05-26: Updated to use probability_lgb_v9_5_xrp_pure (PURE column)
+instead of probability_lgb_v9_5_xrp (BLEND). Threshold changed from 0.82
+to 0.90 per Billy's 90%+ WR target. Timesfm commit e1ba39d.
+
 Coverage:
-- model-not-loaded SKIP (v9_5_xrp_model_not_loaded) — None probability
+- model-not-loaded SKIP (v9_5_xrp_pure_not_available) — None probability
 - defensive asset guard (SKIP on non-XRP surface — wrong_asset)
 - eval_offset outside band [60, 180] (outside_eval_band)
-- UP threshold gating: fires at p=0.82, fires above, just below skips
+- UP threshold gating: fires at p=0.90, fires above, just below skips
 - No DOWN fires (conviction_below_threshold for all p < up_threshold)
 - Direction-aware fill-band gate:
     UP + fill=0.85 (>= 0.60 floor) → TRADE
@@ -12,7 +16,7 @@ Coverage:
     UP + fill=0.60 (exactly)       → TRADE (floor is inclusive >=)
     None fill bypasses gate          → TRADE
 - gate_params runtime override respected
-- Metadata shape on TRADE includes probability + threshold + strategy_id
+- Metadata shape on TRADE includes probability_lgb_v9_5_xrp_pure + threshold + strategy_id
 - Consecutive ticks (min_consecutive_pass_ticks) gating
 - Cross-strategy independence: module-local _consec_state doesn't leak
   into sibling strategies (v9_5_xrp_blend, v9_5_xrp_tight_blend,
@@ -44,8 +48,11 @@ def _make_surface(**overrides) -> FullDataSurface:
     """Default surface for v9_5_xrp_up_solo tests.
 
     asset=XRP, eval_offset=120 (in band [60, 180]),
-    probability_lgb_v9_5_xrp=0.85 (above the 0.82 UP threshold).
+    probability_lgb_v9_5_xrp_pure=0.92 (above the 0.90 UP threshold).
     clob_implied_up=0.65 (above entry_floor_up=0.60 — UP fires through).
+
+    2026-05-26: switched from probability_lgb_v9_5_xrp (BLEND) to
+    probability_lgb_v9_5_xrp_pure (PURE), threshold 0.90.
     """
     defaults = dict(
         asset="XRP", timescale="5m",
@@ -86,7 +93,7 @@ def _make_surface(**overrides) -> FullDataSurface:
         cg_liq_short=200_000.0, cg_long_short_ratio=1.2,
         timesfm_expected_move_bps=50.0, timesfm_vol_forecast_bps=80.0,
         hour_utc=12, seconds_to_close=120,
-        probability_lgb_v9_5_xrp=0.85,
+        probability_lgb_v9_5_xrp_pure=0.92,
     )
     defaults.update(overrides)
     return FullDataSurface(**defaults)
@@ -95,7 +102,7 @@ def _make_surface(**overrides) -> FullDataSurface:
 # ── Gate-params helpers ────────────────────────────────────────────────────
 
 _BASE_PARAMS: dict[str, Any] = {
-    "up_threshold": 0.82,
+    "up_threshold": 0.90,   # PURE threshold (BLEND was 0.82, 2026-05-26 switch)
     "eval_offset_min": 60,
     "eval_offset_max": 180,
     "min_consecutive_pass_ticks": 1,
@@ -131,13 +138,13 @@ def _clear_consec_state():
 
 class TestNullProbabilityHandling:
     def test_model_not_loaded_skips_cleanly(self):
-        """When the snapshot has no probability_lgb_v9_5_xrp, the strategy
-        SKIPs with a clear reason — no crash."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=None)
+        """When the snapshot has no probability_lgb_v9_5_xrp_pure, the strategy
+        SKIPs with a clear reason — no crash. (PURE column, 2026-05-26)"""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=None)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "v9_5_xrp_model_not_loaded"
+        assert d.skip_reason == "v9_5_xrp_pure_not_available"
         assert d.strategy_id == "v9_5_xrp_up_solo"
 
 
@@ -146,14 +153,14 @@ class TestNullProbabilityHandling:
 class TestAssetGuard:
     def test_btc_surface_skips_even_with_high_prob(self):
         """XRP strategy refuses to fire on a BTC surface — defensive guard."""
-        surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp=0.95)
+        surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp_pure=0.95)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "wrong_asset"
 
     def test_eth_surface_skips(self):
-        surface = _make_surface(asset="ETH", probability_lgb_v9_5_xrp=0.95)
+        surface = _make_surface(asset="ETH", probability_lgb_v9_5_xrp_pure=0.95)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -161,7 +168,7 @@ class TestAssetGuard:
 
     def test_asset_check_runs_before_probability_check(self):
         """Asset check runs first — non-XRP with None prob still wrong_asset."""
-        surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp=None)
+        surface = _make_surface(asset="BTC", probability_lgb_v9_5_xrp_pure=None)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -188,14 +195,14 @@ class TestEvalOffsetBand:
         assert d.skip_reason == "outside_eval_band"
 
     def test_at_min_60_fires(self):
-        surface = _make_surface(eval_offset=60, probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(eval_offset=60, probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_at_max_180_fires(self):
-        surface = _make_surface(eval_offset=180, probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(eval_offset=180, probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
@@ -210,7 +217,7 @@ class TestEvalOffsetBand:
 
     def test_offset_outside_band_skips_even_with_high_prob(self):
         """eval_offset=240 is above the 180 band max — no fire (tighter than v9_5_xrp_blend)."""
-        surface = _make_surface(eval_offset=240, probability_lgb_v9_5_xrp=0.95)
+        surface = _make_surface(eval_offset=240, probability_lgb_v9_5_xrp_pure=0.95)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -220,9 +227,9 @@ class TestEvalOffsetBand:
 # ── UP threshold gating ────────────────────────────────────────────────────
 
 class TestUpThreshold:
-    def test_up_fires_at_threshold_0_82(self):
-        """Exactly at UP threshold 0.82 — fires UP."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.82)
+    def test_up_fires_at_threshold_0_90(self):
+        """Exactly at UP threshold 0.90 — fires UP. (PURE threshold, 2026-05-26)"""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.90)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
@@ -230,31 +237,31 @@ class TestUpThreshold:
         assert d.strategy_id == "v9_5_xrp_up_solo"
         assert d.entry_reason == "v9_5_xrp_up_solo_pass"
 
-    def test_up_fires_at_0_83(self):
-        """p=0.83 > 0.82 — fires UP."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.83)
+    def test_up_fires_at_0_91(self):
+        """p=0.91 > 0.90 — fires UP."""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.91)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_up_fires_well_above_threshold(self):
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.95)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.97)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
         assert d.direction == "UP"
 
     def test_just_below_up_threshold_skips(self):
-        """0.819 < 0.82 — below the UP threshold."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.819)
+        """0.899 < 0.90 — below the PURE UP threshold."""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.899)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
     def test_neutral_0_50_skips(self):
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.50)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.50)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -266,7 +273,7 @@ class TestUpThreshold:
 class TestNoDownFires:
     def test_low_prob_does_not_fire_down(self):
         """p=0.10 is below UP threshold — no DOWN direction, skips."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.10)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.10)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -274,8 +281,8 @@ class TestNoDownFires:
         assert d.direction is None
 
     def test_p_0_20_does_not_fire_down(self):
-        """p=0.20 — v9_5_xrp_blend DOWN threshold, but UP-only skips."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.20)
+        """p=0.20 — v9_5_xrp_blend DOWN threshold, but UP-only PURE skips."""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.20)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -283,7 +290,7 @@ class TestNoDownFires:
 
     def test_p_0_01_skips(self):
         """p=0.01 minimum — still skips in UP-only strategy."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.01)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.01)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -294,9 +301,9 @@ class TestNoDownFires:
 
 class TestFillBandGate:
     def test_up_fires_with_fill_0_85_above_floor(self):
-        """UP at p=0.85 + fill=0.85 (>= 0.60 floor) → TRADE."""
+        """UP at p=0.92 + fill=0.85 (>= 0.60 floor) → TRADE."""
         surface = _make_surface(
-            probability_lgb_v9_5_xrp=0.85,
+            probability_lgb_v9_5_xrp_pure=0.92,
             eval_offset=120,
             clob_implied_up=0.85,
         )
@@ -306,9 +313,9 @@ class TestFillBandGate:
         assert d.direction == "UP"
 
     def test_up_skips_with_fill_0_55_below_floor(self):
-        """UP at p=0.85 + fill=0.55 (< 0.60 floor) → SKIP fill_below_up_floor."""
+        """UP at p=0.92 + fill=0.55 (< 0.60 floor) → SKIP fill_below_up_floor."""
         surface = _make_surface(
-            probability_lgb_v9_5_xrp=0.85,
+            probability_lgb_v9_5_xrp_pure=0.92,
             eval_offset=120,
             clob_implied_up=0.55,
         )
@@ -323,7 +330,7 @@ class TestFillBandGate:
     def test_up_floor_exact_boundary_inclusive(self):
         """UP at fill=0.60 exactly — boundary inclusive, TRADE."""
         surface = _make_surface(
-            probability_lgb_v9_5_xrp=0.85,
+            probability_lgb_v9_5_xrp_pure=0.92,
             clob_implied_up=0.60,
         )
         with _params():
@@ -334,7 +341,7 @@ class TestFillBandGate:
     def test_none_fill_bypasses_gate(self):
         """When clob_implied_up is None, fill gate is skipped — TRADE."""
         surface = _make_surface(
-            probability_lgb_v9_5_xrp=0.85,
+            probability_lgb_v9_5_xrp_pure=0.92,
             clob_implied_up=None,
         )
         with _params():
@@ -345,7 +352,7 @@ class TestFillBandGate:
     def test_default_permissive_floor_allows_low_fill(self):
         """With entry_floor_up=0.0, all fills pass (no floor filtering)."""
         surface = _make_surface(
-            probability_lgb_v9_5_xrp=0.85,
+            probability_lgb_v9_5_xrp_pure=0.92,
             clob_implied_up=0.10,
         )
         with _params(entry_floor_up=0.0):
@@ -358,32 +365,32 @@ class TestFillBandGate:
 
 class TestRuntimeOverride:
     def test_runtime_override_raises_up_threshold(self):
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.84)
-        # Default 0.82 — TRADE.
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
+        # Default 0.90 — TRADE.
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
-        # Raise to 0.90 — SKIP.
-        with _params(up_threshold=0.90):
+        # Raise to 0.95 — SKIP (p=0.92 < 0.95).
+        with _params(up_threshold=0.95):
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
-    def test_runtime_override_to_tighter_threshold_0_86(self):
-        """Override to p >= 0.86 (tighter, 90% WR pocket from RDS #694)."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.84)
-        # At p=0.84 with default 0.82 — TRADE.
+    def test_runtime_override_to_tighter_threshold_0_95(self):
+        """Override to p >= 0.95 — below at p=0.92, SKIP."""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
+        # At p=0.92 with default 0.90 — TRADE.
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
-        # At p=0.84 with 0.86 override — SKIP (below tighter threshold).
-        with _params(up_threshold=0.86):
+        # At p=0.92 with 0.95 override — SKIP (below tighter threshold).
+        with _params(up_threshold=0.95):
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
         assert d.skip_reason == "conviction_below_threshold"
 
     def test_runtime_override_narrows_eval_band(self):
-        surface = _make_surface(eval_offset=170, probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(eval_offset=170, probability_lgb_v9_5_xrp_pure=0.92)
         # Default band [60, 180] — TRADE.
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
@@ -399,12 +406,13 @@ class TestRuntimeOverride:
 
 class TestMetadataShape:
     def test_metadata_contains_probability_on_up_trade(self):
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85, eval_offset=120)
+        """Metadata key is probability_lgb_v9_5_xrp_pure (PURE, 2026-05-26)."""
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92, eval_offset=120)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
-        assert d.metadata["probability_lgb_v9_5_xrp"] == pytest.approx(0.85)
-        assert d.metadata["up_threshold"] == pytest.approx(0.82)
+        assert d.metadata["probability_lgb_v9_5_xrp_pure"] == pytest.approx(0.92)
+        assert d.metadata["up_threshold"] == pytest.approx(0.90)
         assert d.metadata["eval_offset_min"] == 60
         assert d.metadata["eval_offset_max"] == 180
         assert d.metadata["eval_offset"] == 120
@@ -413,7 +421,7 @@ class TestMetadataShape:
         assert d.metadata["strategy_version"] == "1.0.0"
 
     def test_metadata_contains_sizing_on_trade(self):
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
@@ -422,16 +430,16 @@ class TestMetadataShape:
         assert d.metadata["gtc_cap"] == pytest.approx(0.96)
 
     def test_confidence_score_uses_distance_from_neutral_up(self):
-        # p=0.85 -> |0.85 - 0.5| * 2 = 0.70 -> HIGH (>= 0.40)
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
+        # p=0.92 -> |0.92 - 0.5| * 2 = 0.84 -> HIGH (>= 0.40)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
         assert d.confidence == "HIGH"
-        assert d.confidence_score == pytest.approx(0.70)
+        assert d.confidence_score == pytest.approx(0.84)
 
     def test_metadata_includes_direction_on_trade(self):
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85, eval_offset=120)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92, eval_offset=120)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
@@ -439,7 +447,7 @@ class TestMetadataShape:
 
     def test_metadata_includes_fill_price_and_floor_when_available(self):
         surface = _make_surface(
-            probability_lgb_v9_5_xrp=0.85,
+            probability_lgb_v9_5_xrp_pure=0.92,
             clob_implied_up=0.65,
         )
         with _params():
@@ -454,7 +462,7 @@ class TestMetadataShape:
 class TestConsecutiveTicks:
     def test_default_one_tick_fires_immediately(self):
         """min_consecutive_pass_ticks=1 (default) → one qualifying tick fires."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
@@ -464,7 +472,7 @@ class TestConsecutiveTicks:
 
     def test_runtime_override_requires_two_ticks(self):
         """Runtime override min_consecutive_pass_ticks=2 → first tick SKIPs."""
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
         with _params(min_consecutive_pass_ticks=2):
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "SKIP"
@@ -492,7 +500,7 @@ class TestCrossStrategyIndependence:
         xrp_blend._consec_state.clear()
         assert up_solo._consec_state is not xrp_blend._consec_state
 
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             d = evaluate_v9_5_xrp_up_solo(surface)
         assert d.action == "TRADE"
@@ -509,7 +517,7 @@ class TestCrossStrategyIndependence:
         late_band._consec_state.clear()
         assert up_solo._consec_state is not late_band._consec_state
 
-        surface = _make_surface(probability_lgb_v9_5_xrp=0.85)
+        surface = _make_surface(probability_lgb_v9_5_xrp_pure=0.92)
         with _params():
             evaluate_v9_5_xrp_up_solo(surface)
         assert len(late_band._consec_state) == 0

@@ -1891,6 +1891,36 @@ class StrategyRegistry:
                     )
                 )
 
+        # v9.5 XRP PURE head persistence — write probability_lgb_v9_5_xrp_pure
+        # on every tick where the field is populated. Sibling of the v9_5_xrp
+        # (blend) writer; read by v9_5_xrp_up_solo GHOST strategy (switched
+        # from BLEND to PURE 2026-05-26). Timesfm commit e1ba39d,
+        # V9_5_XRP_PURE_ENABLED=true. Migration applied 2026-05-26.
+        # Fire-and-forget, same pattern as v9_5_eth_pure.
+        v9_5_xrp_pure = getattr(surface, "probability_lgb_v9_5_xrp_pure", None)
+        if v9_5_xrp_pure is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_lgb_v9_5_xrp_pure"
+        ):
+            try:
+                _v9_5_xrp_pure_p = float(v9_5_xrp_pure)
+            except (TypeError, ValueError):
+                _v9_5_xrp_pure_p = None
+            if _v9_5_xrp_pure_p is not None:
+                v9_5_xrp_pure_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_lgb_v9_5_xrp_pure(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_lgb_v9_5_xrp_pure=_v9_5_xrp_pure_p,
+                    )
+                )
+                v9_5_xrp_pure_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_lgb_v9_5_xrp_pure_write_error"
+                    )
+                )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
