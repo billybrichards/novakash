@@ -280,6 +280,12 @@ def _ensemble_surface_fields(surface) -> dict:
         # Default None when absent. Read by v9_5_xrp_blend + v9_5_xrp_tight_blend
         # GHOST strategies (asset=XRP, 5m). Timesfm-repo PR #160 + RDS note #593.
         "probability_lgb_v9_5_xrp": getattr(surface, "probability_lgb_v9_5_xrp", None),
+        # 2026-05-26: v9.5 XRP PURE (un-blended) probability — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v9_5_xrp_pure. Emitted
+        # when V9_5_XRP_PURE_ENABLED=true (timesfm commit e1ba39d, 2026-05-26).
+        # Default None when absent. Read by v9_5_xrp_up_solo GHOST strategy
+        # (switched from BLEND to PURE, threshold 0.90). RDS note #711.
+        "probability_lgb_v9_5_xrp_pure": getattr(surface, "probability_lgb_v9_5_xrp_pure", None),
         # 2026-05-12: meta gate scores — emitted by timesfm-service on
         # /v4/snapshot. Written to window_snapshots via ensemble_fields
         # upsert so SQL analysis has first-class access.

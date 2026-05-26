@@ -370,6 +370,20 @@ class FullDataSurface:
     # Timesfm-repo PR #160 + RDS note #593.
     probability_lgb_v9_5_xrp: Optional[float] = None
 
+    # v9.5 XRP PURE LGB probability — un-blended LGB+iso output for the
+    # XRP-trained v9.5 model. Sibling of probability_lgb_v9_5_xrp (the
+    # blend column) and mirrors the eth_pure pattern (RDS notes #631/#632).
+    # Emitted by timesfm-service on /v4/snapshot.timescales.5m when
+    # V9_5_XRP_PURE_ENABLED=true (commit e1ba39d, 2026-05-26).
+    # Column signal_evaluations.probability_lgb_v9_5_xrp_pure exists
+    # (migration applied 2026-05-26). Sample value confirmed: 0.403.
+    # Read by v9_5_xrp_up_solo strategy (PURE replaces BLEND, 2026-05-26).
+    # Default None — forward-compatible; prod snapshots without this field
+    # remain valid until the timesfm-side flag is flipped.
+    # Cross-repo contract key — do NOT rename without coordinated PR.
+    # RDS note #711 (overnight check), timesfm commit e1ba39d.
+    probability_lgb_v9_5_xrp_pure: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1521,6 +1535,11 @@ class DataSurfaceManager:
             probability_lgb_v9_5_xrp=(
                 float(ts_data["probability_lgb_v9_5_xrp"])
                 if ts_data.get("probability_lgb_v9_5_xrp") is not None
+                else None
+            ),
+            probability_lgb_v9_5_xrp_pure=(
+                float(ts_data["probability_lgb_v9_5_xrp_pure"])
+                if ts_data.get("probability_lgb_v9_5_xrp_pure") is not None
                 else None
             ),
             probability_v2_meta_gate=(
