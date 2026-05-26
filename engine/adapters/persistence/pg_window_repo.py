@@ -40,6 +40,14 @@ _SLUG_PREFIX = "btc-updown-5m-"  # legacy single-asset BTC-5m prefix (kept for b
 _GAMMA_SLUG_PREFIXES: dict[tuple[str, str], str] = {
     ("BTC", "5m"): "btc-updown-5m-",
     ("ETH", "5m"): "eth-updown-5m-",
+    # 2026-05-26 (RDS note #712): XRP and SOL 5m signal_evaluations had
+    # 0% outcome coverage because the forward writer was BTC/ETH-only.
+    # Polymarket publishes ``xrp-updown-5m-<ts>`` / ``sol-updown-5m-<ts>``
+    # markets (see engine/data/feeds/polymarket_5min.py docstring) so the
+    # same Gamma path that resolves BTC/ETH works as-is — only the
+    # registry below ever needed extending.
+    ("SOL", "5m"): "sol-updown-5m-",
+    ("XRP", "5m"): "xrp-updown-5m-",
 }
 
 
