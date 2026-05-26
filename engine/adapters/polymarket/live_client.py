@@ -178,7 +178,7 @@ class LivePolymarketClient(PolymarketClientPort):
         direction = direction.upper()
         if direction not in {"YES", "NO"}:
             raise ValueError(f"direction must be YES or NO, got {direction!r}")
-        self._log.info("place_order.requested", market_slug=market_slug, direction=direction, price=str(price), stake_usd=stake_usd)
+        self._log.info("place_order.requested", market_slug=market_slug, side=direction, price=str(price), stake_usd=stake_usd)
         client = self._ensure_client()
         if not token_id:
             raise ValueError(
