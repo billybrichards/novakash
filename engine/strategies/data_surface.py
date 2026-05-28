@@ -430,6 +430,18 @@ class FullDataSurface:
     # (fix/tickformer-strategies-actually-fire — Bug B)
     tickformer_gate_cond: Optional[float] = None
 
+    # Multi-step inference readiness flag (PR-B / fix/tickformer-gate-cond-ready-gate).
+    # True iff the timesfm-side K=6 multi-step loop is warmed up AND the
+    # lookback buffer is full (≥69 ticks). Emitted as a top-level bool on
+    # /v4/snapshot by the sibling PR-A (feat/tickformer-ready-flag-and-single-writer
+    # on the timesfm repo). Until PR-A is merged and deployed, this field is
+    # absent from the snapshot payload — the default of False here ensures no
+    # strategy erroneously fires while running a K=0 single-shot inference.
+    # Consumed by the ``TICKFORMER_REQUIRE_GATE_COND_READY`` gate in
+    # _tickformer_base.py (default OFF; activate post PR-A deploy).
+    # Cross-repo contract key — do NOT rename without a coordinated PR.
+    tickformer_gate_cond_ready: bool = False
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1669,6 +1681,14 @@ class DataSurfaceManager:
                 float(ts_data["tickformer_gate_cond"])
                 if ts_data.get("tickformer_gate_cond") is not None
                 else None
+            ),
+            # PR-B: multi-step readiness flag. Read from top-level snapshot
+            # (not per-timescale ts_data) because PR-A emits it at the root
+            # level of /v4/snapshot alongside the timestamp. Defaults to
+            # False so PR-B is safe to merge before PR-A ships — strategies
+            # see ready=False and SKIP cleanly when the env gate is active.
+            tickformer_gate_cond_ready=bool(
+                (v4.get("tickformer_gate_cond_ready") if v4 else None) or False
             ),
             probability_v2_meta_gate=(
                 float(ts_data["probability_v2_meta_gate"])
