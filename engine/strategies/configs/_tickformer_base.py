@@ -113,7 +113,9 @@ def _eval_offset_remaining(surface: "FullDataSurface") -> Optional[int]:
 
 # ── Tier-lookup (FIX 3) ───────────────────────────────────────────────
 
-_TIERS_PATH = Path(__file__).with_name("tickformer_tiers.yaml")
+# Lives one level up (engine/strategies/) so the registry's
+# `configs/*.yaml` glob does NOT auto-load it as a strategy.
+_TIERS_PATH = Path(__file__).resolve().parent.parent / "tickformer_tiers.yaml"
 _TIERS_CACHE: Optional[dict] = None
 
 

@@ -8,7 +8,7 @@ SKIP + threshold-cross + eval_offset-out-of-band + gate not passed),
 distributed across the 3 sister strategies for ~6+ total cases.
 
 Mutex-group + tier-lookup coverage live in their own dedicated test
-modules (added in FIX 2 / FIX 3 commits).
+modules (test_mutex_resolver.py + test_tickformer_tier_lookup.py).
 """
 from __future__ import annotations
 

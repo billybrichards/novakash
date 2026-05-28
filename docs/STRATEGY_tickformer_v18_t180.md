@@ -72,6 +72,45 @@ At live-promotion time the operator must decide:
   density but compounding sizing risk; requires explicit per-window
   position cap.
 
+## Runtime tier lookup (PR #619 FIX 3)
+
+A `gate_params.tier` runtime override lets an operator promote this
+strategy from one conviction tier to another **without redeploying
+the YAML**. Tier presets live in
+`engine/strategies/tickformer_tiers.yaml`:
+
+| tier   | up_threshold | rem_min | rem_max | notes                                |
+|--------|--------------|---------|---------|--------------------------------------|
+| TIER_A | 0.85         | 60      | 60      | ~95-98% WR, very low volume          |
+| TIER_B | 0.90         | 60      | 120     | ~92-96% WR, moderate volume          |
+| TIER_C | 0.85         | 60      | 220     | ~94% WR, balanced (default for v16)  |
+| TIER_D | 0.85         | 60      | 240     | ~88% WR, dream zone (220s+ admitted) |
+
+Resolution order:
+1. **Explicit gate_param** (`up_threshold`, `eval_offset_remaining_*`) — wins.
+2. **Tier preset** — overrides the per-strategy default if `tier:` is set.
+3. **Per-strategy default constant** — final fallback.
+
+Promote at runtime (no engine restart):
+
+```sql
+INSERT INTO strategy_runtime_overrides (strategy_id, gate_params, updated_at)
+VALUES ('tickformer_v18_t180', '{"tier": "TIER_B"}'::jsonb, NOW())
+ON CONFLICT (strategy_id) DO UPDATE
+  SET gate_params = strategy_runtime_overrides.gate_params || EXCLUDED.gate_params,
+      updated_at = EXCLUDED.updated_at;
+```
+
+## Cross-strategy mutex group (PR #619 FIX 2)
+
+This strategy declares `gate_params.mutex_group: tickformer` so that
+when v16_pure / v17_sniper / v18_t180 all want to TRADE on the same
+window, only the highest-`confidence_score` sibling fires. Losers
+emit `SKIP(reason="mutex_group_lost")` with a metadata pointer to
+the winner. Resolver implementation:
+`engine/strategies/mutex_resolver.py`. Disable by setting
+`mutex_group: ""` in `gate_params`.
+
 ## Cross-repo dependency
 
 Forward-compatible with the timesfm sister PR. If
