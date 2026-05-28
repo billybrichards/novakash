@@ -1193,6 +1193,33 @@ class StrategyRegistry:
                         error=str(_exc)[:200],
                     )
 
+        # ── TickFormer shadow exit monitor (feat/exit-monitor-shadow) ───────
+        # Detection-only. No exits executed. Logs would-have-exited markers to
+        # exit_monitor_shadow for future CTF mergePositions EV analysis.
+        # Gate: EXIT_MONITOR_SHADOW_ENABLED env var (default false).
+        # Wrapped in try/except — a monitor exception MUST NOT kill the engine.
+        try:
+            from exit_monitor.wireup import get_shadow_monitor, run_shadow_monitor
+            _shadow_mon = get_shadow_monitor(db_client=self._db)
+            if _shadow_mon is not None and self._position_monitor is not None:
+                import asyncio as _aio_shadow
+                _eval_offset_wire = int(
+                    getattr(window, "eval_offset", 0) or 0
+                )
+                _aio_shadow.create_task(
+                    run_shadow_monitor(
+                        monitor=_shadow_mon,
+                        surface=surface,
+                        position_monitor=self._position_monitor,
+                        eval_offset=_eval_offset_wire,
+                    )
+                )
+        except Exception as _shadow_exc:
+            log.warning(
+                "registry.exit_monitor_shadow_error",
+                error=str(_shadow_exc)[:200],
+            )
+
         # Send per-window summary at final eval offset
         # 5m windows: T-60 (eval_offset <= 62)
         # 15m windows: T-270 (eval_offset <= 280, first eval in trade window)
