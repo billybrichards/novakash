@@ -592,6 +592,18 @@ class DataSurfaceManager:
         self._warmup_cache: dict[str, dict] = {}
         self._warmup_max_age_s: float = 15 * 60  # 15 minutes
 
+        # ── Per-tick tickformer callback (fix/tickformer-eval-cadence-lag) ──
+        # Called immediately after each successful /v4/snapshot fetch that
+        # carries at least one non-None tickformer probability column.
+        # Signature: async def cb(asset: str, snapshot_body: dict) -> None
+        # Wired by the orchestrator via set_tickformer_snapshot_callback().
+        # Only fires when TICKFORMER_EVAL_PER_WRITE=true (default false).
+        self._tickformer_snapshot_cb: Any = None
+        self._tickformer_eval_per_write: bool = (
+            os.environ.get("TICKFORMER_EVAL_PER_WRITE", "false").lower()
+            in ("1", "true", "yes", "on")
+        )
+
     def set_active_assets(self, assets: list[str]) -> None:
         """Set which assets the refresh loop polls /v4/snapshot for.
 
@@ -602,6 +614,26 @@ class DataSurfaceManager:
         if not assets:
             return
         self._active_assets = [a.upper() for a in assets]
+
+    def set_tickformer_snapshot_callback(self, cb: Any) -> None:
+        """Register a per-tick callback that fires after each /v4/snapshot
+        fetch that carries new tickformer probabilities.
+
+        Signature: ``async def cb(asset: str, snapshot_body: dict) -> None``
+
+        The callback is invoked via ``asyncio.create_task`` so it never blocks
+        the refresh loop. Requires ``TICKFORMER_EVAL_PER_WRITE=true``; no-op
+        when the flag is off. Called only for BTC (the only asset with live
+        tickformer scores) and only when at least one
+        ``probability_tickformer_v*`` key is non-None in the 5m timescale
+        block of the snapshot.
+
+        Used by the orchestrator to trigger ``strategy_registry.evaluate_all``
+        on every fresh tickformer tick, eliminating the ~100s lag between
+        column write and strategy evaluation that occurs when the CLOSING
+        window feed stalls (fix/tickformer-eval-cadence-lag).
+        """
+        self._tickformer_snapshot_cb = cb
 
     def set_alerter(self, alert_cb: Any) -> None:
         """Register a coroutine(text, level) for TimesFM health alerts.
@@ -987,6 +1019,33 @@ class DataSurfaceManager:
                     except Exception as exc:
                         log.warning("data_surface.recovery_alert_failed", error=str(exc)[:200])
                     self._degraded_since = None
+                # ── Per-tick tickformer callback (fix/tickformer-eval-cadence-lag) ──
+                # Fire immediately after each successful BTC snapshot that carries
+                # at least one non-None tickformer column. The orchestrator wires
+                # evaluate_all for tickformer strategies to this callback so
+                # strategy evaluation happens on the same tick the column is
+                # written — eliminating the ~100s gap when CLOSING window signals
+                # stall. Gated by TICKFORMER_EVAL_PER_WRITE=true (default false).
+                if (
+                    self._tickformer_eval_per_write
+                    and self._tickformer_snapshot_cb is not None
+                    and asset.upper() == "BTC"
+                ):
+                    _ts5 = (body.get("timescales") or {}).get("5m", {})
+                    _has_tf = any(
+                        _ts5.get(f"probability_tickformer_{mid}") is not None
+                        for mid in ("v16", "v17", "v18", "v20")
+                    )
+                    if _has_tf:
+                        try:
+                            asyncio.create_task(
+                                self._tickformer_snapshot_cb(asset, body)
+                            )
+                        except Exception as _cb_exc:
+                            log.warning(
+                                "data_surface.tickformer_cb_error",
+                                error=str(_cb_exc)[:200],
+                            )
                 return True
         except asyncio.TimeoutError:
             log_fn = log.error if (

@@ -1121,6 +1121,19 @@ class EngineRuntime:
                             self._data_surface_mgr.set_alerter(
                                 self._alerter.send_system_alert
                             )
+                    # ── Per-tick tickformer eval callback ──────────────────
+                    # Wire evaluate_all into the data_surface refresh loop
+                    # so tickformer strategies run on every fresh /v4/snapshot
+                    # tick rather than waiting for the next CLOSING window
+                    # signal (fix/tickformer-eval-cadence-lag).
+                    if (
+                        hasattr(self._data_surface_mgr, "set_tickformer_snapshot_callback")
+                        and self._strategy_registry is not None
+                    ):
+                        self._data_surface_mgr.set_tickformer_snapshot_callback(
+                            self._on_tickformer_snapshot
+                        )
+                        log.info("orchestrator.tickformer_eval_per_write_wired")
                     if hasattr(self._data_surface_mgr, "warmup_from_db"):
                         db_pool = (
                             getattr(self._db, "_pool", None) if self._db else None
@@ -2270,6 +2283,13 @@ class EngineRuntime:
                     window_key=window_key,
                     eval_offset=eval_offset,
                 )
+                # Track the last live CLOSING window per asset so that the
+                # per-tick tickformer snapshot callback (_on_tickformer_snapshot)
+                # can call evaluate_all even when no new CLOSING signal fires.
+                # fix/tickformer-eval-cadence-lag
+                if not hasattr(self, "_last_closing_window"):
+                    self._last_closing_window: dict = {}
+                self._last_closing_window[window.asset] = window
                 # v8.0: Direct evaluation — no staggered queue delay.
                 # Staggered loop was for multi-asset batching (BTC+ETH+SOL).
                 # BTC-only: evaluate immediately for fastest FOK execution.
@@ -2476,6 +2496,90 @@ class EngineRuntime:
                     state=state_value,
                 )
             self._five_min_strategy.trim_recent_windows(20)
+
+    async def _on_tickformer_snapshot(self, asset: str, snapshot_body: dict) -> None:
+        """Per-tick callback fired by DataSurfaceManager after each BTC
+        /v4/snapshot fetch that carries new tickformer probabilities.
+
+        Calls strategy_registry.evaluate_all for the last known CLOSING
+        window for ``asset``, using the SAME window object the feed emitted.
+        This eliminates the ~100s gap between column write and strategy
+        evaluation that occurs when the CLOSING window feed stalls.
+
+        Only tickformer strategies are meaningfully affected: LGB strategies
+        get no new data between CLOSING signals (their scores are embedded in
+        the same /v4/snapshot that just arrived), so they produce the same
+        SKIP they would on the next normal CLOSING tick. No LGB strategy
+        cadence changes.
+
+        Non-BTC, non-5m and exit-monitor paths are unaffected — the callback
+        only fires for BTC (enforced in DataSurfaceManager._try_fetch_snapshot).
+
+        fix/tickformer-eval-cadence-lag
+        """
+        if not self._strategy_registry:
+            return
+        last_windows = getattr(self, "_last_closing_window", {})
+        window = last_windows.get(asset.upper()) or last_windows.get(asset)
+        if window is None:
+            # No CLOSING window seen yet for this asset — nothing to evaluate.
+            return
+        # Compute a fresh eval_offset (seconds remaining in the 5m window)
+        # from current wall-clock time so the strategy sees the ACTUAL
+        # remaining time, not the stale value from when the last CLOSING
+        # signal fired. This is critical when this callback fires between
+        # CLOSING signals (the whole point of the fix).
+        import time as _time
+        _window_ts = getattr(window, "window_ts", 0)
+        _duration = getattr(window, "duration_secs", 300)
+        _close_ts = _window_ts + _duration
+        _fresh_remaining = int(_close_ts - _time.time())
+        if _fresh_remaining <= 0:
+            # Window has closed — no point evaluating.
+            return
+        # Patch eval_offset on the window snapshot for this call only.
+        # WindowInfo is a mutable object (dataclass without frozen=True).
+        # Setting eval_offset here makes get_surface() and _evaluate_one()
+        # see the correct remaining seconds.
+        try:
+            object.__setattr__(window, "eval_offset", _fresh_remaining)
+        except (AttributeError, TypeError):
+            # Frozen dataclass or similar — fall back to the last known value.
+            pass
+        try:
+            state = await self._aggregator.get_state()
+            _v2_window_market = None
+            if getattr(window, "up_token_id", None) and getattr(
+                window, "down_token_id", None
+            ):
+                from domain.value_objects import WindowMarket
+
+                _tf = getattr(window, "timeframe", "5m")
+                _v2_window_market = WindowMarket(
+                    condition_id=f"{window.asset}-{window.window_ts}",
+                    up_token_id=window.up_token_id,
+                    down_token_id=window.down_token_id,
+                    market_slug=f"{window.asset.lower()}-updown-{_tf}-{window.window_ts}",
+                )
+            await self._strategy_registry.evaluate_all(
+                window,
+                state,
+                window_market=_v2_window_market,
+                current_btc_price=float(getattr(state, "btc_price", 0) or 0),
+                open_price=float(getattr(window, "open_price", 0) or 0),
+            )
+            log.debug(
+                "tickformer_eval_per_write.fired",
+                asset=asset,
+                window_ts=getattr(window, "window_ts", None),
+                eval_offset=remaining,
+            )
+        except Exception as exc:
+            log.warning(
+                "tickformer_eval_per_write.error",
+                asset=asset,
+                error=str(exc)[:200],
+            )
 
     async def _on_fifteen_min_window(self, window) -> None:
         """Handle 15-minute window signal — same strategy, different timeframe.
