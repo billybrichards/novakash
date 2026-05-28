@@ -420,6 +420,15 @@ class FullDataSurface:
     # Default None — forward-compatible; cross-repo contract keys.
     probability_tickformer_v17: Optional[float] = None
     probability_tickformer_v18: Optional[float] = None
+    # v20 — adaptive early-entry head (pending timesfm-side PR). Used by the
+    # exit monitor (tickformer_prob_reader v20 path) and tickformer_v20_adaptive_early
+    # strategy. Falls back to v18 in the exit monitor until this column is live.
+    # (fix/tickformer-strategies-actually-fire — v20 scaffold)
+    probability_tickformer_v20: Optional[float] = None
+    # Gate-condition score emitted by timesfm-service alongside the trade
+    # signal (PR #622 missed persisting this). NUMERIC, None when absent.
+    # (fix/tickformer-strategies-actually-fire — Bug B)
+    tickformer_gate_cond: Optional[float] = None
 
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
@@ -1597,6 +1606,16 @@ class DataSurfaceManager:
             probability_tickformer_v18=(
                 float(ts_data["probability_tickformer_v18"])
                 if ts_data.get("probability_tickformer_v18") is not None
+                else None
+            ),
+            probability_tickformer_v20=(
+                float(ts_data["probability_tickformer_v20"])
+                if ts_data.get("probability_tickformer_v20") is not None
+                else None
+            ),
+            tickformer_gate_cond=(
+                float(ts_data["tickformer_gate_cond"])
+                if ts_data.get("tickformer_gate_cond") is not None
                 else None
             ),
             probability_v2_meta_gate=(

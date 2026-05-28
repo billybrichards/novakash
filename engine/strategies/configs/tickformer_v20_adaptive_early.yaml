@@ -1,0 +1,92 @@
+name: tickformer_v20_adaptive_early
+strategy_id: tickformer_v20_adaptive_early
+version: "1.0.0"
+# tickformer_v20_adaptive_early — 2026-05-28 (SHADOW, Billy promotes manually)
+#
+# TickFormer v20 adaptive early-entry SHADOW strategy. Reads the NEW column
+# emitted by timesfm-service:
+#   probability_tickformer_v20 (NUMERIC)
+# plus the shared tickformer_trade_signal field.
+#
+# THE ADAPTIVE EARLY-ENTRY PROFILE:
+#   v20 is the early-entry-optimised successor — same hybrid transformer +
+#   multi-step autoregressive head as v18, but trained with a loss reweighted
+#   toward early-window (t-180+) precision while keeping v18's broad-band
+#   stability. Also used by the exit monitor as the preferred exit-signal
+#   source (tickformer_prob_reader v20 path, falls back to v18 until this
+#   column is emitted by timesfm-service).
+#
+# NOTE: probability_tickformer_v20 is NOT yet emitted by timesfm-service.
+# Until the timesfm-side PR lands, this strategy will see
+# probability_tickformer_v20=None on every tick and emit a clean
+# tickformer_v20_not_available SKIP. That is the expected forward-compatible
+# behaviour — it will begin firing automatically once timesfm is updated.
+#
+# HEADLINE CONVICTION TIERS (projected from v18 architecture):
+#   thr 0.90, eval_offset_remaining 120-280s -> early-entry band
+#   Down: symmetric at p <= 0.10
+#
+# Defaults below: thr 0.90, remaining 120-280 (early-entry broad band).
+#
+# SHADOW KILL SWITCH:
+#   gate_params.shadow_only=1 (default) forces SKIP-with-decision-record
+#   behaviour even if mode=LIVE in YAML.
+#
+# DEPENDENCY:
+#   timesfm sister PR must add probability_tickformer_v20 column to
+#   signal_evaluations + emit it on /v4/snapshot.timescales.5m.
+#   Also requires probability_tickformer_v20 column on signal_evaluations:
+#   apply migrations/add_tickformer_v20_adaptive_early.sql before deploying.
+#
+# RELATIONSHIP TO EXIT MONITOR:
+#   exit_monitor/adapters/tickformer_prob_reader.py already references
+#   "probability_tickformer_v20" and falls back to v18. Wiring this
+#   strategy surfaces v20 fires in strategy_decisions for the exit monitor
+#   to consume once the timesfm-side column is live.
+#
+# References:
+#   Sibling engine strategies: tickformer_v16_pure, tickformer_v17_sniper,
+#   tickformer_v18_t180
+#   exit_monitor/adapters/tickformer_prob_reader.py (v20 reader)
+#   fix/tickformer-strategies-actually-fire (Bug A scaffold)
+#
+status: SHADOW
+description: |
+  TickFormer v20 adaptive early-entry SHADOW strategy. Reads
+  probability_tickformer_v20 (NUMERIC) emitted by timesfm-service (pending
+  timesfm-side PR). Early-entry defaults: thr 0.90, eval_offset_remaining
+  [120, 280]. shadow_only=1 forces SKIP-with-record even if mode flips.
+  Forward-compatible: emits tickformer_v20_not_available SKIP until
+  timesfm-side column is wired. Symmetric DOWN side at p <= 0.10.
+mode: SHADOW
+asset: ANY
+timescale: 5m
+
+hooks_file: tickformer_v20_adaptive_early.py
+pre_gate_hook: evaluate_tickformer_v20_adaptive_early
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
+  up_threshold: 0.90                   # early-entry default
+  down_threshold: 0.10                 # symmetric to up_threshold
+  eval_offset_remaining_min: 120       # seconds remaining — early band floor
+  eval_offset_remaining_max: 280       # admit full early-entry zone
+  min_consecutive_pass_ticks: 1
+  entry_cap: 0.93
+  entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90                 # skip DOWN fires if fill > 0.90
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5                  # SHADOW — no real fire while shadow_only=1
+  max_daily_loss_usd: 20

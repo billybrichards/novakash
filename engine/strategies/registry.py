@@ -562,8 +562,13 @@ class StrategyRegistry:
             # Multi-asset guard: skip strategies whose configured asset
             # doesn't match this window's asset. Without this, a BTC window
             # would evaluate v7_15m_sniper_eth and produce mislabelled data.
+            # "ANY" is a sentinel meaning the strategy runs on every asset
+            # (e.g. tickformer_v16/v17/v18 — model is cross-asset). Without
+            # this special-case those strategies silently skip on every window
+            # because "ANY" != "BTC" / "ETH" / etc. (fix/tickformer-strategies-actually-fire)
             window_asset = getattr(window, "asset", "BTC")
-            if getattr(config, "asset", "BTC") != window_asset:
+            _config_asset = getattr(config, "asset", "BTC")
+            if _config_asset != "ANY" and _config_asset != window_asset:
                 continue
             try:
                 decision = self._evaluate_one(name, config, surface)
@@ -2028,6 +2033,55 @@ class StrategyRegistry:
                         "registry.signal_eval_lgb_v9_5_xrp_pure_write_error"
                     )
                 )
+
+        # TickFormer probability + gate-signal persistence — write all five
+        # tickformer columns (probability_tickformer_v16/v17/v18,
+        # tickformer_gate_cond, tickformer_trade_signal) whenever at least one
+        # is populated on the surface.
+        #
+        # PR #622 added the three probability columns to signal_evaluations and
+        # the timesfm-side writer, but missed tickformer_gate_cond and
+        # tickformer_trade_signal. This block closes that gap.
+        #
+        # Columns exist on signal_evaluations since
+        # migrations/add_tickformer_v16_pure_strategy.sql (applied 2026-05-28).
+        # Writer method: DBClient.update_signal_evaluations_tickformer (added
+        # in fix/tickformer-strategies-actually-fire — Bug B).
+        #
+        # Fire-and-forget, same pattern as every sibling writer above.
+        # (fix/tickformer-strategies-actually-fire)
+        _tf_v16 = getattr(surface, "probability_tickformer_v16", None)
+        _tf_v17 = getattr(surface, "probability_tickformer_v17", None)
+        _tf_v18 = getattr(surface, "probability_tickformer_v18", None)
+        _tf_v20 = getattr(surface, "probability_tickformer_v20", None)
+        _tf_gate_cond = getattr(surface, "tickformer_gate_cond", None)
+        _tf_trade_signal = getattr(surface, "tickformer_trade_signal", None)
+        _any_tf = any(
+            v is not None
+            for v in (_tf_v16, _tf_v17, _tf_v18, _tf_v20, _tf_gate_cond, _tf_trade_signal)
+        )
+        if _any_tf and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_tickformer"
+        ):
+            tf_task = asyncio.create_task(
+                self._db.update_signal_evaluations_tickformer(
+                    window_ts=surface.window_ts,
+                    asset=surface.asset,
+                    timeframe=surface.timescale,
+                    eval_offset=surface.eval_offset,
+                    probability_tickformer_v16=_tf_v16,
+                    probability_tickformer_v17=_tf_v17,
+                    probability_tickformer_v18=_tf_v18,
+                    probability_tickformer_v20=_tf_v20,
+                    tickformer_gate_cond=_tf_gate_cond,
+                    tickformer_trade_signal=_tf_trade_signal,
+                )
+            )
+            tf_task.add_done_callback(
+                self._log_async_write_error(
+                    "registry.signal_eval_tickformer_write_error"
+                )
+            )
 
     def _stamp_v9_2_gate_fired(
         self,

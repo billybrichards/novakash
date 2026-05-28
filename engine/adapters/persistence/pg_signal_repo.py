@@ -1714,6 +1714,116 @@ class PgSignalRepository(SignalRepository):
             )
             return 0
 
+    async def update_signal_evaluations_tickformer(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_tickformer_v16: Optional[float] = None,
+        probability_tickformer_v17: Optional[float] = None,
+        probability_tickformer_v18: Optional[float] = None,
+        probability_tickformer_v20: Optional[float] = None,
+        tickformer_gate_cond: Optional[float] = None,
+        tickformer_trade_signal: Optional[str] = None,
+    ) -> int:
+        """Upsert TickFormer columns on signal_evaluations row.
+
+        Mirror of DBClient.update_signal_evaluations_tickformer for parity.
+        Writes all six tickformer columns in a single UPSERT.
+        v20 requires migrations/add_tickformer_v20_adaptive_early.sql.
+        (fix/tickformer-strategies-actually-fire — Bug B)
+        """
+        if not self._pool:
+            return 0
+        if eval_offset is None:
+            return 0
+        if all(
+            v is None
+            for v in (
+                probability_tickformer_v16,
+                probability_tickformer_v17,
+                probability_tickformer_v18,
+                probability_tickformer_v20,
+                tickformer_gate_cond,
+                tickformer_trade_signal,
+            )
+        ):
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_tickformer_v16,
+                        probability_tickformer_v17,
+                        probability_tickformer_v18,
+                        probability_tickformer_v20,
+                        tickformer_gate_cond,
+                        tickformer_trade_signal,
+                        evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $6, $7, $8, $9, $10,
+                        NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_tickformer_v16 = COALESCE(
+                            signal_evaluations.probability_tickformer_v16,
+                            EXCLUDED.probability_tickformer_v16
+                        ),
+                        probability_tickformer_v17 = COALESCE(
+                            signal_evaluations.probability_tickformer_v17,
+                            EXCLUDED.probability_tickformer_v17
+                        ),
+                        probability_tickformer_v18 = COALESCE(
+                            signal_evaluations.probability_tickformer_v18,
+                            EXCLUDED.probability_tickformer_v18
+                        ),
+                        probability_tickformer_v20 = COALESCE(
+                            signal_evaluations.probability_tickformer_v20,
+                            EXCLUDED.probability_tickformer_v20
+                        ),
+                        tickformer_gate_cond = COALESCE(
+                            signal_evaluations.tickformer_gate_cond,
+                            EXCLUDED.tickformer_gate_cond
+                        ),
+                        tickformer_trade_signal = COALESCE(
+                            signal_evaluations.tickformer_trade_signal,
+                            EXCLUDED.tickformer_trade_signal
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_tickformer_v16) if probability_tickformer_v16 is not None else None,
+                    float(probability_tickformer_v17) if probability_tickformer_v17 is not None else None,
+                    float(probability_tickformer_v18) if probability_tickformer_v18 is not None else None,
+                    float(probability_tickformer_v20) if probability_tickformer_v20 is not None else None,
+                    float(tickformer_gate_cond) if tickformer_gate_cond is not None else None,
+                    tickformer_trade_signal,
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_tickformer_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_tickformer_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     # -- Additional signal-related methods (not on port yet) ---------------
     # These are included here because they belong to the signal aggregate
     # even though the port interface uses placeholder VOs today.  Phase 1

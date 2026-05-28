@@ -107,7 +107,22 @@ def _eval_offset_remaining(surface: "FullDataSurface") -> Optional[int]:
 
     Prefers an explicit ``eval_offset_remaining`` surface field if
     present (forward-compat with a future surface column); otherwise
-    computes ``300 - eval_offset`` on the assumption of a 5m window.
+    returns ``eval_offset`` directly.
+
+    IMPORTANT: ``eval_offset`` on FullDataSurface is set equal to
+    ``seconds_to_close`` (see data_surface.py line: ``seconds_to_close =
+    eval_offset``).  It is therefore already "seconds remaining", NOT
+    "seconds elapsed since window open".  An earlier version of this
+    function incorrectly computed ``300 - eval_offset``, which produced
+    values in the range [60, 276] for the typical late-window ticks
+    (eval_offset ≈ 24–240) — the mirror image of the correct band.
+
+    With that formula, a tick at eval_offset=200 (200s remaining) was
+    treated as remaining=100, and a tick at eval_offset=24 (24s
+    remaining, near window close) was treated as remaining=276 (near
+    window open) — systematically outside every strategy's configured
+    eval_offset_remaining band.  Fix: return eval_offset as-is.
+    (fix/tickformer-strategies-actually-fire, Bug E)
     """
     explicit = getattr(surface, "eval_offset_remaining", None)
     if explicit is not None:
@@ -119,7 +134,9 @@ def _eval_offset_remaining(surface: "FullDataSurface") -> Optional[int]:
     if eval_offset is None:
         return None
     try:
-        return max(0, 300 - int(eval_offset))
+        # eval_offset == seconds_to_close (see FullDataSurface definition).
+        # Return it directly — no "300 - eval_offset" transformation.
+        return max(0, int(eval_offset))
     except (TypeError, ValueError):
         return None
 
