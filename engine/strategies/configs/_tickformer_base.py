@@ -40,6 +40,7 @@ after every strategy in a window evaluates.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -351,6 +352,39 @@ def evaluate_tickformer_strategy(
             strategy_id=strategy_id,
             version=version,
         )
+
+    # ── Gate-cond readiness check (PR-B, fix/tickformer-gate-cond-ready-gate) ──
+    # The K=6 multi-step inference loop needs ≥69 ticks of lookback warmup
+    # before it produces gate-cond-corrected probabilities.  Before that,
+    # the emitted probability is the K=0 single-shot value — NOT the value
+    # the model was trained against.  Trading on K=0 probability causes the
+    # ~21 phantom crossings/hour observed pre-PR-A (probability looks high
+    # because the model's calibration assumes gate-cond context).
+    #
+    # This gate is **off by default** (env var unset / "false") so PR-B can
+    # land BEFORE PR-A (feat/tickformer-ready-flag-and-single-writer on the
+    # timesfm repo) is merged and deployed.  Operator activation sequence:
+    #   1. PR-A merges on timesfm repo.
+    #   2. timesfm-service redeploys on classifier-gpu.
+    #   3. Verify /v4/snapshot top-level has ``tickformer_gate_cond_ready: true``.
+    #   4. Set TICKFORMER_REQUIRE_GATE_COND_READY=true on the engine box.
+    #   5. Restart engine.  Gate activates; K=0 phantom crossings suppressed.
+    #
+    # When env is false (default), this block is a no-op — zero behaviour
+    # change for ALL strategies, including non-tickformer / LGB / ETH / SOL / XRP.
+    _require_ready = os.environ.get(
+        "TICKFORMER_REQUIRE_GATE_COND_READY", "false"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if _require_ready:
+        gate_cond_ready = bool(getattr(surface, "tickformer_gate_cond_ready", False))
+        meta["tickformer_gate_cond_ready"] = gate_cond_ready
+        if not gate_cond_ready:
+            return _skip(
+                "gate_cond_not_settled",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
 
     if p >= up_threshold:
         direction = "UP"

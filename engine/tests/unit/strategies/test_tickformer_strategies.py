@@ -342,3 +342,98 @@ def test_v20_shadow_only_default_skips_with_record():
     assert dec.action == "SKIP"
     assert dec.skip_reason == "shadow_only_no_trade"
     assert dec.metadata["would_trade"] is True
+
+
+# ── gate_cond_not_settled gate (PR-B) ─────────────────────────────────
+# The TICKFORMER_REQUIRE_GATE_COND_READY env var gates the K=6 loop
+# readiness check.  Default is "false" so all existing behaviour is
+# unchanged when the env var is absent.  Three contract cases:
+#   A. env=true + ready=False  → SKIP(gate_cond_not_settled)
+#   B. env=true + ready=True   → gate passes, evaluation continues
+#   C. env=false (default)     → gate is a no-op regardless of ready flag
+
+
+def _surface_with_ready(
+    prob_value: float = 0.92,
+    *,
+    ready: bool = False,
+    eval_offset: int = 180,
+):
+    """Build a surface that carries the ``tickformer_gate_cond_ready`` flag."""
+    ns = _surface(
+        "probability_tickformer_v16",
+        prob_value,
+        eval_offset=eval_offset,
+        trade_signal=None,
+    )
+    ns.tickformer_gate_cond_ready = ready
+    # Unique window_ts already set by _surface helper.
+    return ns
+
+
+def test_gate_cond_not_settled_skips_when_env_true_and_ready_false(monkeypatch):
+    """env=true + surface.tickformer_gate_cond_ready=False → gate_cond_not_settled."""
+    monkeypatch.setenv("TICKFORMER_REQUIRE_GATE_COND_READY", "true")
+    surface = _surface_with_ready(ready=False)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v16_pure(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "gate_cond_not_settled"
+    assert dec.metadata.get("tickformer_gate_cond_ready") is False
+
+
+def test_gate_cond_ready_passes_gate_when_env_true_and_ready_true(monkeypatch):
+    """env=true + surface.tickformer_gate_cond_ready=True → gate passes, reaches shadow."""
+    monkeypatch.setenv("TICKFORMER_REQUIRE_GATE_COND_READY", "true")
+    surface = _surface_with_ready(ready=True, eval_offset=180)
+    # shadow_only=1 (default) so we expect shadow_only_no_trade after the gate
+    # passes — confirming that evaluation continued past gate_cond_not_settled.
+    dec = evaluate_tickformer_v16_pure(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade", (
+        f"Expected shadow_only_no_trade (gate passed), got {dec.skip_reason!r}"
+    )
+    assert dec.metadata.get("tickformer_gate_cond_ready") is True
+
+
+def test_gate_cond_ready_backwards_compat_when_env_false(monkeypatch):
+    """env=false (default) → gate is a no-op, strategy evaluates normally."""
+    monkeypatch.setenv("TICKFORMER_REQUIRE_GATE_COND_READY", "false")
+    # ready=False but gate is off → should still reach shadow_only_no_trade
+    surface = _surface_with_ready(ready=False, eval_offset=180)
+    dec = evaluate_tickformer_v16_pure(surface)
+    # Default shadow_only=1 so it hits the shadow kill-switch, not gate_cond.
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade", (
+        f"Expected shadow_only_no_trade (env=false, gate is no-op), got {dec.skip_reason!r}"
+    )
+    # gate_cond_ready should NOT appear in metadata when the env gate is off.
+    assert "tickformer_gate_cond_ready" not in dec.metadata
+
+
+def test_gate_cond_env_absent_is_treated_as_false(monkeypatch):
+    """Env var absent → treated as false → gate is a no-op (backwards compat)."""
+    monkeypatch.delenv("TICKFORMER_REQUIRE_GATE_COND_READY", raising=False)
+    surface = _surface_with_ready(ready=False, eval_offset=180)
+    dec = evaluate_tickformer_v16_pure(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade", (
+        f"Expected shadow_only_no_trade (env absent = no-op), got {dec.skip_reason!r}"
+    )
+
+
+def test_gate_cond_applies_to_v17_and_v18_too(monkeypatch):
+    """The gate is in the shared base — all sister strategies inherit it."""
+    monkeypatch.setenv("TICKFORMER_REQUIRE_GATE_COND_READY", "true")
+
+    surface_v17 = _surface("probability_tickformer_v17", 0.92, eval_offset=100)
+    surface_v17.tickformer_gate_cond_ready = False
+    with _gp_active({"shadow_only": 0}):
+        dec_v17 = evaluate_tickformer_v17_sniper(surface_v17)
+    assert dec_v17.skip_reason == "gate_cond_not_settled"
+
+    surface_v18 = _surface("probability_tickformer_v18", 0.95, eval_offset=180)
+    surface_v18.tickformer_gate_cond_ready = False
+    with _gp_active({"shadow_only": 0}):
+        dec_v18 = evaluate_tickformer_v18_t180(surface_v18)
+    assert dec_v18.skip_reason == "gate_cond_not_settled"
