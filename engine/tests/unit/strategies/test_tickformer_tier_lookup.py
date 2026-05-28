@@ -44,8 +44,10 @@ def _gp_active(params):
 def _reset_state():
     _tickformer_base._consec_state.clear()
     _tickformer_base._TIERS_CACHE = None
+    _tickformer_base._DOWN_SYMMETRY_WARNED.clear()
     yield
     _tickformer_base._consec_state.clear()
+    _tickformer_base._DOWN_SYMMETRY_WARNED.clear()
 
 
 def _surface(prob_field, p, eval_offset=120):
@@ -92,11 +94,23 @@ def test_tier_c_default_band_thr_0_85():
     assert dec.metadata["eval_offset_remaining_max"] == 220
 
 
-def test_explicit_up_threshold_overrides_tier_preset():
-    """Operator's explicit gate_param wins over the tier preset."""
-    surface = _surface("probability_tickformer_v18", 0.88, eval_offset=200)
-    # TIER_B preset says up_threshold 0.90 / rem_max 120 — explicit
-    # override of 0.85 + rem_max 220 wins.
+def test_tier_preset_wins_over_explicit_gate_params():
+    """Post-PR-#619 review: tier preset WINS over any YAML/runtime
+    ``up_threshold`` / ``eval_offset_remaining_*`` value when set.
+
+    This is the production-realistic case the original review caught:
+    the three shipped YAMLs pre-populate ``up_threshold`` etc. — if
+    YAML wins over tier, a runtime override flipping tier→TIER_A is
+    a silent no-op.
+
+    Operator workflow: to override a tier value, clear the ``tier``
+    key in the runtime override AND set the explicit knob.
+    """
+    surface = _surface("probability_tickformer_v18", 0.92, eval_offset=200)
+    # TIER_B preset says up_threshold 0.90 / rem_max 120. The
+    # operator-set YAML-style ``up_threshold=0.85`` and
+    # ``eval_offset_remaining_max=220`` are now IGNORED in favour
+    # of the tier preset.
     with _gp_active({
         "tier": "TIER_B",
         "up_threshold": 0.85,
@@ -104,8 +118,22 @@ def test_explicit_up_threshold_overrides_tier_preset():
         "shadow_only": 0,
     }):
         dec = evaluate_tickformer_v18_t180(surface)
+    # rem_max 120 → eval_offset=200 (rem=100) is in-band; p=0.92 >= 0.90.
     assert dec.action == "TRADE", dec.skip_reason
-    assert dec.metadata["up_threshold"] == 0.85
+    assert dec.metadata["up_threshold"] == 0.90  # tier B
+    assert dec.metadata["eval_offset_remaining_max"] == 120  # tier B
+
+
+def test_tier_b_default_resolves_without_explicit_threshold():
+    """Set tier: TIER_B in gate_params, no explicit up_threshold;
+    verify it resolves to 0.90 (Tier B default). PR #619 review."""
+    surface = _surface("probability_tickformer_v18", 0.91, eval_offset=240)
+    with _gp_active({"tier": "TIER_B", "shadow_only": 0}):
+        dec = evaluate_tickformer_v18_t180(surface)
+    assert dec.action == "TRADE", dec.skip_reason
+    assert dec.metadata["up_threshold"] == 0.90
+    assert dec.metadata["eval_offset_remaining_min"] == 60
+    assert dec.metadata["eval_offset_remaining_max"] == 120
 
 
 def test_unknown_tier_falls_back_to_per_strategy_defaults():

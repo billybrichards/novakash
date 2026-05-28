@@ -17,13 +17,18 @@ Behaviour is identical to the previous three near-duplicate hooks (PR
 SHADOW kill-switch semantics. Tests live in
 ``engine/tests/unit/strategies/test_tickformer_strategies.py``.
 
-Tier-lookup support (FIX 3): if ``gate_params.tier`` is set to one of
-the keys in ``tickformer_tiers.yaml`` (TIER_A/B/C/D), that tier's
-threshold + eval_offset_remaining band override the per-strategy
-defaults — so an operator can promote a strategy from Tier C → B
-without a YAML redeploy. Explicit ``up_threshold`` /
-``eval_offset_remaining_*`` in gate_params still win over the tier
-preset (operator wins over preset).
+Tier-lookup support (FIX 3, hardened post-review): if
+``gate_params.tier`` is set to one of the keys in
+``tickformer_tiers.yaml`` (TIER_A/B/C/D), that tier's threshold +
+eval_offset_remaining band WIN over any YAML/runtime-override
+gate_param values for ``up_threshold`` /
+``eval_offset_remaining_min`` / ``eval_offset_remaining_max``. This
+is the post-PR-#619 review fix — previously YAML pre-populated those
+keys (operator-wins precedence) which silently neutered any runtime
+``tier: TIER_X`` flip. New rule: **if you set ``tier`` you MUST
+either accept the tier's values, OR clear ``tier`` and set the
+explicit knobs**. The runtime override DB path is the canonical way
+to promote a strategy from Tier C → B without a YAML redeploy.
 
 Mutex-group support (FIX 2): a strategy can declare
 ``gate_params.mutex_group = "tickformer"``. The metadata field
@@ -34,11 +39,19 @@ after every strategy in a window evaluates.
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import yaml
+
+logger = logging.getLogger(__name__)
+
+# Track strategies that have already triggered the implicit-DOWN
+# symmetry warning so we don't spam logs every eval tick. PR #619
+# review SHOULD-FIX 3.
+_DOWN_SYMMETRY_WARNED: set[str] = set()
 
 from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
@@ -237,31 +250,59 @@ def evaluate_tickformer_strategy(
         )
     p = float(p)
 
-    # ── Tier preset (FIX 3) — operator explicit overrides win ────
+    # ── Tier preset (FIX 3, hardened post-PR-#619 review) ────────
+    # Resolution order:
+    #   1. If gate_params.tier is set AND resolves to a valid preset,
+    #      the tier's up_threshold / eval_offset_remaining_{min,max}
+    #      WIN over any YAML/runtime gate_param values for those keys.
+    #      This is the fix for the "tier silently ignored when YAML
+    #      pre-populates the same keys" bug flagged in the review.
+    #   2. Otherwise, fall through to gate_params.up_threshold /
+    #      eval_offset_remaining_* (YAML / runtime override), then to
+    #      the per-strategy hard defaults.
+    # Operator workflow: to override a tier value, clear the `tier`
+    # key in the runtime override and set the explicit knob; setting
+    # both is unambiguous — tier wins.
     tier_key = _gp.get_str("tier", None, "")
     tier_up, tier_rem_min, tier_rem_max = _resolve_tier_overrides(
         tier_key or None
     )
-    effective_up_default = (
-        tier_up if tier_up is not None else default_up_threshold
-    )
-    effective_rem_min_default = (
-        tier_rem_min if tier_rem_min is not None else default_rem_min
-    )
-    effective_rem_max_default = (
-        tier_rem_max if tier_rem_max is not None else default_rem_max
-    )
 
-    up_threshold = _gp.get_float("up_threshold", None, effective_up_default)
-    down_threshold = _gp.get_float(
-        "down_threshold", None, max(0.0, min(1.0, 1.0 - up_threshold))
-    )
-    rem_min = _gp.get_int(
-        "eval_offset_remaining_min", None, effective_rem_min_default
-    )
-    rem_max = _gp.get_int(
-        "eval_offset_remaining_max", None, effective_rem_max_default
-    )
+    if tier_up is not None:
+        up_threshold = float(tier_up)
+    else:
+        up_threshold = _gp.get_float("up_threshold", None, default_up_threshold)
+
+    # ── DOWN-side symmetry (review SHOULD-FIX 3) ─────────────────
+    # If the operator did not set ``down_threshold`` explicitly we
+    # default to ``1 - up_threshold``. Emit a one-shot WARN per
+    # strategy so an operator who sets only ``up_threshold=0.92``
+    # is not silently given down_threshold=0.08 without noticing.
+    _down_default = max(0.0, min(1.0, 1.0 - up_threshold))
+    _down_in_active = "down_threshold" in _gp._ACTIVE.get()
+    down_threshold = _gp.get_float("down_threshold", None, _down_default)
+    if not _down_in_active and strategy_id not in _DOWN_SYMMETRY_WARNED:
+        _DOWN_SYMMETRY_WARNED.add(strategy_id)
+        logger.warning(
+            "tickformer.implicit_down_symmetry strategy=%s up=%.3f down=%.3f "
+            "(set gate_params.down_threshold to silence)",
+            strategy_id,
+            up_threshold,
+            _down_default,
+        )
+
+    if tier_rem_min is not None:
+        rem_min = int(tier_rem_min)
+    else:
+        rem_min = _gp.get_int(
+            "eval_offset_remaining_min", None, default_rem_min
+        )
+    if tier_rem_max is not None:
+        rem_max = int(tier_rem_max)
+    else:
+        rem_max = _gp.get_int(
+            "eval_offset_remaining_max", None, default_rem_max
+        )
     shadow_only = bool(
         _gp.get_int("shadow_only", None, int(_DEFAULT_SHADOW_ONLY))
     )
