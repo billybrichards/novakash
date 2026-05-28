@@ -1843,13 +1843,13 @@ class DataSurfaceManager:
                 )
                 else None
             ),
-            # PR-B: multi-step readiness flag. Read from top-level snapshot
-            # (not per-timescale ts_data) because PR-A emits it at the root
-            # level of /v4/snapshot alongside the timestamp. Defaults to
-            # False so PR-B is safe to merge before PR-A ships — strategies
-            # see ready=False and SKIP cleanly when the env gate is active.
+            # timesfm v4-0.1.0 emits gate_cond_ready nested under
+            # timescales.<tf>.tickformer_gate_cond_ready, not top-level as
+            # PR-B originally expected. Read from ts_data alongside the
+            # other tickformer fields. Defaults to False so the
+            # TICKFORMER_REQUIRE_GATE_COND_READY gate stays safe pre-emit.
             tickformer_gate_cond_ready=bool(
-                (v4.get("tickformer_gate_cond_ready") if v4 else None) or False
+                ts_data.get("tickformer_gate_cond_ready") or False
             ),
             probability_v2_meta_gate=(
                 float(ts_data["probability_v2_meta_gate"])
