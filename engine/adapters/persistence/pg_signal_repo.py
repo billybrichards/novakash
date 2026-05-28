@@ -1269,6 +1269,187 @@ class PgSignalRepository(SignalRepository):
             )
             return 0
 
+    async def update_signal_evaluations_tickformer_v16(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_tickformer_v16: Optional[float],
+    ) -> int:
+        """Upsert ``probability_tickformer_v16`` on signal_evaluations row.
+
+        Written by the tickformer_v16_pure SHADOW strategy sidecar (PR #619).
+        Column added by migrations/add_probability_tickformer_columns.sql.
+        Idempotent via COALESCE (first-write-wins).
+        """
+        if not self._pool:
+            return 0
+        if probability_tickformer_v16 is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_tickformer_v16, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_tickformer_v16 = COALESCE(
+                            signal_evaluations.probability_tickformer_v16,
+                            EXCLUDED.probability_tickformer_v16
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_tickformer_v16),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_tickformer_v16_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_tickformer_v16_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
+    async def update_signal_evaluations_tickformer_v17(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_tickformer_v17: Optional[float],
+    ) -> int:
+        """Upsert ``probability_tickformer_v17`` on signal_evaluations row.
+
+        Written by the tickformer_v17_sniper SHADOW strategy sidecar (PR #619).
+        Idempotent via COALESCE (first-write-wins).
+        """
+        if not self._pool:
+            return 0
+        if probability_tickformer_v17 is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_tickformer_v17, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_tickformer_v17 = COALESCE(
+                            signal_evaluations.probability_tickformer_v17,
+                            EXCLUDED.probability_tickformer_v17
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_tickformer_v17),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_tickformer_v17_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_tickformer_v17_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
+    async def update_signal_evaluations_tickformer_v18(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_tickformer_v18: Optional[float],
+    ) -> int:
+        """Upsert ``probability_tickformer_v18`` on signal_evaluations row.
+
+        Written by the tickformer_v18_t180 SHADOW strategy sidecar (PR #619).
+        Idempotent via COALESCE (first-write-wins).
+        """
+        if not self._pool:
+            return 0
+        if probability_tickformer_v18 is None:
+            return 0
+        if eval_offset is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_tickformer_v18, evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_tickformer_v18 = COALESCE(
+                            signal_evaluations.probability_tickformer_v18,
+                            EXCLUDED.probability_tickformer_v18
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_tickformer_v18),
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_tickformer_v18_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_tickformer_v18_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     async def update_signal_evaluations_lgb_v9_2_pure(
         self,
         window_ts,

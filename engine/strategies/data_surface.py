@@ -1580,23 +1580,75 @@ class DataSurfaceManager:
                 else None
             ),
             probability_tickformer_v16=(
-                float(ts_data["probability_tickformer_v16"])
-                if ts_data.get("probability_tickformer_v16") is not None
+                float(
+                    ts_data.get("probability_tickformer_v16")
+                    if ts_data.get("probability_tickformer_v16") is not None
+                    else ts_data.get("tickformer_v16")
+                    if ts_data.get("tickformer_v16") is not None
+                    else (v4.get("probability_tickformer_v16") if v4 else None)
+                    if (v4.get("probability_tickformer_v16") if v4 else None) is not None
+                    else (v4.get("tickformer_v16") if v4 else None)
+                )
+                if (
+                    ts_data.get("probability_tickformer_v16") is not None
+                    or ts_data.get("tickformer_v16") is not None
+                    or (v4.get("probability_tickformer_v16") if v4 else None) is not None
+                    or (v4.get("tickformer_v16") if v4 else None) is not None
+                )
                 else None
             ),
             tickformer_trade_signal=(
-                str(ts_data["tickformer_trade_signal"])
-                if ts_data.get("tickformer_trade_signal") is not None
+                str(
+                    ts_data.get("tickformer_trade_signal")
+                    if ts_data.get("tickformer_trade_signal") is not None
+                    else ts_data.get("signal")
+                    if ts_data.get("signal") is not None
+                    else (v4.get("tickformer_trade_signal") if v4 else None)
+                    if (v4.get("tickformer_trade_signal") if v4 else None) is not None
+                    else (v4.get("tickformer_signal") if v4 else None)
+                )
+                if (
+                    ts_data.get("tickformer_trade_signal") is not None
+                    or ts_data.get("signal") is not None
+                    or (v4.get("tickformer_trade_signal") if v4 else None) is not None
+                    or (v4.get("tickformer_signal") if v4 else None) is not None
+                )
                 else None
             ),
             probability_tickformer_v17=(
-                float(ts_data["probability_tickformer_v17"])
-                if ts_data.get("probability_tickformer_v17") is not None
+                float(
+                    ts_data.get("probability_tickformer_v17")
+                    if ts_data.get("probability_tickformer_v17") is not None
+                    else ts_data.get("tickformer_v17")
+                    if ts_data.get("tickformer_v17") is not None
+                    else (v4.get("probability_tickformer_v17") if v4 else None)
+                    if (v4.get("probability_tickformer_v17") if v4 else None) is not None
+                    else (v4.get("tickformer_v17") if v4 else None)
+                )
+                if (
+                    ts_data.get("probability_tickformer_v17") is not None
+                    or ts_data.get("tickformer_v17") is not None
+                    or (v4.get("probability_tickformer_v17") if v4 else None) is not None
+                    or (v4.get("tickformer_v17") if v4 else None) is not None
+                )
                 else None
             ),
             probability_tickformer_v18=(
-                float(ts_data["probability_tickformer_v18"])
-                if ts_data.get("probability_tickformer_v18") is not None
+                float(
+                    ts_data.get("probability_tickformer_v18")
+                    if ts_data.get("probability_tickformer_v18") is not None
+                    else ts_data.get("tickformer_v18")
+                    if ts_data.get("tickformer_v18") is not None
+                    else (v4.get("probability_tickformer_v18") if v4 else None)
+                    if (v4.get("probability_tickformer_v18") if v4 else None) is not None
+                    else (v4.get("tickformer_v18") if v4 else None)
+                )
+                if (
+                    ts_data.get("probability_tickformer_v18") is not None
+                    or ts_data.get("tickformer_v18") is not None
+                    or (v4.get("probability_tickformer_v18") if v4 else None) is not None
+                    or (v4.get("tickformer_v18") if v4 else None) is not None
+                )
                 else None
             ),
             probability_v2_meta_gate=(

@@ -1862,6 +1862,83 @@ class StrategyRegistry:
                     )
                 )
 
+        # Tickformer probability persistence — write the three tickformer
+        # columns on every tick where the corresponding field is populated.
+        # Sidecar writers for tickformer_v16_pure / v17_sniper / v18_t180
+        # SHADOW strategies (PR #619). Fire-and-forget, same pattern as
+        # v9_3_btc_pure above.
+        tf_v16 = getattr(surface, "probability_tickformer_v16", None)
+        if tf_v16 is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_tickformer_v16"
+        ):
+            try:
+                _tf_v16_p = float(tf_v16)
+            except (TypeError, ValueError):
+                _tf_v16_p = None
+            if _tf_v16_p is not None:
+                tf_v16_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_tickformer_v16(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_tickformer_v16=_tf_v16_p,
+                    )
+                )
+                tf_v16_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_tickformer_v16_write_error"
+                    )
+                )
+
+        tf_v17 = getattr(surface, "probability_tickformer_v17", None)
+        if tf_v17 is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_tickformer_v17"
+        ):
+            try:
+                _tf_v17_p = float(tf_v17)
+            except (TypeError, ValueError):
+                _tf_v17_p = None
+            if _tf_v17_p is not None:
+                tf_v17_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_tickformer_v17(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_tickformer_v17=_tf_v17_p,
+                    )
+                )
+                tf_v17_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_tickformer_v17_write_error"
+                    )
+                )
+
+        tf_v18 = getattr(surface, "probability_tickformer_v18", None)
+        if tf_v18 is not None and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_tickformer_v18"
+        ):
+            try:
+                _tf_v18_p = float(tf_v18)
+            except (TypeError, ValueError):
+                _tf_v18_p = None
+            if _tf_v18_p is not None:
+                tf_v18_task = asyncio.create_task(
+                    self._db.update_signal_evaluations_tickformer_v18(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        probability_tickformer_v18=_tf_v18_p,
+                    )
+                )
+                tf_v18_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.signal_eval_tickformer_v18_write_error"
+                    )
+                )
+
         # Meta-gate score persistence — write the three meta_gate columns on
         # every tick where the corresponding field is populated. Sidecar
         # writers mirroring the LGB PURE sidecar pattern above. The meta-gate
