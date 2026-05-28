@@ -534,6 +534,17 @@ class StrategyRegistry:
             except Exception as exc:
                 log.warning("registry.window_trace_error", error=str(exc)[:200])
 
+        # ── PASS A: evaluate every eligible strategy hook ───────────────
+        # Decisions are collected first, the mutex-group resolver runs
+        # BEFORE Pass B (write_decision / execute / fire_attempt_card)
+        # so a mutex-loser is never executed at LIVE. This is the
+        # PR #619 review BLOCKER B1 fix — previously the resolver
+        # ran at the tail of evaluate_all, AFTER execute_uc.execute
+        # and _fire_trade_attempt_card, so at LIVE all three sister
+        # strategies would have fired (real fills) before the
+        # resolver could demote two of them. SHADOW was safe because
+        # ``shadow_only=1`` short-circuits the hook to SKIP first.
+        evaluations: list[tuple[str, Any, StrategyDecision]] = []
         decisions = []
         for name, config in self._configs.items():
             # Apply DB runtime override (audit #291): flips mode/gate_params
@@ -556,6 +567,67 @@ class StrategyRegistry:
                 continue
             try:
                 decision = self._evaluate_one(name, config, surface)
+                evaluations.append((name, config, decision))
+            except Exception as exc:
+                log.warning(
+                    "registry.evaluate_error",
+                    strategy=name,
+                    error=str(exc)[:200],
+                )
+                evaluations.append(
+                    (
+                        name,
+                        config,
+                        StrategyDecision.error(
+                            reason=f"registry_error: {str(exc)[:200]}",
+                            strategy_id=name,
+                            strategy_version=config.version,
+                        ),
+                    )
+                )
+
+        # ── Mutex-group resolution (PR #619 BLOCKER B1 fix) ────────────
+        # Run BEFORE write_decision / execute / fire_attempt_card so a
+        # demoted loser:
+        #   (1) lands SKIP(mutex_group_lost) in strategy_decisions, with
+        #       ``mutex_pre_resolution_action="TRADE"`` in metadata so
+        #       the original intent is preserved for debugging.
+        #   (2) is never sent to ExecuteTradeUseCase.execute.
+        #   (3) does not emit a FILLED/FAILED_EXECUTION attempt card.
+        # Fails OPEN: if the resolver itself raises, the original
+        # decisions stand — the legacy behaviour is honoured.
+        try:
+            from strategies.mutex_resolver import resolve_mutex_groups
+
+            _pre = [d for (_n, _c, d) in evaluations]
+            _resolved = resolve_mutex_groups(_pre)
+            # Stamp pre-resolution action on demoted losers so the
+            # audit trail in strategy_decisions shows BOTH the original
+            # TRADE intent AND the resolved SKIP.
+            for _orig, _new in zip(_pre, _resolved):
+                if (
+                    _orig.action == "TRADE"
+                    and _new.action == "SKIP"
+                    and _new.skip_reason == "mutex_group_lost"
+                ):
+                    _meta = dict(_new.metadata or {})
+                    _meta.setdefault("mutex_pre_resolution_action", "TRADE")
+                    _meta.setdefault("mutex_pre_resolution_direction", _orig.direction)
+                    object.__setattr__(_new, "metadata", _meta)
+            # Replace the per-strategy decision with the resolved one
+            # (winners are unchanged, losers become SKIP).
+            evaluations = [
+                (n, c, _resolved[i]) for i, (n, c, _) in enumerate(evaluations)
+            ]
+        except Exception as exc:
+            log.warning(
+                "registry.mutex_resolver_error",
+                error=str(exc)[:200],
+            )
+
+        # ── PASS B: write_decision + execute + fire_trade_attempt_card ──
+        for name, config, decision in evaluations:
+            try:
                 decisions.append(decision)
 
                 # Write decision to strategy_decisions table (fire-and-forget)
@@ -1197,25 +1269,14 @@ class StrategyRegistry:
                 error=str(exc)[:200],
             )
 
-        # ── Mutex-group cross-strategy guardrail (PR #619 FIX 2) ──
-        # When multiple strategies share a ``gate_params.mutex_group``
-        # label and both want to TRADE on the same window, only the
-        # highest-conviction one wins; the losers are demoted to SKIP
-        # with skip_reason=mutex_group_lost. Engine-side so the
-        # strategy_decisions writer above already received the
-        # un-demoted TRADE, BUT downstream execution + the returned
-        # decisions list use the resolved view. Fails OPEN on resolver
-        # error (i.e. the original TRADE is honoured) to avoid a
-        # silent black-hole on a bug.
-        try:
-            from strategies.mutex_resolver import resolve_mutex_groups
-
-            decisions = resolve_mutex_groups(decisions)
-        except Exception as exc:
-            log.warning(
-                "registry.mutex_resolver_error",
-                error=str(exc)[:200],
-            )
+        # NOTE: Mutex-group resolution has moved UP to Pass A→B boundary
+        # (around L590) as part of PR #619 review BLOCKER B1 fix. Running
+        # the resolver here, at the tail of evaluate_all, was too late:
+        # ``self._execute_uc.execute(...)`` and ``_fire_trade_attempt_card``
+        # had already run for every TRADE in the per-strategy loop, so at
+        # LIVE all sister strategies in a mutex group would have fired
+        # real orders before any demotion. The resolver is now upstream of
+        # write_decision / execute / card emission.
 
         return decisions
 
