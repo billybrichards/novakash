@@ -1,4 +1,4 @@
-"""Unit tests for the tickformer_v16/v17/v18 SHADOW-strategy family.
+"""Unit tests for the tickformer_v16/v17/v18/v20 SHADOW-strategy family.
 
 Validates that the post-FIX-1 thin wrappers behave identically to the
 pre-refactor near-duplicate hooks: same SKIP reasons, same metadata
@@ -38,6 +38,9 @@ from strategies.configs.tickformer_v17_sniper import (  # noqa: E402
 )
 from strategies.configs.tickformer_v18_t180 import (  # noqa: E402
     evaluate_tickformer_v18_t180,
+)
+from strategies.configs.tickformer_v20_adaptive_early import (  # noqa: E402
+    evaluate_tickformer_v20_adaptive_early,
 )
 
 
@@ -120,11 +123,17 @@ def test_v16_missing_probability_skips_not_available():
 
 
 def test_v17_opposite_trade_signal_blocks_up():
-    """Explicit DOWN trade_signal while prob says UP → SKIP."""
+    """Explicit DOWN trade_signal while prob says UP → SKIP.
+
+    eval_offset=100 → remaining=100, inside v17's sniper band [60,140],
+    so the evaluation reaches the trade-signal cross-check gate.
+    (Old value was eval_offset=200 which placed remaining=200 outside
+    rem_max=140 after the Bug E formula fix.)
+    """
     surface = _surface(
         "probability_tickformer_v17",
         0.92,
-        eval_offset=200,
+        eval_offset=100,
         trade_signal="DOWN",
     )
     with _gp_active({"shadow_only": 0}):
@@ -135,8 +144,10 @@ def test_v17_opposite_trade_signal_blocks_up():
 
 
 def test_v17_outside_eval_offset_remaining_band_skips():
-    """Default v17 band is rem_max=140 (eval_offset >= 160 fails)."""
-    # eval_offset=10 → remaining=290, far above rem_max=140.
+    """Default v17 band is rem_min=60, rem_max=140. eval_offset=10 → remaining=10 < 60."""
+    # eval_offset=10 means 10 seconds remain → below rem_min=60.
+    # (Note: old formula gave remaining=290, new formula gives remaining=10 —
+    # both land outside the [60,140] band, just from different sides.)
     surface = _surface(
         "probability_tickformer_v17", 0.95, eval_offset=10
     )
@@ -212,3 +223,122 @@ def test_v16_shadow_record_metadata_has_required_keys():
         "strategy_version",
     ):
         assert key in dec.metadata, key
+
+
+# ── Bug E: _eval_offset_remaining formula correctness ─────────────────
+# eval_offset IS seconds_to_close (seconds remaining). The old formula
+# computed 300 - eval_offset, producing the mirror image of the correct
+# band. After the fix, remaining = eval_offset directly.
+# (fix/tickformer-strategies-actually-fire)
+
+
+def test_eval_offset_remaining_is_eval_offset_not_300_minus():
+    """eval_offset_remaining == eval_offset (seconds remaining), not 300-eval_offset."""
+    surface = _surface("probability_tickformer_v16", 0.92, eval_offset=150)
+    remaining = _tickformer_base._eval_offset_remaining(surface)
+    # Must equal the eval_offset (150s remaining), NOT 300-150=150 (coincidence)
+    # so let's use an odd value.
+    surface2 = _surface("probability_tickformer_v16", 0.92, eval_offset=73)
+    remaining2 = _tickformer_base._eval_offset_remaining(surface2)
+    assert remaining2 == 73, f"expected 73 (eval_offset), got {remaining2}"
+
+
+def test_eval_offset_remaining_prefers_explicit_surface_field():
+    """If surface has eval_offset_remaining set, it wins over eval_offset."""
+    surface = _surface("probability_tickformer_v16", 0.92, eval_offset=73)
+    surface.eval_offset_remaining = 200  # explicit field present
+    remaining = _tickformer_base._eval_offset_remaining(surface)
+    assert remaining == 200
+
+
+def test_v17_in_band_fires_after_formula_fix():
+    """v17 rem_min=60, rem_max=140. eval_offset=100 → remaining=100, in-band → TRADE."""
+    surface = _surface(
+        "probability_tickformer_v17",
+        0.92,
+        eval_offset=100,
+        trade_signal=None,
+    )
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v17_sniper(surface)
+    # eval_offset=100 → remaining=100, in [60,140] → passes band gate.
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+
+
+def test_v17_low_eval_offset_outside_band_skips():
+    """eval_offset=20 → remaining=20 < rem_min=60 → outside_eval_offset_remaining_band."""
+    surface = _surface(
+        "probability_tickformer_v17",
+        0.92,
+        eval_offset=20,
+    )
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v17_sniper(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    # Remaining should be 20, below rem_min=60.
+    assert dec.metadata["eval_offset_remaining"] == 20
+
+
+# ── Bug A: asset=ANY registry guard (unit-level check on base) ─────────
+# The registry fix is in registry.py and tested there. This test
+# validates the strategy itself evaluates correctly for non-BTC assets
+# (the base never checks asset — that was always correct; the registry
+# was the broken gatekeeper).
+
+
+def test_v18_evaluates_on_eth_asset():
+    """Strategy logic is asset-agnostic; ETH surfaces evaluate cleanly."""
+    surface = _surface(
+        "probability_tickformer_v18",
+        0.95,
+        eval_offset=120,
+        asset="ETH",
+    )
+    dec = evaluate_tickformer_v18_t180(surface)
+    # SHADOW kill switch active (default shadow_only=1).
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade"
+    assert dec.metadata["asset"] == "ETH"
+
+
+# ── v20 strategy scaffold ─────────────────────────────────────────────
+# (fix/tickformer-strategies-actually-fire)
+
+
+def test_v20_missing_probability_skips_not_available():
+    """v20 prob column not yet emitted → clean not_available SKIP."""
+    surface = _surface("probability_tickformer_v20", None)
+    dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "tickformer_v20_not_available"
+    assert dec.metadata["probability_tickformer_v20"] is None
+
+
+def test_v20_in_band_fires_when_shadow_off():
+    """v20 rem_min=120, rem_max=280. eval_offset=200, p=0.93, shadow_off → TRADE."""
+    surface = _surface(
+        "probability_tickformer_v20",
+        0.93,
+        eval_offset=200,
+        trade_signal=None,
+    )
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+    assert dec.strategy_id == "tickformer_v20_adaptive_early"
+
+
+def test_v20_shadow_only_default_skips_with_record():
+    """SHADOW kill switch enforced by default shadow_only=1."""
+    surface = _surface(
+        "probability_tickformer_v20",
+        0.95,
+        eval_offset=200,
+    )
+    dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade"
+    assert dec.metadata["would_trade"] is True

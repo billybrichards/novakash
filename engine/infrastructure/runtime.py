@@ -5467,6 +5467,32 @@ class EngineRuntime:
                                             outcome=outcome,
                                             n_rows=len(_matches),
                                         )
+
+                                        # ── Exit monitor shadow backfill ──────
+                                        # Stamp realized outcome on shadow rows.
+                                        # EXIT_MONITOR_SHADOW_ENABLED guards
+                                        # this. Any exception is swallowed.
+                                        try:
+                                            from exit_monitor.wireup import run_backfill
+                                            import asyncio as _aio_bf
+                                            for _bm in _matches:
+                                                _bf_price = float(_bm.get("fill_price") or 0.85)
+                                                _bf_did = int(_bm.get("id") or 0)
+                                                if _bf_did:
+                                                    _aio_bf.create_task(
+                                                        run_backfill(
+                                                            db_client=self._db,
+                                                            decision_id=_bf_did,
+                                                            outcome=outcome,
+                                                            fill_price=_bf_price,
+                                                        )
+                                                    )
+                                        except Exception as _bf_exc:
+                                            log.warning(
+                                                "exit_monitor.backfill_hook_error",
+                                                error=str(_bf_exc)[:150],
+                                            )
+
                         except Exception as _link_exc:
                             log.debug(
                                 "position_monitor.trade_link_failed",
