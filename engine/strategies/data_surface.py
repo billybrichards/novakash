@@ -384,6 +384,43 @@ class FullDataSurface:
     # RDS note #711 (overnight check), timesfm commit e1ba39d.
     probability_lgb_v9_5_xrp_pure: Optional[float] = None
 
+    # ── TickFormer v16 — magic model probability + trade signal ─────────────
+    # Emitted by timesfm-service (sister PR, cross-repo magic-model branch)
+    # on /v4/snapshot.timescales.5m and via GET /v5/probability +
+    # GET /v5/trade_signal endpoints. Source: TickFormer v16 — a hybrid
+    # transformer that combines per-tick attention with a multi-step
+    # autoregressive inference loop ("magic model") to project residual
+    # window outcome direction.
+    #
+    # Headline conviction tiers from the v16 spec (offline backtest):
+    #   thr 0.85, eval_offset_remaining 60s   -> ~95% WR pocket
+    #   thr 0.90, eval_offset_remaining 60s   -> ~96% WR pocket
+    #   thr 0.85, eval_offset_remaining 180s  -> ~94% WR pocket
+    #   thr 0.85, eval_offset_remaining 220s  -> ~88% WR pocket (dream tier)
+    #
+    # tickformer_trade_signal is a coarse-grained UP/DOWN/HOLD label derived
+    # service-side from probability_tickformer_v16 plus the model's own
+    # residual-volatility filter. Strategies should treat it as a
+    # belt-and-braces confirmation channel, not a substitute for the
+    # probability + threshold logic.
+    #
+    # Read by the new tickformer_v16_pure GHOST strategy (this PR).
+    # Default None — forward-compatible; prod snapshots without these
+    # fields remain valid until the timesfm-side emission lands.
+    # Cross-repo contract keys — do NOT rename without coordinated PR.
+    probability_tickformer_v16: Optional[float] = None
+    tickformer_trade_signal: Optional[str] = None
+
+    # TickFormer v17/v18 sister magic-model heads — emitted on the same
+    # /v4/snapshot.timescales.5m payload by the timesfm sister PR.
+    #   v17 = precision sniper (~98% WR at t-60, very low fire density)
+    #   v18 = balanced t-180 (~92% WR at t-180, ~16 trades/day; broad-band
+    #         stable — defining property is no late-window cliff)
+    # Read by tickformer_v17_sniper and tickformer_v18_t180 strategies.
+    # Default None — forward-compatible; cross-repo contract keys.
+    probability_tickformer_v17: Optional[float] = None
+    probability_tickformer_v18: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1540,6 +1577,26 @@ class DataSurfaceManager:
             probability_lgb_v9_5_xrp_pure=(
                 float(ts_data["probability_lgb_v9_5_xrp_pure"])
                 if ts_data.get("probability_lgb_v9_5_xrp_pure") is not None
+                else None
+            ),
+            probability_tickformer_v16=(
+                float(ts_data["probability_tickformer_v16"])
+                if ts_data.get("probability_tickformer_v16") is not None
+                else None
+            ),
+            tickformer_trade_signal=(
+                str(ts_data["tickformer_trade_signal"])
+                if ts_data.get("tickformer_trade_signal") is not None
+                else None
+            ),
+            probability_tickformer_v17=(
+                float(ts_data["probability_tickformer_v17"])
+                if ts_data.get("probability_tickformer_v17") is not None
+                else None
+            ),
+            probability_tickformer_v18=(
+                float(ts_data["probability_tickformer_v18"])
+                if ts_data.get("probability_tickformer_v18") is not None
                 else None
             ),
             probability_v2_meta_gate=(

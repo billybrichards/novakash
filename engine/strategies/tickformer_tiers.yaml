@@ -1,0 +1,50 @@
+# Shared TickFormer conviction-tier preset map (PR #619 FIX 3).
+#
+# Lets an operator promote a tickformer_v* strategy from one tier to
+# another at RUNTIME (via the runtime_override DB row that flips
+# gate_params.tier) WITHOUT redeploying the strategy's YAML file.
+#
+# Resolution order in _tickformer_base.evaluate_tickformer_strategy:
+#   1. Explicit gate_params.up_threshold / eval_offset_remaining_*
+#      (operator wins — set these to override the preset).
+#   2. Tier preset from this file (when gate_params.tier is set to one
+#      of the keys below).
+#   3. Per-strategy default constants in the wrapper hook.
+#
+# To promote v17 from its sniper default to TIER_B:
+#   UPDATE strategy_runtime_overrides
+#      SET gate_params = jsonb_set(gate_params, '{tier}', '"TIER_B"')
+#    WHERE strategy_id = 'tickformer_v17_sniper';
+#
+# Tier WR/density numbers come from the v16/v17/v18 offline val
+# sweeps (see docs/STRATEGY_tickformer_v16_pure.md). They are
+# pre-shadow estimates — live shadow telemetry overrides.
+
+tiers:
+  TIER_A:
+    # Very high WR, very low fire density.
+    up_threshold: 0.85
+    eval_offset_remaining_min: 60
+    eval_offset_remaining_max: 60
+    notes: "~95-98% WR, very low volume (1-3 fires/day combined UP+DN)"
+
+  TIER_B:
+    # Very high WR, moderate fire density.
+    up_threshold: 0.90
+    eval_offset_remaining_min: 60
+    eval_offset_remaining_max: 120
+    notes: "~92-96% WR, moderate volume (~6 fires/day)"
+
+  TIER_C:
+    # Balanced broad band — default for v16_pure.
+    up_threshold: 0.85
+    eval_offset_remaining_min: 60
+    eval_offset_remaining_max: 220
+    notes: "~94% WR balanced band, ~12-16 fires/day"
+
+  TIER_D:
+    # Dream tier — admits 220s+ ticks for telemetry.
+    up_threshold: 0.85
+    eval_offset_remaining_min: 60
+    eval_offset_remaining_max: 240
+    notes: "~88% WR, includes dream-zone t-220+ ticks"

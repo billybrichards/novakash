@@ -1,0 +1,96 @@
+name: tickformer_v17_sniper
+strategy_id: tickformer_v17_sniper
+version: "1.0.0"
+# tickformer_v17_sniper — 2026-05-28 (SHADOW, Billy promotes manually)
+#
+# TickFormer v17 precision-sniper SHADOW strategy. Reads the NEW column
+# emitted by timesfm-service (sister PR on the magic-model repo):
+#   probability_tickformer_v17 (NUMERIC)
+# plus the shared tickformer_trade_signal field (already added by v16 PR).
+#
+# THE SNIPER PROFILE:
+#   v17 is v16's precision-tuned successor — same hybrid transformer +
+#   multi-step autoregressive head but with the loss reweighted toward
+#   late-window precision. Trade-off vs v16: ~10x fewer fires for ~3-4pp
+#   higher WR across the full t-60..t-220 band.
+#
+# HEADLINE CONVICTION TIERS (v17 val sweep):
+#   thr 0.85, eval_offset_remaining 60s   -> ~98% WR (very low volume)
+#   thr 0.85, eval_offset_remaining 140s  -> ~94% WR
+#   thr 0.85, eval_offset_remaining 220s  -> ~92% WR
+#
+# Defaults below: thr 0.85, remaining 60-140 (the sniper sweet spot).
+# Widen rem_max to 220 in YAML for dream-tier shadow telemetry.
+#
+# DOWN SIDE: symmetric. down_threshold defaults to 1 - up_threshold.
+# Trade-signal cross-check blocks only on explicit opposite.
+#
+# SHADOW KILL SWITCH:
+#   gate_params.shadow_only=1 (default) forces SKIP-with-decision-record
+#   behaviour even if mode=LIVE in YAML. Must be flipped to 0 in YAML
+#   before any real fire emits. This is the single explicit go-live gate.
+#
+# GATE STATE:
+#   - chainlink_freshness only — final-mile execution filter.
+#   - No cohort gates, no sister-pair veto, no v9_ensemble base delegation.
+#     The magic-model edge is independent of the LGB stack.
+#
+# ROLLOUT PLAN:
+#   1. SHADOW (this PR). Sniper band defaults, shadow_only=1.
+#   2. After 20+ shadow fires with WR >= 95% across both directions
+#      (sniper density is lower — 50-fire bar would take a week),
+#      flip shadow_only=0 and promote to GHOST.
+#   3. After 50+ GHOST fires sustaining 95%+ WR, promote to LIVE with
+#      max_position_usd=5.
+#
+# DEPENDENCY:
+#   timesfm sister PR adds probability_tickformer_v17 column to
+#   signal_evaluations + emits it on /v4/snapshot.timescales.5m. This
+#   engine PR is forward-compatible: probability_tickformer_v17=None
+#   short-circuits to a clean SKIP (tickformer_v17_not_available) until
+#   the timesfm-side flag flips.
+#
+# References:
+#   docs/STRATEGY_tickformer_v17_sniper.md — design doc + tier table
+#   Sibling engine strategy: tickformer_v16_pure (sister magic-model strategy)
+#
+status: SHADOW
+description: |
+  TickFormer v17 precision-sniper SHADOW strategy. Reads
+  probability_tickformer_v17 (NUMERIC) emitted by timesfm-service.
+  Sniper defaults: thr 0.85, eval_offset_remaining [60, 140] for the
+  ~94-98% WR pocket. shadow_only=1 forces SKIP-with-record even if mode
+  flips. Symmetric DOWN side at p <= 0.15. Trade-signal cross-check
+  blocks only on explicit opposite.
+mode: SHADOW
+asset: ANY
+timescale: 5m
+
+hooks_file: tickformer_v17_sniper.py
+pre_gate_hook: evaluate_tickformer_v17_sniper
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
+  up_threshold: 0.85                   # sniper default — 94-98% WR across the band
+  down_threshold: 0.15                 # symmetric to up_threshold
+  eval_offset_remaining_min: 60        # seconds remaining in 5m window
+  eval_offset_remaining_max: 140       # sniper sweet spot; widen to 220 for dream tier
+  min_consecutive_pass_ticks: 1
+  entry_cap: 0.93
+  entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90                 # skip DOWN fires if fill > 0.90
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5                  # SHADOW — no real fire while shadow_only=1
+  max_daily_loss_usd: 20
