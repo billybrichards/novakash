@@ -1,0 +1,136 @@
+name: tickformer_v20_adaptive_early
+strategy_id: tickformer_v20_adaptive_early
+version: "1.0.0"
+# tickformer_v20_adaptive_early — 2026-05-28 (SHADOW, Billy promotes manually)
+#
+# TickFormer v20 adaptive-K-aware retrain (custom loss rewarding early
+# high-conviction firing). Reads the NEW column emitted by the timesfm
+# sister PR (separate follow-up — not yet opened at this PR's authoring):
+#   probability_tickformer_v20 (NUMERIC)
+# plus the shared tickformer_trade_signal field (already added by v16 PR).
+#
+# THE ADAPTIVE-EARLY PROFILE:
+#   v20 is the K=6 adaptive-loop retrain. The custom training loss
+#   rewards firing early at high conviction (and penalises late churn).
+#   Defining property: at thr 0.90 K=6 the model fires at ~t-217s
+#   (~22-23s into the 5min window) at 91% WR. EARLIEST entry of any
+#   tickformer variant — by a wide margin (v18 is ~t-180).
+#
+# HEADLINE CONVICTION TIERS (v20 backtest — hub note #726):
+#   thr 0.85 K=6   -> 227 fires, WR 85.9%, 32.6 trades/day
+#   thr 0.88 K=6   -> 156 fires, WR 87.8%, 22.5 trades/day
+#   thr 0.90 K=6   -> 111 fires, WR 91.0%, 15.9 trades/day (RECOMMENDED)
+#   thr 0.92 K=6   ->  61 fires, WR 90.2%,  8.7 trades/day
+#   thr 0.85 K=15  -> 230 fires, WR 86.1%, 32.7 trades/day
+#
+# IMPORTANT CAP — DO NOT RAISE up_threshold ABOVE 0.90:
+#   The v20 backtest shows WR SATURATES at thr 0.90 (91% WR).
+#   At thr 0.92 WR drops slightly (90.2%) while volume drops nearly
+#   in half (15.9 -> 8.7 trades/day). There is no WR benefit to
+#   tightening further — only volume loss. The recommended ceiling
+#   is 0.90 K=6. Operators promoting this strategy must respect
+#   this cap; if a runtime override raises up_threshold above 0.90
+#   without backtest evidence, that change should be reverted.
+#
+# EARLY ENTRY PATTERN (t-217s ish):
+#   Mean fire-eval-offset on the recommended tier is 217.3s, i.e.
+#   ~22-23s INTO the 5min window. This is by design — the adaptive
+#   loss rewards committing to a direction within the first half
+#   of the window. The full eval_offset_remaining band [60, 240] is
+#   exposed here so the strategy does not artificially clip the
+#   model's natural firing distribution. v20's mean fire-eo is
+#   well inside the broad band.
+#
+# K=6 MULTI-STEP LOOP CAVEAT:
+#   v20's K=6 adaptive loop benefits from buffer warm-up (same caveat
+#   as v18). The first few ticks after engine boot may emit
+#   `tickformer_v20_not_available` SKIPs until the K-step buffer is
+#   primed. This is expected and not an error — the symptom is
+#   identical to the v18 warm-up window.
+#
+# DOWN SIDE: symmetric. down_threshold defaults to 1 - up_threshold (0.10).
+# Trade-signal cross-check blocks only on explicit opposite.
+#
+# SHADOW KILL SWITCH:
+#   gate_params.shadow_only=1 (default) forces SKIP-with-decision-record
+#   behaviour even if mode=LIVE in YAML. Must be flipped to 0 in YAML
+#   before any real fire emits. This is the single explicit go-live gate.
+#
+# GATE STATE:
+#   - chainlink_freshness only — final-mile execution filter.
+#   - No cohort gates, no sister-pair veto, no v9_ensemble base delegation.
+#
+# ROLLOUT PLAN:
+#   1. SHADOW (this PR). Recommended thr 0.90, broad band, shadow_only=1.
+#   2. After 50+ shadow fires with WR >= 88% across both directions,
+#      flip shadow_only=0 and promote to GHOST.
+#   3. After 100+ GHOST fires sustaining ~90% WR, promote to LIVE with
+#      max_position_usd=5. Compare side-by-side with v18 (t-180); v20
+#      should yield earlier fills at comparable WR.
+#
+# CROSS-STRATEGY INTERACTION:
+#   v16/v17/v18/v20 can fire on the same window. They are designed to be
+#   ADDITIVE — each emits an independent SHADOW decision record. Because
+#   all default shadow_only=1, there's no competing-for-fill risk at PR
+#   time. Mutex-group `tickformer` (PR #619 FIX 2) ensures only the
+#   highest-confidence sibling fires when multiple converge in LIVE.
+#
+# DEPENDENCY:
+#   timesfm sister PR (NOT YET OPENED at this PR's authoring) adds
+#   probability_tickformer_v20 column to signal_evaluations + emits it
+#   on /v4/snapshot.timescales.5m. This engine PR is forward-compatible:
+#   probability_tickformer_v20=None short-circuits to a clean SKIP
+#   (tickformer_v20_not_available). The v20 model is still a research
+#   checkpoint (not deployed to classifier-gpu yet), so this strategy
+#   will SKIP-clean in prod until the sister emission lands.
+#
+# References:
+#   docs/STRATEGY_tickformer_v20_adaptive_early.md — design doc + tier table
+#   magic-model/V20_RESULTS.md — full backtest report
+#   RDS hub note #726 — backtest summary
+#   Sibling engine strategies: tickformer_v16_pure, tickformer_v17_sniper,
+#                              tickformer_v18_t180
+#
+status: SHADOW
+description: |
+  TickFormer v20 adaptive-K-aware (K=6) SHADOW strategy. Reads
+  probability_tickformer_v20 (NUMERIC) emitted by the timesfm sister PR
+  (not yet opened). Recommended defaults: thr 0.90, eval_offset_remaining
+  [60, 240] for ~91% WR / ~16 trades/day at fire-eo ~t-217s (earliest
+  entry of any tickformer variant). DO NOT raise up_threshold above 0.90
+  — the WR ceiling saturates there and higher thresholds only reduce
+  volume. shadow_only=1 forces SKIP-with-record even if mode flips.
+  Symmetric DOWN side at p <= 0.10. Trade-signal cross-check blocks only
+  on explicit opposite.
+mode: SHADOW
+asset: ANY
+timescale: 5m
+
+hooks_file: tickformer_v20_adaptive_early.py
+pre_gate_hook: evaluate_tickformer_v20_adaptive_early
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
+  up_threshold: 0.90                   # RECOMMENDED CEILING — see header note
+  down_threshold: 0.10                 # symmetric to up_threshold
+  eval_offset_remaining_min: 60        # seconds remaining in 5m window
+  eval_offset_remaining_max: 240       # broad — v20 fires very early (~217s rem)
+  min_consecutive_pass_ticks: 1
+  entry_cap: 0.93
+  entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90                 # skip DOWN fires if fill > 0.90
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5                  # SHADOW — no real fire while shadow_only=1
+  max_daily_loss_usd: 20

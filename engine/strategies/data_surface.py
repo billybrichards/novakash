@@ -421,6 +421,17 @@ class FullDataSurface:
     probability_tickformer_v17: Optional[float] = None
     probability_tickformer_v18: Optional[float] = None
 
+    # TickFormer v20 adaptive-K-aware retrain — emitted on the same
+    # /v4/snapshot.timescales.5m payload by a (future) timesfm sister PR.
+    # v20 is the K=6 adaptive-loop retrain with a custom loss rewarding
+    # early high-conviction firing; backtest fires at ~t-217s
+    # (~22-23s into the 5min window) at 91% WR / ~16 trades/day at
+    # thr 0.90. Read by tickformer_v20_adaptive_early strategy.
+    # Default None — forward-compatible; cross-repo contract key. v20
+    # is still a research checkpoint, so this field will be None in
+    # prod until the v20 emission PR lands on timesfm-service.
+    probability_tickformer_v20: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1597,6 +1608,11 @@ class DataSurfaceManager:
             probability_tickformer_v18=(
                 float(ts_data["probability_tickformer_v18"])
                 if ts_data.get("probability_tickformer_v18") is not None
+                else None
+            ),
+            probability_tickformer_v20=(
+                float(ts_data["probability_tickformer_v20"])
+                if ts_data.get("probability_tickformer_v20") is not None
                 else None
             ),
             probability_v2_meta_gate=(
