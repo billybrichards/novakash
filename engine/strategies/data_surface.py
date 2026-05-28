@@ -411,6 +411,16 @@ class FullDataSurface:
     probability_tickformer_v16: Optional[float] = None
     tickformer_trade_signal: Optional[str] = None
 
+    # TickFormer v17/v18 sister magic-model heads — emitted on the same
+    # /v4/snapshot.timescales.5m payload by the timesfm sister PR.
+    #   v17 = precision sniper (~98% WR at t-60, very low fire density)
+    #   v18 = balanced t-180 (~92% WR at t-180, ~16 trades/day; broad-band
+    #         stable — defining property is no late-window cliff)
+    # Read by tickformer_v17_sniper and tickformer_v18_t180 strategies.
+    # Default None — forward-compatible; cross-repo contract keys.
+    probability_tickformer_v17: Optional[float] = None
+    probability_tickformer_v18: Optional[float] = None
+
     # v2, v9.2, v12 meta gate scores — emitted by timesfm-service on
     # /v4/snapshot. Used by strategy hooks for meta-gate rejection.
     probability_v2_meta_gate: Optional[float] = None
@@ -1577,6 +1587,16 @@ class DataSurfaceManager:
             tickformer_trade_signal=(
                 str(ts_data["tickformer_trade_signal"])
                 if ts_data.get("tickformer_trade_signal") is not None
+                else None
+            ),
+            probability_tickformer_v17=(
+                float(ts_data["probability_tickformer_v17"])
+                if ts_data.get("probability_tickformer_v17") is not None
+                else None
+            ),
+            probability_tickformer_v18=(
+                float(ts_data["probability_tickformer_v18"])
+                if ts_data.get("probability_tickformer_v18") is not None
                 else None
             ),
             probability_v2_meta_gate=(

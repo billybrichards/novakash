@@ -1,0 +1,104 @@
+name: tickformer_v18_t180
+strategy_id: tickformer_v18_t180
+version: "1.0.0"
+# tickformer_v18_t180 — 2026-05-28 (SHADOW, Billy promotes manually)
+#
+# TickFormer v18 balanced t-180 SHADOW strategy. Reads the NEW column
+# emitted by timesfm-service (sister PR on the magic-model repo):
+#   probability_tickformer_v18 (NUMERIC)
+# plus the shared tickformer_trade_signal field (already added by v16 PR).
+#
+# THE BALANCED PROFILE:
+#   v18 is v17's broad-band successor — same architecture, trained across
+#   the full t-60..t-220 window with a uniform precision loss. Defining
+#   property: WR holds 85%+ across the *entire* eval_offset_remaining
+#   band at thr 0.90. No sharp late-window cliff. Production-recommended
+#   for t-180 entries.
+#
+# HEADLINE CONVICTION TIERS (v18 val sweep):
+#   thr 0.90, eval_offset_remaining 60s   -> ~96% WR
+#   thr 0.90, eval_offset_remaining 180s  -> ~92% WR (RECOMMENDED)
+#   thr 0.90, eval_offset_remaining 220s  -> ~85% WR
+#
+# At thr 0.90 with the recommended broad band, expect ~16 trades/day
+# combined UP+DN at ~92% WR.
+#
+# Defaults below: thr 0.90, remaining 60-220 (recommended broad band).
+# Narrow rem_max to 120 in YAML for tighter ~95% WR pocket.
+#
+# DOWN SIDE: symmetric. down_threshold defaults to 1 - up_threshold (0.10).
+# Trade-signal cross-check blocks only on explicit opposite.
+#
+# SHADOW KILL SWITCH:
+#   gate_params.shadow_only=1 (default) forces SKIP-with-decision-record
+#   behaviour even if mode=LIVE in YAML. Must be flipped to 0 in YAML
+#   before any real fire emits. This is the single explicit go-live gate.
+#
+# GATE STATE:
+#   - chainlink_freshness only — final-mile execution filter.
+#   - No cohort gates, no sister-pair veto, no v9_ensemble base delegation.
+#
+# ROLLOUT PLAN:
+#   1. SHADOW (this PR). Recommended broad-band defaults, shadow_only=1.
+#   2. After 50+ shadow fires with WR >= 90% across both directions,
+#      flip shadow_only=0 and promote to GHOST.
+#   3. After 100+ GHOST fires sustaining 90%+ WR, promote to LIVE with
+#      max_position_usd=5. v18 is the lead candidate for first production
+#      tickformer fire because of its broad-band stability.
+#
+# CROSS-STRATEGY INTERACTION:
+#   v16/v17/v18 can fire on the same window. They are designed to be
+#   ADDITIVE — each emits an independent SHADOW decision record. Because
+#   all three default shadow_only=1, there's no competing-for-fill risk
+#   at PR time. At live-promotion time the operator must decide whether
+#   to gate them mutually-exclusively or allow stacked exposure.
+#
+# DEPENDENCY:
+#   timesfm sister PR adds probability_tickformer_v18 column to
+#   signal_evaluations + emits it on /v4/snapshot.timescales.5m. This
+#   engine PR is forward-compatible: probability_tickformer_v18=None
+#   short-circuits to a clean SKIP (tickformer_v18_not_available).
+#
+# References:
+#   docs/STRATEGY_tickformer_v18_t180.md — design doc + tier table
+#   Sibling engine strategies: tickformer_v16_pure, tickformer_v17_sniper
+#
+status: SHADOW
+description: |
+  TickFormer v18 balanced t-180 SHADOW strategy. Reads
+  probability_tickformer_v18 (NUMERIC) emitted by timesfm-service.
+  Recommended defaults: thr 0.90, eval_offset_remaining [60, 220] for
+  ~92% WR / ~16 trades/day. shadow_only=1 forces SKIP-with-record even
+  if mode flips. Symmetric DOWN side at p <= 0.10. Trade-signal
+  cross-check blocks only on explicit opposite.
+mode: SHADOW
+asset: ANY
+timescale: 5m
+
+hooks_file: tickformer_v18_t180.py
+pre_gate_hook: evaluate_tickformer_v18_t180
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
+  up_threshold: 0.90                   # recommended — 92% WR broad band
+  down_threshold: 0.10                 # symmetric to up_threshold
+  eval_offset_remaining_min: 60        # seconds remaining in 5m window
+  eval_offset_remaining_max: 220       # full broad band; narrow to 120 for tighter WR
+  min_consecutive_pass_ticks: 1
+  entry_cap: 0.93
+  entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90                 # skip DOWN fires if fill > 0.90
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5                  # SHADOW — no real fire while shadow_only=1
+  max_daily_loss_usd: 20
