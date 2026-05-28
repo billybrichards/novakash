@@ -1197,6 +1197,26 @@ class StrategyRegistry:
                 error=str(exc)[:200],
             )
 
+        # ── Mutex-group cross-strategy guardrail (PR #619 FIX 2) ──
+        # When multiple strategies share a ``gate_params.mutex_group``
+        # label and both want to TRADE on the same window, only the
+        # highest-conviction one wins; the losers are demoted to SKIP
+        # with skip_reason=mutex_group_lost. Engine-side so the
+        # strategy_decisions writer above already received the
+        # un-demoted TRADE, BUT downstream execution + the returned
+        # decisions list use the resolved view. Fails OPEN on resolver
+        # error (i.e. the original TRADE is honoured) to avoid a
+        # silent black-hole on a bug.
+        try:
+            from strategies.mutex_resolver import resolve_mutex_groups
+
+            decisions = resolve_mutex_groups(decisions)
+        except Exception as exc:
+            log.warning(
+                "registry.mutex_resolver_error",
+                error=str(exc)[:200],
+            )
+
         return decisions
 
     # ── Skip-reason → attempt-card outcome classifier ─────────────────

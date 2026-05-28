@@ -79,6 +79,7 @@ gates:
 
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
   up_threshold: 0.85                   # sniper default — 94-98% WR across the band
   down_threshold: 0.15                 # symmetric to up_threshold
   eval_offset_remaining_min: 60        # seconds remaining in 5m window

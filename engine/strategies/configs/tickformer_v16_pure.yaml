@@ -86,6 +86,7 @@ gates:
 
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE (live go-live switch)
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2) — highest conviction wins, losers SKIP=mutex_group_lost
   up_threshold: 0.85                   # Tier C default; raise to 0.90 for Tier A/B (~96% WR pocket)
   down_threshold: 0.15                 # symmetric to up_threshold
   eval_offset_remaining_min: 60        # seconds remaining in 5m window
