@@ -108,36 +108,80 @@ being retired or replaced.
 
 ## Monitoring queries
 
-The queries below are stable across all `tickformer_*` strategies
-because they key off `metadata->>'mutex_group' = 'tickformer'`. Run
+> **Post-PR-#619 review fix (B2)**: the original protocol used
+> `metadata->>'outcome_win'`, but **no engine code writes that key**.
+> The corrected queries below join `strategy_decisions` (column:
+> `metadata_json`, timestamp: `evaluated_at`) against
+> `window_snapshots` and derive WIN/LOSS from `close_price` vs
+> `open_price`, mirroring the canonical pattern documented in
+> `docs/analysis/SIGNAL_EVAL_RUNBOOK.md` and used by the v9.x
+> family. Do NOT use `window_snapshots.actual_direction` or
+> `window_snapshots.oracle_outcome` — both are NULL in
+> production (reconciler never populates them).
+
+The queries are stable across all `tickformer_*` strategies. Run
 in `psql` against the engine's primary RDS (NOT the local PG
-snapshot — see `feedback_local_db_means_local.md`).
+snapshot — see `feedback_local_db_means_local.md`). All queries
+verified syntactically against the local PG snapshot (port 5433,
+2026-05-28).
+
+### Ground-truth rule
+
+```sql
+-- Derive WIN from the strategy's predicted direction vs the
+-- window's realised close-vs-open delta.
+(sd.direction = 'UP'   AND ws.close_price > ws.open_price)
+OR
+(sd.direction = 'DOWN' AND ws.close_price < ws.open_price)
+```
+
+A FLAT close (`close_price = open_price`) counts as a LOSS for
+both sides (very rare on 5m BTC). NULL close/open means the
+window is not yet resolved — exclude via `ws.close_price > 0`.
 
 ### Daily WR rollup
 
 ```sql
 SELECT
-    strategy_id,
-    DATE_TRUNC('day', created_at) AS day,
-    COUNT(*) FILTER (WHERE action = 'TRADE') AS fires,
+    sd.strategy_id,
+    DATE_TRUNC('day', sd.evaluated_at) AS day,
+    COUNT(*) FILTER (WHERE sd.action = 'TRADE') AS fires,
     COUNT(*) FILTER (
-        WHERE action = 'TRADE'
-          AND (metadata->>'outcome_win')::bool IS TRUE
+        WHERE sd.action = 'TRADE'
+          AND ws.close_price > 0 AND ws.open_price > 0
+          AND (
+            (sd.direction = 'UP'   AND ws.close_price > ws.open_price)
+            OR
+            (sd.direction = 'DOWN' AND ws.close_price < ws.open_price)
+          )
     ) AS wins,
     ROUND(
         100.0 * COUNT(*) FILTER (
-            WHERE action = 'TRADE'
-              AND (metadata->>'outcome_win')::bool IS TRUE
-        ) / NULLIF(COUNT(*) FILTER (WHERE action = 'TRADE'), 0),
+            WHERE sd.action = 'TRADE'
+              AND ws.close_price > 0 AND ws.open_price > 0
+              AND (
+                (sd.direction = 'UP'   AND ws.close_price > ws.open_price)
+                OR
+                (sd.direction = 'DOWN' AND ws.close_price < ws.open_price)
+              )
+        ) / NULLIF(
+            COUNT(*) FILTER (
+                WHERE sd.action = 'TRADE'
+                  AND ws.close_price > 0 AND ws.open_price > 0
+            ), 0
+        ),
         2
     ) AS wr_pct
-FROM strategy_decisions
-WHERE strategy_id IN (
+FROM strategy_decisions sd
+LEFT JOIN window_snapshots ws
+    ON sd.window_ts = ws.window_ts::bigint
+    AND sd.asset = ws.asset
+WHERE sd.strategy_id IN (
     'tickformer_v16_pure',
     'tickformer_v17_sniper',
     'tickformer_v18_t180'
 )
-  AND created_at > NOW() - INTERVAL '14 days'
+  AND sd.evaluated_at > NOW() - INTERVAL '14 days'
 GROUP BY 1, 2
 ORDER BY 1, 2 DESC;
 ```
@@ -146,24 +190,36 @@ ORDER BY 1, 2 DESC;
 
 ```sql
 SELECT
-    strategy_id,
-    COALESCE(metadata->>'tier', 'default') AS tier,
-    direction,
+    sd.strategy_id,
+    COALESCE(sd.metadata_json->>'tier', 'default') AS tier,
+    sd.direction,
     COUNT(*) AS n,
     ROUND(
         100.0 * COUNT(*) FILTER (
-            WHERE (metadata->>'outcome_win')::bool IS TRUE
-        ) / NULLIF(COUNT(*), 0),
+            WHERE ws.close_price > 0 AND ws.open_price > 0
+              AND (
+                (sd.direction = 'UP'   AND ws.close_price > ws.open_price)
+                OR
+                (sd.direction = 'DOWN' AND ws.close_price < ws.open_price)
+              )
+        ) / NULLIF(
+            COUNT(*) FILTER (
+                WHERE ws.close_price > 0 AND ws.open_price > 0
+            ), 0
+        ),
         2
     ) AS wr_pct
-FROM strategy_decisions
-WHERE strategy_id IN (
+FROM strategy_decisions sd
+LEFT JOIN window_snapshots ws
+    ON sd.window_ts = ws.window_ts::bigint
+    AND sd.asset = ws.asset
+WHERE sd.strategy_id IN (
     'tickformer_v16_pure',
     'tickformer_v17_sniper',
     'tickformer_v18_t180'
 )
-  AND action = 'TRADE'
-  AND created_at > NOW() - INTERVAL '7 days'
+  AND sd.action = 'TRADE'
+  AND sd.evaluated_at > NOW() - INTERVAL '7 days'
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3;
 ```
@@ -171,28 +227,49 @@ ORDER BY 1, 2, 3;
 ### Paper-vs-shadow divergence alert
 
 Use when the strategy is in SHADOW. Fires if shadow-decision WR
-(would_trade=true) diverges from the paper-WR estimate from the
-original val sweep by more than 5pp over the last 24h.
+(`would_trade=true`, i.e. the `shadow_only_no_trade` SKIP rows
+that would have been TRADEs without the kill switch) diverges
+from the paper-WR estimate from the original val sweep by more
+than 5pp over the last 24h. The would-direction WIN check uses
+`metadata_json->>'would_direction'` since SHADOW SKIPs have
+`sd.direction = NULL`.
 
 ```sql
 WITH shadow AS (
     SELECT
-        strategy_id,
-        COUNT(*) FILTER (WHERE metadata->>'would_trade' = 'true') AS would_n,
+        sd.strategy_id,
+        COUNT(*) FILTER (
+            WHERE sd.metadata_json->>'would_trade' = 'true'
+        ) AS would_n,
         ROUND(
             100.0 * COUNT(*) FILTER (
-                WHERE metadata->>'would_trade' = 'true'
-                  AND (metadata->>'outcome_win')::bool IS TRUE
-            ) / NULLIF(COUNT(*) FILTER (WHERE metadata->>'would_trade' = 'true'), 0),
+                WHERE sd.metadata_json->>'would_trade' = 'true'
+                  AND ws.close_price > 0 AND ws.open_price > 0
+                  AND (
+                    (sd.metadata_json->>'would_direction' = 'UP'
+                       AND ws.close_price > ws.open_price)
+                    OR
+                    (sd.metadata_json->>'would_direction' = 'DOWN'
+                       AND ws.close_price < ws.open_price)
+                  )
+            ) / NULLIF(
+                COUNT(*) FILTER (
+                    WHERE sd.metadata_json->>'would_trade' = 'true'
+                      AND ws.close_price > 0 AND ws.open_price > 0
+                ), 0
+            ),
             2
         ) AS shadow_wr_pct
-    FROM strategy_decisions
-    WHERE strategy_id IN (
+    FROM strategy_decisions sd
+    LEFT JOIN window_snapshots ws
+        ON sd.window_ts = ws.window_ts::bigint
+        AND sd.asset = ws.asset
+    WHERE sd.strategy_id IN (
         'tickformer_v16_pure',
         'tickformer_v17_sniper',
         'tickformer_v18_t180'
     )
-      AND created_at > NOW() - INTERVAL '24 hours'
+      AND sd.evaluated_at > NOW() - INTERVAL '24 hours'
     GROUP BY 1
 )
 SELECT
@@ -219,13 +296,39 @@ SKIP-storms on the others.
 ```sql
 SELECT
     strategy_id AS loser,
-    metadata->>'mutex_group_winner' AS winner,
+    metadata_json->>'mutex_group_winner' AS winner,
     COUNT(*) AS n
 FROM strategy_decisions
 WHERE skip_reason = 'mutex_group_lost'
-  AND created_at > NOW() - INTERVAL '24 hours'
+  AND evaluated_at > NOW() - INTERVAL '24 hours'
 GROUP BY 1, 2
 ORDER BY 3 DESC;
+```
+
+### Mutex pre-resolution intent (B1 audit trail)
+
+After PR #619 review BLOCKER B1 fix, every mutex-loser row carries
+`metadata_json->>'mutex_pre_resolution_action' = 'TRADE'` and
+`metadata_json->>'mutex_pre_resolution_direction'`. Useful to count
+"would-have-traded but lost" intent independent of the eventual
+winner.
+
+```sql
+SELECT
+    strategy_id,
+    COUNT(*) FILTER (
+        WHERE metadata_json->>'mutex_pre_resolution_action' = 'TRADE'
+    ) AS would_have_traded_n,
+    COUNT(*) FILTER (WHERE skip_reason = 'mutex_group_lost') AS demoted_n
+FROM strategy_decisions
+WHERE strategy_id IN (
+    'tickformer_v16_pure',
+    'tickformer_v17_sniper',
+    'tickformer_v18_t180'
+)
+  AND evaluated_at > NOW() - INTERVAL '7 days'
+GROUP BY 1
+ORDER BY 1;
 ```
 
 ## Recommended materialised views
@@ -267,6 +370,17 @@ the following metadata keys (PR #619 FIX 1 contract):
   shadow-SKIP and mutex-loss SKIP rows
 - `mutex_group_winner`, `mutex_group_winner_confidence_score`,
   `mutex_group_loser_confidence_score` — present on mutex-loss rows
+- `mutex_pre_resolution_action` (str), `mutex_pre_resolution_direction`
+  (str) — PR #619 review B1 audit trail; present on mutex-loss rows
+  to preserve the original TRADE intent after demotion.
+
+> **Note on the `down_threshold` implicit-symmetry rule (review S3)**:
+> if `gate_params.down_threshold` is omitted, the base hook defaults
+> it to `1 - up_threshold`. The hook now logs a one-shot WARN per
+> strategy on first eval: `tickformer.implicit_down_symmetry
+> strategy=<id> up=<u> down=<d>`. Operators who want asymmetric
+> thresholds must set `down_threshold` explicitly in the YAML
+> or runtime override.
 
 This contract is enforced by the test suite
 (`test_tickformer_strategies.py::test_v16_shadow_record_metadata_has_required_keys`).
