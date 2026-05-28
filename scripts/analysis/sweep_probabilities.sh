@@ -32,13 +32,21 @@
 #   # Include 15m classifier data
 #   ./scripts/analysis/sweep_probabilities.sh --hours 24 --include-15m
 #
-# METHODOLOGY (per RDS note #684):
-#   1. DISTINCT ON (window_ts) ORDER BY window_ts, eval_offset DESC
-#      = picks LARGEST eval_offset = EARLIEST in time = first qualifying tick
-#      = matches production strategy fire behavior
-#   2. Operating-point filter applied INSIDE the CTE (before DISTINCT ON)
-#   3. LEFT JOIN to market_data + window_snapshots (COALESCE for backfilled truth)
-#   4. Window-level dedup, NOT tick-level (which inflates counts)
+# METHODOLOGY (per RDS note #684 + 2026-05-28 correction):
+#   1. For each window_ts in the eval band [60,180], compute MIN(p) and MAX(p)
+#      across all snapshots. This captures "did probability EVER cross threshold
+#      during the strategy's firing band?" — which matches real strategy fire
+#      behavior (strategies fire on any tick that meets criterion, not just
+#      the first observation of the window).
+#   2. UP sweep tests `p_max >= thr` (did probability ever exceed threshold).
+#   3. DOWN sweep tests `p_min <= thr` (did probability ever drop below).
+#   4. LEFT JOIN to market_data + window_snapshots (COALESCE for backfilled truth).
+#   5. Window-level dedup via GROUP BY window_ts, NOT tick-level (which inflates).
+#
+# Previous methodology (DISTINCT ON window_ts ORDER BY eval_offset DESC) used
+# the EARLIEST snapshot only — under-counted fires by ~3x and overstated WR by
+# ~7pp because it missed late-conviction fires (probability moving into band
+# during the window). See RDS note #712 for the side-by-side comparison.
 #
 # Connect via canonical lib (not .env which is stale Railway):
 #   source scripts/cross-compare/_lib.sh
@@ -103,29 +111,31 @@ export PGPASSWORD="$DB_PASS"
 SQL=$(cat <<SQLEOF
 SET statement_timeout = '180s';
 
--- Per-column ff CTEs (asset-aware)
+-- Per-column ff CTEs (asset-aware). GROUP BY window_ts to capture MIN/MAX
+-- across the eval band — "did probability EVER cross threshold during the
+-- firing window?" rather than "was criterion already met at first snapshot?".
 WITH
 ff_btc AS (
-  SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC' AS asset, 'v9_1' AS col, window_ts, probability_lgb_v9_1::float AS p FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_1 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v9_2', window_ts, probability_lgb_v9_2::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v9_2_pure', window_ts, probability_lgb_v9_2_pure::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v9_2_post_iso', window_ts, probability_lgb_v9_2_post_iso::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_post_iso IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v9_3_btc', window_ts, probability_lgb_v9_3_btc::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v9_3_btc_pure', window_ts, probability_lgb_v9_3_btc_pure::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v12', window_ts, probability_lgb_v12::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v12_pure', window_ts, probability_lgb_v12_pure::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v12_meta_gate', window_ts, probability_v12_meta_gate::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v12_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v9_2_meta_gate', window_ts, probability_v9_2_meta_gate::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v9_2_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'BTC', 'v2_meta_gate', window_ts, probability_v2_meta_gate::float FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v2_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
+  SELECT 'BTC' AS asset, 'v9_1' AS col, window_ts, MIN(probability_lgb_v9_1::float) AS p_min, MAX(probability_lgb_v9_1::float) AS p_max FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_1 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2', window_ts, MIN(probability_lgb_v9_2::float), MAX(probability_lgb_v9_2::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2_pure', window_ts, MIN(probability_lgb_v9_2_pure::float), MAX(probability_lgb_v9_2_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2_post_iso', window_ts, MIN(probability_lgb_v9_2_post_iso::float), MAX(probability_lgb_v9_2_post_iso::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_post_iso IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_3_btc', window_ts, MIN(probability_lgb_v9_3_btc::float), MAX(probability_lgb_v9_3_btc::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_3_btc_pure', window_ts, MIN(probability_lgb_v9_3_btc_pure::float), MAX(probability_lgb_v9_3_btc_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v12', window_ts, MIN(probability_lgb_v12::float), MAX(probability_lgb_v12::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v12_pure', window_ts, MIN(probability_lgb_v12_pure::float), MAX(probability_lgb_v12_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v12_meta_gate', window_ts, MIN(probability_v12_meta_gate::float), MAX(probability_v12_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v12_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2_meta_gate', window_ts, MIN(probability_v9_2_meta_gate::float), MAX(probability_v9_2_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v9_2_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v2_meta_gate', window_ts, MIN(probability_v2_meta_gate::float), MAX(probability_v2_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v2_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
 ),
 ff_eth AS (
-  SELECT * FROM (SELECT DISTINCT ON (window_ts) 'ETH' AS asset, 'v9_2_eth' AS col, window_ts, probability_lgb_v9_2_eth::float AS p FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_2_eth IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'ETH', 'v9_5_eth', window_ts, probability_lgb_v9_5_eth::float FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'ETH', 'v9_5_eth_pure', window_ts, probability_lgb_v9_5_eth_pure::float FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
+  SELECT 'ETH' AS asset, 'v9_2_eth' AS col, window_ts, MIN(probability_lgb_v9_2_eth::float) AS p_min, MAX(probability_lgb_v9_2_eth::float) AS p_max FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_2_eth IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'ETH', 'v9_5_eth', window_ts, MIN(probability_lgb_v9_5_eth::float), MAX(probability_lgb_v9_5_eth::float) FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'ETH', 'v9_5_eth_pure', window_ts, MIN(probability_lgb_v9_5_eth_pure::float), MAX(probability_lgb_v9_5_eth_pure::float) FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
 ),
 ff_xrp AS (
-  SELECT * FROM (SELECT DISTINCT ON (window_ts) 'XRP' AS asset, 'v9_5_xrp' AS col, window_ts, probability_lgb_v9_5_xrp::float AS p FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_5_xrp IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
-  UNION ALL SELECT * FROM (SELECT DISTINCT ON (window_ts) 'XRP', 'v9_2_xrp', window_ts, probability_lgb_v9_2_xrp::float FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_2_xrp IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE ORDER BY window_ts, eval_offset DESC) x
+  SELECT 'XRP' AS asset, 'v9_5_xrp' AS col, window_ts, MIN(probability_lgb_v9_5_xrp::float) AS p_min, MAX(probability_lgb_v9_5_xrp::float) AS p_max FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_5_xrp IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'XRP', 'v9_2_xrp', window_ts, MIN(probability_lgb_v9_2_xrp::float), MAX(probability_lgb_v9_2_xrp::float) FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_2_xrp IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
 ),
 all_ff AS (
   SELECT * FROM ff_btc WHERE 'BTC' IN $ASSET_LIST
@@ -133,7 +143,7 @@ all_ff AS (
   UNION ALL SELECT * FROM ff_xrp WHERE 'XRP' IN $ASSET_LIST
 ),
 gw AS (
-  SELECT ff.asset, ff.col, ff.window_ts, ff.p,
+  SELECT ff.asset, ff.col, ff.window_ts, ff.p_min, ff.p_max,
          COALESCE(md.outcome, ws_o) AS truth
     FROM all_ff ff
     LEFT JOIN market_data md ON md.window_ts=ff.window_ts AND md.asset=ff.asset AND md.timeframe='5m'
@@ -142,31 +152,31 @@ gw AS (
        WHERE ws.window_ts=ff.window_ts AND ws.asset=ff.asset AND ws.timeframe='5m' AND outcome IS NOT NULL LIMIT 1
     ) wsx ON TRUE
 )
--- UP sweep at 0.02 granularity
+-- UP sweep at 0.02 granularity — fire iff p_max EVER exceeded threshold in band
 SELECT asset, col, 'UP' AS direction, ROUND(thr::numeric, 2) AS thr,
-       COUNT(*) FILTER (WHERE p >= thr) AS fires,
-       COUNT(*) FILTER (WHERE p >= thr AND truth IN ('UP','DOWN')) AS resolved,
-       COUNT(*) FILTER (WHERE p >= thr AND truth='UP') AS wins,
-       ROUND(100.0*COUNT(*) FILTER (WHERE p >= thr AND truth='UP')::numeric
-             / NULLIF(COUNT(*) FILTER (WHERE p >= thr AND truth IN ('UP','DOWN')),0), 1) AS wr_pct
+       COUNT(*) FILTER (WHERE p_max >= thr) AS fires,
+       COUNT(*) FILTER (WHERE p_max >= thr AND truth IN ('UP','DOWN')) AS resolved,
+       COUNT(*) FILTER (WHERE p_max >= thr AND truth='UP') AS wins,
+       ROUND(100.0*COUNT(*) FILTER (WHERE p_max >= thr AND truth='UP')::numeric
+             / NULLIF(COUNT(*) FILTER (WHERE p_max >= thr AND truth IN ('UP','DOWN')),0), 1) AS wr_pct
   FROM gw CROSS JOIN (SELECT generate_series(50,100,2)::float/100 AS thr) t
  GROUP BY asset, col, thr
-HAVING COUNT(*) FILTER (WHERE p >= thr AND truth IN ('UP','DOWN')) >= $MIN_N
-   AND ROUND(100.0*COUNT(*) FILTER (WHERE p >= thr AND truth='UP')::numeric
-             / NULLIF(COUNT(*) FILTER (WHERE p >= thr AND truth IN ('UP','DOWN')),0), 1) >= $MIN_WR
+HAVING COUNT(*) FILTER (WHERE p_max >= thr AND truth IN ('UP','DOWN')) >= $MIN_N
+   AND ROUND(100.0*COUNT(*) FILTER (WHERE p_max >= thr AND truth='UP')::numeric
+             / NULLIF(COUNT(*) FILTER (WHERE p_max >= thr AND truth IN ('UP','DOWN')),0), 1) >= $MIN_WR
 UNION ALL
--- DOWN sweep at 0.02 granularity
+-- DOWN sweep at 0.02 granularity — fire iff p_min EVER dropped below threshold
 SELECT asset, col, 'DOWN', ROUND(thr::numeric, 2),
-       COUNT(*) FILTER (WHERE p <= thr) AS fires,
-       COUNT(*) FILTER (WHERE p <= thr AND truth IN ('UP','DOWN')) AS resolved,
-       COUNT(*) FILTER (WHERE p <= thr AND truth='DOWN') AS wins,
-       ROUND(100.0*COUNT(*) FILTER (WHERE p <= thr AND truth='DOWN')::numeric
-             / NULLIF(COUNT(*) FILTER (WHERE p <= thr AND truth IN ('UP','DOWN')),0), 1) AS wr_pct
+       COUNT(*) FILTER (WHERE p_min <= thr) AS fires,
+       COUNT(*) FILTER (WHERE p_min <= thr AND truth IN ('UP','DOWN')) AS resolved,
+       COUNT(*) FILTER (WHERE p_min <= thr AND truth='DOWN') AS wins,
+       ROUND(100.0*COUNT(*) FILTER (WHERE p_min <= thr AND truth='DOWN')::numeric
+             / NULLIF(COUNT(*) FILTER (WHERE p_min <= thr AND truth IN ('UP','DOWN')),0), 1) AS wr_pct
   FROM gw CROSS JOIN (SELECT generate_series(0,50,2)::float/100 AS thr) t
  GROUP BY asset, col, thr
-HAVING COUNT(*) FILTER (WHERE p <= thr AND truth IN ('UP','DOWN')) >= $MIN_N
-   AND ROUND(100.0*COUNT(*) FILTER (WHERE p <= thr AND truth='DOWN')::numeric
-             / NULLIF(COUNT(*) FILTER (WHERE p <= thr AND truth IN ('UP','DOWN')),0), 1) >= $MIN_WR
+HAVING COUNT(*) FILTER (WHERE p_min <= thr AND truth IN ('UP','DOWN')) >= $MIN_N
+   AND ROUND(100.0*COUNT(*) FILTER (WHERE p_min <= thr AND truth='DOWN')::numeric
+             / NULLIF(COUNT(*) FILTER (WHERE p_min <= thr AND truth IN ('UP','DOWN')),0), 1) >= $MIN_WR
 ORDER BY wr_pct DESC, fires DESC;
 SQLEOF
 )
