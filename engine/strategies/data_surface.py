@@ -565,6 +565,26 @@ class DataSurfaceManager:
         self._degraded_since: Optional[float] = None
         self._alert_stale_threshold_s = 45.0  # alert after 45s stale
 
+        # ── TickFormer-only sub-cache (fill-gap fix, 2026-05-28) ─────────
+        # Root-cause: _try_fetch_snapshot rejects BTC responses when the
+        # Polymarket poly block has timing=None (between-window state, ~75%
+        # of the time). The main _cached_v4 slot is not updated, so after
+        # 60s the stale-check nullifies it and tickformer fields surface as
+        # None — even though the response DID carry valid tickformer values.
+        #
+        # Fix: every time we get a 200 response from /v4/snapshot, regardless
+        # of whether the poly guard passes, extract the six tickformer fields
+        # from ts_data["5m"] and stash them here. get_surface reads ts_data
+        # first (from the main cache when it's fresh) and falls back to this
+        # sub-cache for tickformer-only fields when the main cache is stale/
+        # poly-blocked. Non-BTC assets never trigger the poly guard, so their
+        # sub-cache is populated identically to the main cache.
+        #
+        # Staleness cap: 60s (same as main cache) to prevent serving very
+        # old tickformer probabilities if the timesfm side goes silent.
+        self._cached_tickformer: dict[str, dict] = {}   # asset -> {field: value}
+        self._cached_tickformer_ts: dict[str, float] = {}
+
         # ── Cedar LGB candidate cache (shadow A/B, 2026-04-21) ───────────
         # Per-asset cache slot for /v2/probability/cedar. Mirrors the v4
         # cache shape exactly (same {asset: dict} + ts pattern introduced
@@ -949,6 +969,36 @@ class DataSurfaceManager:
                     )
                     return False
                 body = await resp.json()
+                # ── TickFormer sub-cache update (fill-gap fix) ───────────
+                # Extract tickformer fields from the 5m timescale block into
+                # _cached_tickformer BEFORE the poly guard runs. This ensures
+                # get_surface always has fresh tickformer values even when
+                # the poly block is empty (between Polymarket windows) and
+                # the main cache update is blocked. Non-BTC assets also write
+                # here (harmless — non-BTC never triggers the poly guard, so
+                # the main cache always wins for them anyway).
+                _tf_ts5 = (body.get("timescales") or {}).get("5m", {})
+                _tf_fields: dict = {}
+                _TF_KEYS = (
+                    "probability_tickformer_v16", "tickformer_v16",
+                    "probability_tickformer_v17", "tickformer_v17",
+                    "probability_tickformer_v18", "tickformer_v18",
+                    "probability_tickformer_v20",
+                    "tickformer_gate_cond",
+                    "tickformer_trade_signal", "signal",
+                )
+                for _k in _TF_KEYS:
+                    _v = _tf_ts5.get(_k)
+                    if _v is not None:
+                        _tf_fields[_k] = _v
+                if _tf_fields:
+                    self._cached_tickformer[asset] = _tf_fields
+                    self._cached_tickformer_ts[asset] = time.time()
+                    log.debug(
+                        "data_surface.tickformer_subcache_updated",
+                        asset=asset,
+                        fields=list(_tf_fields.keys()),
+                    )
                 # BTC: full stack required — reject empty poly block (PR #47
                 # feature-pipeline freeze class bug).
                 # Non-BTC: accept classifier-only (no_model) payloads. Still
@@ -1394,6 +1444,18 @@ class DataSurfaceManager:
         rec = ts_data.get("recommended_action") or {}
         # Read per-timescale macro (fallback to top-level for backward compat)
         macro = ts_data.get("macro", {}) or (v4.get("macro", {}) if v4 else {})
+
+        # ── TickFormer sub-cache fallback (fill-gap fix, 2026-05-28) ─────
+        # When the main v4 cache was blocked by the poly guard (BTC, timing=None),
+        # ts_data is empty and all tickformer fields read as None. Use the
+        # _cached_tickformer sub-cache as a fallback source for those fields.
+        # The sub-cache is populated from every 200 response regardless of the
+        # poly guard (see _try_fetch_snapshot). Non-BTC: never needed (poly
+        # guard doesn't apply), but harmless if sub-cache also happens to be set.
+        _tf_subcache: dict = {}
+        _tf_subcache_ts = self._cached_tickformer_ts.get(asset_key, 0.0)
+        if _tf_subcache_ts and (time.time() - _tf_subcache_ts) <= 60:
+            _tf_subcache = self._cached_tickformer.get(asset_key, {})
         consensus = v4.get("consensus", {}) if v4 else {}
         sub_signals = ts_data.get("sub_signals", {})
         quantiles = ts_data.get("quantiles_at_close") or ts_data.get(
@@ -1601,6 +1663,8 @@ class DataSurfaceManager:
                 else None
             ),
             probability_tickformer_v16=(
+                # Resolution: ts_data (main cache 5m block) → v4 top-level →
+                # _tf_subcache (poly-guard-bypassed sub-cache, fill-gap fix).
                 float(
                     ts_data.get("probability_tickformer_v16")
                     if ts_data.get("probability_tickformer_v16") is not None
@@ -1609,12 +1673,18 @@ class DataSurfaceManager:
                     else (v4.get("probability_tickformer_v16") if v4 else None)
                     if (v4.get("probability_tickformer_v16") if v4 else None) is not None
                     else (v4.get("tickformer_v16") if v4 else None)
+                    if (v4.get("tickformer_v16") if v4 else None) is not None
+                    else _tf_subcache.get("probability_tickformer_v16")
+                    if _tf_subcache.get("probability_tickformer_v16") is not None
+                    else _tf_subcache.get("tickformer_v16")
                 )
                 if (
                     ts_data.get("probability_tickformer_v16") is not None
                     or ts_data.get("tickformer_v16") is not None
                     or (v4.get("probability_tickformer_v16") if v4 else None) is not None
                     or (v4.get("tickformer_v16") if v4 else None) is not None
+                    or _tf_subcache.get("probability_tickformer_v16") is not None
+                    or _tf_subcache.get("tickformer_v16") is not None
                 )
                 else None
             ),
@@ -1627,12 +1697,18 @@ class DataSurfaceManager:
                     else (v4.get("tickformer_trade_signal") if v4 else None)
                     if (v4.get("tickformer_trade_signal") if v4 else None) is not None
                     else (v4.get("tickformer_signal") if v4 else None)
+                    if (v4.get("tickformer_signal") if v4 else None) is not None
+                    else _tf_subcache.get("tickformer_trade_signal")
+                    if _tf_subcache.get("tickformer_trade_signal") is not None
+                    else _tf_subcache.get("signal")
                 )
                 if (
                     ts_data.get("tickformer_trade_signal") is not None
                     or ts_data.get("signal") is not None
                     or (v4.get("tickformer_trade_signal") if v4 else None) is not None
                     or (v4.get("tickformer_signal") if v4 else None) is not None
+                    or _tf_subcache.get("tickformer_trade_signal") is not None
+                    or _tf_subcache.get("signal") is not None
                 )
                 else None
             ),
@@ -1645,12 +1721,18 @@ class DataSurfaceManager:
                     else (v4.get("probability_tickformer_v17") if v4 else None)
                     if (v4.get("probability_tickformer_v17") if v4 else None) is not None
                     else (v4.get("tickformer_v17") if v4 else None)
+                    if (v4.get("tickformer_v17") if v4 else None) is not None
+                    else _tf_subcache.get("probability_tickformer_v17")
+                    if _tf_subcache.get("probability_tickformer_v17") is not None
+                    else _tf_subcache.get("tickformer_v17")
                 )
                 if (
                     ts_data.get("probability_tickformer_v17") is not None
                     or ts_data.get("tickformer_v17") is not None
                     or (v4.get("probability_tickformer_v17") if v4 else None) is not None
                     or (v4.get("tickformer_v17") if v4 else None) is not None
+                    or _tf_subcache.get("probability_tickformer_v17") is not None
+                    or _tf_subcache.get("tickformer_v17") is not None
                 )
                 else None
             ),
@@ -1663,23 +1745,43 @@ class DataSurfaceManager:
                     else (v4.get("probability_tickformer_v18") if v4 else None)
                     if (v4.get("probability_tickformer_v18") if v4 else None) is not None
                     else (v4.get("tickformer_v18") if v4 else None)
+                    if (v4.get("tickformer_v18") if v4 else None) is not None
+                    else _tf_subcache.get("probability_tickformer_v18")
+                    if _tf_subcache.get("probability_tickformer_v18") is not None
+                    else _tf_subcache.get("tickformer_v18")
                 )
                 if (
                     ts_data.get("probability_tickformer_v18") is not None
                     or ts_data.get("tickformer_v18") is not None
                     or (v4.get("probability_tickformer_v18") if v4 else None) is not None
                     or (v4.get("tickformer_v18") if v4 else None) is not None
+                    or _tf_subcache.get("probability_tickformer_v18") is not None
+                    or _tf_subcache.get("tickformer_v18") is not None
                 )
                 else None
             ),
             probability_tickformer_v20=(
-                float(ts_data["probability_tickformer_v20"])
-                if ts_data.get("probability_tickformer_v20") is not None
+                float(
+                    ts_data["probability_tickformer_v20"]
+                    if ts_data.get("probability_tickformer_v20") is not None
+                    else _tf_subcache["probability_tickformer_v20"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v20") is not None
+                    or _tf_subcache.get("probability_tickformer_v20") is not None
+                )
                 else None
             ),
             tickformer_gate_cond=(
-                float(ts_data["tickformer_gate_cond"])
-                if ts_data.get("tickformer_gate_cond") is not None
+                float(
+                    ts_data["tickformer_gate_cond"]
+                    if ts_data.get("tickformer_gate_cond") is not None
+                    else _tf_subcache["tickformer_gate_cond"]
+                )
+                if (
+                    ts_data.get("tickformer_gate_cond") is not None
+                    or _tf_subcache.get("tickformer_gate_cond") is not None
+                )
                 else None
             ),
             # PR-B: multi-step readiness flag. Read from top-level snapshot
