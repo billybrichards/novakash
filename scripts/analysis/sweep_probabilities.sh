@@ -65,6 +65,12 @@ MIN_WR=75
 INCLUDE_15M=0
 CSV_FILE=""
 QUIET=0
+# Eval-offset band (seconds-to-close). Default 0-240 = full window — strategies
+# fire across the whole window so the default sweep should capture all of it.
+# For sub-band edge discovery (e.g. early-mid 60-119s remaining, late 0-60s),
+# pass --band-min / --band-max explicitly.
+BAND_MIN=0
+BAND_MAX=240
 
 # Parse args
 while [[ $# -gt 0 ]]; do
@@ -75,6 +81,8 @@ while [[ $# -gt 0 ]]; do
     --until-utc)    UNTIL_UTC="$2"; shift 2 ;;
     --min-n)        MIN_N="$2"; shift 2 ;;
     --min-wr)       MIN_WR="$2"; shift 2 ;;
+    --band-min)     BAND_MIN="$2"; shift 2 ;;
+    --band-max)     BAND_MAX="$2"; shift 2 ;;
     --include-15m)  INCLUDE_15M=1; shift ;;
     --csv)          CSV_FILE="$2"; shift 2 ;;
     --quiet)        QUIET=1; shift ;;
@@ -116,26 +124,30 @@ SET statement_timeout = '180s';
 -- firing window?" rather than "was criterion already met at first snapshot?".
 WITH
 ff_btc AS (
-  SELECT 'BTC' AS asset, 'v9_1' AS col, window_ts, MIN(probability_lgb_v9_1::float) AS p_min, MAX(probability_lgb_v9_1::float) AS p_max FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_1 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v9_2', window_ts, MIN(probability_lgb_v9_2::float), MAX(probability_lgb_v9_2::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v9_2_pure', window_ts, MIN(probability_lgb_v9_2_pure::float), MAX(probability_lgb_v9_2_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v9_2_post_iso', window_ts, MIN(probability_lgb_v9_2_post_iso::float), MAX(probability_lgb_v9_2_post_iso::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_post_iso IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v9_3_btc', window_ts, MIN(probability_lgb_v9_3_btc::float), MAX(probability_lgb_v9_3_btc::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v9_3_btc_pure', window_ts, MIN(probability_lgb_v9_3_btc_pure::float), MAX(probability_lgb_v9_3_btc_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v12', window_ts, MIN(probability_lgb_v12::float), MAX(probability_lgb_v12::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12 IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v12_pure', window_ts, MIN(probability_lgb_v12_pure::float), MAX(probability_lgb_v12_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v12_meta_gate', window_ts, MIN(probability_v12_meta_gate::float), MAX(probability_v12_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v12_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v9_2_meta_gate', window_ts, MIN(probability_v9_2_meta_gate::float), MAX(probability_v9_2_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v9_2_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'BTC', 'v2_meta_gate', window_ts, MIN(probability_v2_meta_gate::float), MAX(probability_v2_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v2_meta_gate IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  SELECT 'BTC' AS asset, 'v9_1' AS col, window_ts, MIN(probability_lgb_v9_1::float) AS p_min, MAX(probability_lgb_v9_1::float) AS p_max FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_1 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'tickformer_v16', window_ts, MIN(probability_tickformer_v16::float), MAX(probability_tickformer_v16::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_tickformer_v16 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'tickformer_v17', window_ts, MIN(probability_tickformer_v17::float), MAX(probability_tickformer_v17::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_tickformer_v17 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'tickformer_v18', window_ts, MIN(probability_tickformer_v18::float), MAX(probability_tickformer_v18::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_tickformer_v18 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'tickformer_v20', window_ts, MIN(probability_tickformer_v20::float), MAX(probability_tickformer_v20::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_tickformer_v20 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2', window_ts, MIN(probability_lgb_v9_2::float), MAX(probability_lgb_v9_2::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2_pure', window_ts, MIN(probability_lgb_v9_2_pure::float), MAX(probability_lgb_v9_2_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_pure IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2_post_iso', window_ts, MIN(probability_lgb_v9_2_post_iso::float), MAX(probability_lgb_v9_2_post_iso::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_2_post_iso IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_3_btc', window_ts, MIN(probability_lgb_v9_3_btc::float), MAX(probability_lgb_v9_3_btc::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_3_btc_pure', window_ts, MIN(probability_lgb_v9_3_btc_pure::float), MAX(probability_lgb_v9_3_btc_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v9_3_btc_pure IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v12', window_ts, MIN(probability_lgb_v12::float), MAX(probability_lgb_v12::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12 IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v12_pure', window_ts, MIN(probability_lgb_v12_pure::float), MAX(probability_lgb_v12_pure::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_lgb_v12_pure IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v12_meta_gate', window_ts, MIN(probability_v12_meta_gate::float), MAX(probability_v12_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v12_meta_gate IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v9_2_meta_gate', window_ts, MIN(probability_v9_2_meta_gate::float), MAX(probability_v9_2_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v9_2_meta_gate IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'BTC', 'v2_meta_gate', window_ts, MIN(probability_v2_meta_gate::float), MAX(probability_v2_meta_gate::float) FROM signal_evaluations WHERE asset='BTC' AND timeframe='5m' AND probability_v2_meta_gate IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
 ),
 ff_eth AS (
-  SELECT 'ETH' AS asset, 'v9_2_eth' AS col, window_ts, MIN(probability_lgb_v9_2_eth::float) AS p_min, MAX(probability_lgb_v9_2_eth::float) AS p_max FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_2_eth IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'ETH', 'v9_5_eth', window_ts, MIN(probability_lgb_v9_5_eth::float), MAX(probability_lgb_v9_5_eth::float) FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'ETH', 'v9_5_eth_pure', window_ts, MIN(probability_lgb_v9_5_eth_pure::float), MAX(probability_lgb_v9_5_eth_pure::float) FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth_pure IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  SELECT 'ETH' AS asset, 'v9_2_eth' AS col, window_ts, MIN(probability_lgb_v9_2_eth::float) AS p_min, MAX(probability_lgb_v9_2_eth::float) AS p_max FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_2_eth IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'ETH', 'v9_5_eth', window_ts, MIN(probability_lgb_v9_5_eth::float), MAX(probability_lgb_v9_5_eth::float) FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'ETH', 'v9_5_eth_pure', window_ts, MIN(probability_lgb_v9_5_eth_pure::float), MAX(probability_lgb_v9_5_eth_pure::float) FROM signal_evaluations WHERE asset='ETH' AND timeframe='5m' AND probability_lgb_v9_5_eth_pure IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
 ),
 ff_xrp AS (
-  SELECT 'XRP' AS asset, 'v9_5_xrp' AS col, window_ts, MIN(probability_lgb_v9_5_xrp::float) AS p_min, MAX(probability_lgb_v9_5_xrp::float) AS p_max FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_5_xrp IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
-  UNION ALL SELECT 'XRP', 'v9_2_xrp', window_ts, MIN(probability_lgb_v9_2_xrp::float), MAX(probability_lgb_v9_2_xrp::float) FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_2_xrp IS NOT NULL AND eval_offset BETWEEN 60 AND 180 AND $TIME_CLAUSE GROUP BY window_ts
+  SELECT 'XRP' AS asset, 'v9_5_xrp' AS col, window_ts, MIN(probability_lgb_v9_5_xrp::float) AS p_min, MAX(probability_lgb_v9_5_xrp::float) AS p_max FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_5_xrp IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
+  UNION ALL SELECT 'XRP', 'v9_2_xrp', window_ts, MIN(probability_lgb_v9_2_xrp::float), MAX(probability_lgb_v9_2_xrp::float) FROM signal_evaluations WHERE asset='XRP' AND timeframe='5m' AND probability_lgb_v9_2_xrp IS NOT NULL AND eval_offset BETWEEN $BAND_MIN AND $BAND_MAX AND $TIME_CLAUSE GROUP BY window_ts
 ),
 all_ff AS (
   SELECT * FROM ff_btc WHERE 'BTC' IN $ASSET_LIST
