@@ -17,6 +17,19 @@ Behaviour is identical to the previous three near-duplicate hooks (PR
 SHADOW kill-switch semantics. Tests live in
 ``engine/tests/unit/strategies/test_tickformer_strategies.py``.
 
+Multi-pocket support (feat/tickformer-multi-pocket): if
+``gate_params.pockets`` is a non-empty list, it overrides the legacy
+single-pocket fields (``up_threshold``, ``down_threshold``,
+``eval_offset_remaining_min``, ``eval_offset_remaining_max``).  Each
+pocket entry requires ``up_threshold``, ``rem_min``, ``rem_max`` and
+optionally ``down_threshold`` (defaults to ``1 - up_threshold``).
+When multiple pockets match the current ``eval_offset_remaining``, the
+strictest one wins (highest ``up_threshold`` for UP direction, lowest
+``down_threshold`` for DOWN direction).  The matched pocket's index and
+spec are recorded in ``meta.pocket_index`` / ``meta.pocket_spec`` for
+introspection.  If ``pockets`` is absent or empty, the legacy
+single-pocket path is used unchanged (full backwards compatibility).
+
 Tier-lookup support (FIX 3, hardened post-review): if
 ``gate_params.tier`` is set to one of the keys in
 ``tickformer_tiers.yaml`` (TIER_A/B/C/D), that tier's threshold +
@@ -186,6 +199,101 @@ def _resolve_tier_overrides(
     )
 
 
+# ── Multi-pocket helpers ─────────────────────────────────────────────
+
+
+def _normalise_pocket(raw: dict, index: int) -> Optional[dict]:
+    """Validate and normalise a single pocket entry from gate_params.pockets.
+
+    Returns a normalised dict with keys:
+      up_threshold (float), down_threshold (float), rem_min (int), rem_max (int)
+    or None if the entry is malformed (missing required keys / wrong types).
+
+    Logs a WARNING and returns None on malformed entries so a bad pocket
+    never silently swallows valid pockets that follow it — fail-open.
+    """
+    try:
+        up = float(raw["up_threshold"])
+        rem_min = int(raw["rem_min"])
+        rem_max = int(raw["rem_max"])
+    except (KeyError, TypeError, ValueError) as exc:
+        logger.warning(
+            "tickformer.pocket_malformed index=%d entry=%r exc=%s — pocket skipped",
+            index,
+            raw,
+            exc,
+        )
+        return None
+    down_raw = raw.get("down_threshold")
+    down = float(down_raw) if down_raw is not None else max(0.0, min(1.0, 1.0 - up))
+    if rem_min > rem_max:
+        logger.warning(
+            "tickformer.pocket_invalid_band index=%d rem_min=%d > rem_max=%d — pocket skipped",
+            index,
+            rem_min,
+            rem_max,
+        )
+        return None
+    return {
+        "up_threshold": up,
+        "down_threshold": down,
+        "rem_min": rem_min,
+        "rem_max": rem_max,
+    }
+
+
+def _match_pocket(
+    pockets: list[dict], remaining: int, p: float
+) -> tuple[Optional[str], Optional[int], Optional[dict]]:
+    """Find the best-matching pocket for the current tick.
+
+    Args:
+        pockets: list of normalised pocket dicts (from _normalise_pocket).
+        remaining: current eval_offset_remaining (seconds).
+        p: tickformer probability for this tick.
+
+    Returns:
+        (direction, pocket_index, pocket_spec) where direction is "UP",
+        "DOWN", or None (below threshold in all matching pockets).
+        pocket_index is the index into ``pockets``; pocket_spec is the
+        normalised pocket dict.  Returns (None, None, None) when no
+        pocket's band contains ``remaining``.
+    """
+    # Collect all pockets whose band contains ``remaining``.
+    in_band: list[tuple[int, dict]] = [
+        (i, pk)
+        for i, pk in enumerate(pockets)
+        if pk["rem_min"] <= remaining <= pk["rem_max"]
+    ]
+    if not in_band:
+        return (None, None, None)
+
+    # Among in-band pockets, check thresholds.  If multiple pockets match
+    # the same direction, pick the strictest:
+    #   UP:   highest up_threshold (hardest to cross → most conservative)
+    #   DOWN: lowest down_threshold (farthest from 0.5 → most conservative)
+    best_up: Optional[tuple[int, dict]] = None
+    best_down: Optional[tuple[int, dict]] = None
+
+    for idx, pk in in_band:
+        if p >= pk["up_threshold"]:
+            if best_up is None or pk["up_threshold"] > best_up[1]["up_threshold"]:
+                best_up = (idx, pk)
+        if p <= pk["down_threshold"]:
+            if best_down is None or pk["down_threshold"] < best_down[1]["down_threshold"]:
+                best_down = (idx, pk)
+
+    # Prefer whichever direction has the strictest qualifying pocket.
+    # Tie-break: UP wins (arbitrary but stable).
+    if best_up is not None:
+        return ("UP", best_up[0], best_up[1])
+    if best_down is not None:
+        return ("DOWN", best_down[0], best_down[1])
+
+    # In-band but probability crossed no pocket's threshold.
+    return ("__in_band_no_cross__", None, None)
+
+
 # ── Decision factories ───────────────────────────────────────────────
 
 
@@ -268,59 +376,20 @@ def evaluate_tickformer_strategy(
         )
     p = float(p)
 
-    # ── Tier preset (FIX 3, hardened post-PR-#619 review) ────────
-    # Resolution order:
-    #   1. If gate_params.tier is set AND resolves to a valid preset,
-    #      the tier's up_threshold / eval_offset_remaining_{min,max}
-    #      WIN over any YAML/runtime gate_param values for those keys.
-    #      This is the fix for the "tier silently ignored when YAML
-    #      pre-populates the same keys" bug flagged in the review.
-    #   2. Otherwise, fall through to gate_params.up_threshold /
-    #      eval_offset_remaining_* (YAML / runtime override), then to
-    #      the per-strategy hard defaults.
-    # Operator workflow: to override a tier value, clear the `tier`
-    # key in the runtime override and set the explicit knob; setting
-    # both is unambiguous — tier wins.
-    tier_key = _gp.get_str("tier", None, "")
-    tier_up, tier_rem_min, tier_rem_max = _resolve_tier_overrides(
-        tier_key or None
-    )
+    # ── Multi-pocket resolution (feat/tickformer-multi-pocket) ───
+    # If gate_params.pockets is a non-empty list, it completely overrides
+    # the legacy single-pocket fields (up_threshold, down_threshold,
+    # eval_offset_remaining_{min,max}) and tier preset.  Backwards compat:
+    # pockets absent or [] → fall through to the legacy single-pocket path.
+    raw_pockets = _gp.get_list("pockets", [])
+    valid_pockets: list[dict] = []
+    if raw_pockets:
+        for _idx, _raw in enumerate(raw_pockets):
+            if isinstance(_raw, dict):
+                _normed = _normalise_pocket(_raw, _idx)
+                if _normed is not None:
+                    valid_pockets.append(_normed)
 
-    if tier_up is not None:
-        up_threshold = float(tier_up)
-    else:
-        up_threshold = _gp.get_float("up_threshold", None, default_up_threshold)
-
-    # ── DOWN-side symmetry (review SHOULD-FIX 3) ─────────────────
-    # If the operator did not set ``down_threshold`` explicitly we
-    # default to ``1 - up_threshold``. Emit a one-shot WARN per
-    # strategy so an operator who sets only ``up_threshold=0.92``
-    # is not silently given down_threshold=0.08 without noticing.
-    _down_default = max(0.0, min(1.0, 1.0 - up_threshold))
-    _down_in_active = "down_threshold" in _gp._ACTIVE.get()
-    down_threshold = _gp.get_float("down_threshold", None, _down_default)
-    if not _down_in_active and strategy_id not in _DOWN_SYMMETRY_WARNED:
-        _DOWN_SYMMETRY_WARNED.add(strategy_id)
-        logger.warning(
-            "tickformer.implicit_down_symmetry strategy=%s up=%.3f down=%.3f "
-            "(set gate_params.down_threshold to silence)",
-            strategy_id,
-            up_threshold,
-            _down_default,
-        )
-
-    if tier_rem_min is not None:
-        rem_min = int(tier_rem_min)
-    else:
-        rem_min = _gp.get_int(
-            "eval_offset_remaining_min", None, default_rem_min
-        )
-    if tier_rem_max is not None:
-        rem_max = int(tier_rem_max)
-    else:
-        rem_max = _gp.get_int(
-            "eval_offset_remaining_max", None, default_rem_max
-        )
     shadow_only = bool(
         _gp.get_int("shadow_only", None, int(_DEFAULT_SHADOW_ONLY))
     )
@@ -328,30 +397,138 @@ def evaluate_tickformer_strategy(
 
     remaining = _eval_offset_remaining(surface)
 
-    meta: dict = {
-        prob_column: p,
-        "tickformer_trade_signal": trade_signal,
-        "eval_offset": eval_offset,
-        "eval_offset_remaining": remaining,
-        "up_threshold": up_threshold,
-        "down_threshold": down_threshold,
-        "eval_offset_remaining_min": rem_min,
-        "eval_offset_remaining_max": rem_max,
-        "asset": asset,
-        "shadow_only": shadow_only,
-    }
-    if tier_key:
-        meta["tier"] = tier_key
-    if mutex_group:
-        meta["mutex_group"] = mutex_group
+    if valid_pockets:
+        # ── MULTI-POCKET PATH ─────────────────────────────────────
+        # Build a compact meta record; the matched pocket will contribute
+        # additional fields below.
+        meta: dict = {
+            prob_column: p,
+            "tickformer_trade_signal": trade_signal,
+            "eval_offset": eval_offset,
+            "eval_offset_remaining": remaining,
+            "pockets": valid_pockets,
+            "asset": asset,
+            "shadow_only": shadow_only,
+        }
+        if mutex_group:
+            meta["mutex_group"] = mutex_group
 
-    if remaining is None or remaining < rem_min or remaining > rem_max:
-        return _skip(
-            "outside_eval_offset_remaining_band",
-            meta,
-            strategy_id=strategy_id,
-            version=version,
+        if remaining is None:
+            return _skip(
+                "outside_eval_offset_remaining_band",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
+
+        direction, matched_idx, matched_pocket = _match_pocket(
+            valid_pockets, remaining, p
         )
+
+        if direction is None:
+            # No pocket band covers this remaining value.
+            return _skip(
+                "outside_eval_offset_remaining_band",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
+
+        if direction == "__in_band_no_cross__":
+            # In-band but probability didn't cross any pocket's threshold.
+            return _skip(
+                "conviction_below_threshold",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
+
+        # Populate meta with the winning pocket's params for introspection.
+        meta["pocket_index"] = matched_idx
+        meta["pocket_spec"] = matched_pocket
+        meta["up_threshold"] = matched_pocket["up_threshold"]
+        meta["down_threshold"] = matched_pocket["down_threshold"]
+        meta["eval_offset_remaining_min"] = matched_pocket["rem_min"]
+        meta["eval_offset_remaining_max"] = matched_pocket["rem_max"]
+
+    else:
+        # ── LEGACY SINGLE-POCKET PATH (backwards compatible) ─────
+        # Resolution order:
+        #   1. If gate_params.tier is set AND resolves to a valid preset,
+        #      the tier's up_threshold / eval_offset_remaining_{min,max}
+        #      WIN over any YAML/runtime gate_param values for those keys.
+        #   2. Otherwise, fall through to gate_params.up_threshold /
+        #      eval_offset_remaining_* (YAML / runtime override), then to
+        #      the per-strategy hard defaults.
+        tier_key = _gp.get_str("tier", None, "")
+        tier_up, tier_rem_min, tier_rem_max = _resolve_tier_overrides(
+            tier_key or None
+        )
+
+        if tier_up is not None:
+            up_threshold = float(tier_up)
+        else:
+            up_threshold = _gp.get_float("up_threshold", None, default_up_threshold)
+
+        # ── DOWN-side symmetry (review SHOULD-FIX 3) ─────────────────
+        # If the operator did not set ``down_threshold`` explicitly we
+        # default to ``1 - up_threshold``. Emit a one-shot WARN per
+        # strategy so an operator who sets only ``up_threshold=0.92``
+        # is not silently given down_threshold=0.08 without noticing.
+        _down_default = max(0.0, min(1.0, 1.0 - up_threshold))
+        _down_in_active = "down_threshold" in _gp._ACTIVE.get()
+        down_threshold = _gp.get_float("down_threshold", None, _down_default)
+        if not _down_in_active and strategy_id not in _DOWN_SYMMETRY_WARNED:
+            _DOWN_SYMMETRY_WARNED.add(strategy_id)
+            logger.warning(
+                "tickformer.implicit_down_symmetry strategy=%s up=%.3f down=%.3f "
+                "(set gate_params.down_threshold to silence)",
+                strategy_id,
+                up_threshold,
+                _down_default,
+            )
+
+        if tier_rem_min is not None:
+            rem_min = int(tier_rem_min)
+        else:
+            rem_min = _gp.get_int(
+                "eval_offset_remaining_min", None, default_rem_min
+            )
+        if tier_rem_max is not None:
+            rem_max = int(tier_rem_max)
+        else:
+            rem_max = _gp.get_int(
+                "eval_offset_remaining_max", None, default_rem_max
+            )
+
+        meta: dict = {
+            prob_column: p,
+            "tickformer_trade_signal": trade_signal,
+            "eval_offset": eval_offset,
+            "eval_offset_remaining": remaining,
+            "up_threshold": up_threshold,
+            "down_threshold": down_threshold,
+            "eval_offset_remaining_min": rem_min,
+            "eval_offset_remaining_max": rem_max,
+            "asset": asset,
+            "shadow_only": shadow_only,
+        }
+        if tier_key:
+            meta["tier"] = tier_key
+        if mutex_group:
+            meta["mutex_group"] = mutex_group
+
+        if remaining is None or remaining < rem_min or remaining > rem_max:
+            return _skip(
+                "outside_eval_offset_remaining_band",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
+
+        direction = None  # resolved below after the gate-cond check
+        up_threshold = up_threshold  # already set above
+        down_threshold = down_threshold
 
     # ── Gate-cond readiness check (PR-B, fix/tickformer-gate-cond-ready-gate) ──
     # The K=6 multi-step inference loop needs ≥69 ticks of lookback warmup
@@ -386,17 +563,23 @@ def evaluate_tickformer_strategy(
                 version=version,
             )
 
-    if p >= up_threshold:
-        direction = "UP"
-    elif p <= down_threshold:
-        direction = "DOWN"
-    else:
-        return _skip(
-            "conviction_below_threshold",
-            meta,
-            strategy_id=strategy_id,
-            version=version,
-        )
+    # ── Direction resolution (legacy single-pocket path only) ───────────
+    # In the multi-pocket path, direction was already resolved by
+    # _match_pocket (and conviction_below_threshold was returned there).
+    # In the legacy path, direction was set to None above and needs the
+    # threshold comparison here.
+    if not valid_pockets:
+        if p >= up_threshold:
+            direction = "UP"
+        elif p <= down_threshold:
+            direction = "DOWN"
+        else:
+            return _skip(
+                "conviction_below_threshold",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
 
     # Trade-signal cross-check: only an explicit opposite label blocks.
     # HOLD / None pass through (the probability is the primary edge).
