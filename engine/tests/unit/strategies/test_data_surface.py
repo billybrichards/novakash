@@ -232,3 +232,67 @@ class TestDataSurfaceManager:
         assert surface.probability_up_cedar == pytest.approx(0.45)
         assert surface.probability_lgb_cedar is None
         assert surface.probability_classifier_cedar is None
+
+
+# ── Fix C: cedar fetch includes seconds_to_close (PR fix/engine-v2-probability-client-hardening) ──
+
+@pytest.mark.asyncio
+async def test_cedar_fetch_sends_seconds_to_close():
+    """Fix C: _fetch_cedar_asset must include seconds_to_close in the GET
+    query params.
+
+    The GET /v2/probability/cedar endpoint has seconds_to_close as a required
+    FastAPI Query parameter (ge=1, le=300). Previously the engine sent only
+    ?asset=BTC, which caused 422 'Field required' on every cedar fetch call
+    (833 / 2811 total /v2/probability calls = 29.6% error rate in prod logs).
+
+    This test spins up an aiohttp mock server and verifies that after the fix,
+    the cedar fetch includes seconds_to_close >= 1 in the query string.
+    """
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    import json
+
+    received_params = {}
+
+    async def handle_cedar(request: web.Request) -> web.Response:
+        received_params.update(dict(request.query))
+        return web.Response(
+            status=200,
+            body=json.dumps({"probability_up": 0.65}),
+            content_type="application/json",
+        )
+
+    app = web.Application()
+    app.router.add_get("/v2/probability/cedar", handle_cedar)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        import aiohttp as _aiohttp
+        session = _aiohttp.ClientSession()
+        mgr = DataSurfaceManager.__new__(DataSurfaceManager)
+        mgr._session = session
+        mgr._cedar_url = f"http://{server.host}:{server.port}/v2/probability/cedar"
+        mgr._cedar_disabled = False
+        mgr._cached_cedar = {}
+        mgr._cached_cedar_ts = {}
+
+        await mgr._fetch_cedar_asset("BTC")
+
+        # Verify seconds_to_close is present and valid (ge=1).
+        assert "seconds_to_close" in received_params, (
+            f"cedar fetch did not send seconds_to_close. Query: {received_params}"
+        )
+        stc = int(received_params["seconds_to_close"])
+        assert stc >= 1, f"seconds_to_close must be >= 1, got {stc}"
+        assert stc <= 300, f"seconds_to_close must be <= 300, got {stc}"
+
+        # Asset must also be present.
+        assert received_params.get("asset") == "BTC"
+
+        # Cache must have been updated on 200.
+        assert mgr._cached_cedar.get("BTC") == {"probability_up": 0.65}
+
+        await session.close()
+    finally:
+        await server.close()

@@ -217,6 +217,55 @@ class TelegramRenderer(AlertRendererPort):
             f"{iso_suffix}"
         )
 
+    def _render_tickformer_extras(self, extras: Optional[dict]) -> Optional[str]:
+        """One-line summary of tickformer_v* probability + threshold + tier.
+
+        Mirrors :meth:`_render_ensemble_extras`. Reads opaque dict the use
+        case forwards from ``StrategyDecision.metadata`` (populated by
+        ``_emit_narrative_v2_trade`` from tickformer metadata fields).
+        Returns None unless ``tickformer_prob_column`` is set, so non-
+        tickformer strategies render unchanged.
+
+        Format examples (one line each):
+          tickformer: probability_tickformer_v17=0.812  up_thr=0.65  rem=120s  tier=t60_180
+          tickformer: probability_tickformer_v16=0.190  down_thr=0.35  rem=195s
+        """
+        if not extras or not extras.get("tickformer_prob_column"):
+            return None
+
+        def _fmt(p):
+            try:
+                return f"{float(p):.3f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        def _fmt_int(p):
+            try:
+                return f"{int(p)}s"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        prob_col = extras["tickformer_prob_column"]
+        prob_val = _fmt(extras.get("tickformer_probability"))
+        up_thr = extras.get("tickformer_up_threshold")
+        down_thr = extras.get("tickformer_down_threshold")
+        rem = extras.get("tickformer_eval_offset_remaining")
+        tier = extras.get("tickformer_tier")
+        trade_signal = extras.get("tickformer_trade_signal")
+
+        bits = [f"🎛 tickformer: {prob_col}={prob_val}"]
+        if up_thr is not None:
+            bits.append(f"up_thr={_fmt(up_thr)}")
+        if down_thr is not None:
+            bits.append(f"down_thr={_fmt(down_thr)}")
+        if rem is not None:
+            bits.append(f"rem={_fmt_int(rem)}")
+        if tier:
+            bits.append(f"tier={tier}")
+        if trade_signal:
+            bits.append(f"signal={trade_signal}")
+        return "  ".join(bits)
+
     def _render_health(self, h: HealthBadge) -> str:
         emoji = _HEALTH_EMOJI[h.status]
         tag = f"{emoji} {h.status.value}"
@@ -267,6 +316,9 @@ class TelegramRenderer(AlertRendererPort):
         ensemble_line = self._render_ensemble_extras(p.extras)
         if ensemble_line:
             lines.append(ensemble_line)
+        tickformer_line = self._render_tickformer_extras(p.extras)
+        if tickformer_line:
+            lines.append(tickformer_line)
         lines.extend([
             SUB_DIVIDER,
             order_line,
