@@ -58,10 +58,10 @@ status: SHADOW
 description: |
   TickFormer v17 precision-sniper SHADOW strategy. Reads
   probability_tickformer_v17 (NUMERIC) emitted by timesfm-service.
-  Sniper defaults: thr 0.85, eval_offset_remaining [60, 140] for the
-  ~94-98% WR pocket. shadow_only=1 forces SKIP-with-record even if mode
-  flips. Symmetric DOWN side at p <= 0.15. Trade-signal cross-check
-  blocks only on explicit opposite.
+  RECAL 2026-05-28: thr lowered 0.85→0.65 (live max 0.752; zero crosses
+  at 0.85 in 24h). Clean live pockets: 0.65-0.69×120-179s=100% WR n=13,
+  0.70-0.74×60-119s=100% WR n=15. Band: 60-179s (was 60-140).
+  shadow_only=1 forces SKIP-with-record. Symmetric DOWN side p<=0.35.
 mode: SHADOW
 asset: ANY
 timescale: 5m
@@ -80,10 +80,17 @@ gates:
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
   mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
-  up_threshold: 0.85                   # sniper default — 94-98% WR across the band
-  down_threshold: 0.15                 # symmetric to up_threshold
-  eval_offset_remaining_min: 60        # seconds remaining in 5m window
-  eval_offset_remaining_max: 140       # sniper sweet spot; widen to 220 for dream tier
+  # ── RECAL 2026-05-28 (fix/tickformer-threshold-recal-2026-05-28) ──────
+  # Live 7d BTC 5m sweep (189 resolved windows, hub notes #728/#729):
+  #   prob 0.65-0.69 × eval_offset_remaining 120-179s → n=13, WR 100%
+  #   prob 0.70-0.74 × eval_offset_remaining 60-119s  → n=15, WR 100%
+  # Previous threshold 0.85 was unreachable in live data (max 0.752 in 24h,
+  # zero crosses observed). Targeting v17's clean pocket: 0.65+ / 60-179s.
+  # Env flag TICKFORMER_RECAL_2026_05_28=true enables the new values below.
+  up_threshold: 0.65                   # RECAL: was 0.85; live pocket starts at 0.65 (100% WR @ 60-179s)
+  down_threshold: 0.35                 # symmetric: 1 - 0.65 = 0.35
+  eval_offset_remaining_min: 60        # seconds remaining — v17 clean pocket floor
+  eval_offset_remaining_max: 179       # RECAL: was 140; v17 clean pocket ceiling (60-179s band)
   min_consecutive_pass_ticks: 1
   entry_cap: 0.93
   entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)

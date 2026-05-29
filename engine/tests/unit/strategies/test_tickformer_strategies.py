@@ -42,6 +42,9 @@ from strategies.configs.tickformer_v18_t180 import (  # noqa: E402
 from strategies.configs.tickformer_v20_adaptive_early import (  # noqa: E402
     evaluate_tickformer_v20_adaptive_early,
 )
+from strategies.configs.tickformer_v18_golden import (  # noqa: E402
+    evaluate_tickformer_v18_golden,
+)
 
 
 @contextmanager
@@ -437,3 +440,257 @@ def test_gate_cond_applies_to_v17_and_v18_too(monkeypatch):
     with _gp_active({"shadow_only": 0}):
         dec_v18 = evaluate_tickformer_v18_t180(surface_v18)
     assert dec_v18.skip_reason == "gate_cond_not_settled"
+
+
+# ── RECAL 2026-05-28: env-flag threshold tests ────────────────────────
+# Contract: when TICKFORMER_RECAL_2026_05_28=true the new thresholds
+# apply; when false (default) the old thresholds apply unchanged.
+# Each strategy gets two cases: (A) flag off → old threshold; (B) flag on → new.
+
+
+# ── v16 recal ─────────────────────────────────────────────────────────
+
+
+def test_v16_recal_flag_off_uses_old_threshold(monkeypatch):
+    """Flag off: old up_threshold=0.85. p=0.70 → conviction_below_threshold."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "false")
+    surface = _surface("probability_tickformer_v16", 0.70, eval_offset=200)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v16_pure(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "conviction_below_threshold"
+
+
+def test_v16_recal_flag_on_uses_new_threshold(monkeypatch):
+    """Flag on: new up_threshold=0.65. p=0.70 → passes conviction, SHADOW SKIP."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    # eval_offset=200 → remaining=200, inside [60, 240] band
+    surface = _surface("probability_tickformer_v16", 0.70, eval_offset=200)
+    dec = evaluate_tickformer_v16_pure(surface)
+    # Default shadow_only=1 → shadow_only_no_trade (meaning it crossed threshold)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade"
+    assert dec.metadata.get("would_direction") == "UP"
+
+
+def test_v16_recal_flag_absent_treated_as_false(monkeypatch):
+    """Env var absent → old threshold. p=0.70 below 0.85 → conviction_below_threshold."""
+    monkeypatch.delenv("TICKFORMER_RECAL_2026_05_28", raising=False)
+    surface = _surface("probability_tickformer_v16", 0.70, eval_offset=200)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v16_pure(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "conviction_below_threshold"
+
+
+# ── v17 recal ─────────────────────────────────────────────────────────
+
+
+def test_v17_recal_flag_off_old_threshold_and_band(monkeypatch):
+    """Flag off: old up_threshold=0.85, rem_max=140. p=0.70, eval_offset=160 → conviction_below."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "false")
+    # eval_offset=160 → remaining=160 > rem_max=140 → outside band first
+    # Test with p high enough to pass threshold but outside band (band check wins)
+    surface = _surface("probability_tickformer_v17", 0.92, eval_offset=160)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v17_sniper(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+
+
+def test_v17_recal_flag_on_new_threshold_and_band(monkeypatch):
+    """Flag on: new up_threshold=0.65, rem_max=179. p=0.70, eval_offset=160 → in-band TRADE."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    # eval_offset=160 → remaining=160, inside new band [60, 179]
+    surface = _surface("probability_tickformer_v17", 0.70, eval_offset=160)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v17_sniper(surface)
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+    assert dec.strategy_id == "tickformer_v17_sniper"
+
+
+def test_v17_recal_flag_on_old_prob_0_85_still_passes(monkeypatch):
+    """Flag on: p=0.85 also passes new threshold=0.65 (no regression)."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    surface = _surface("probability_tickformer_v17", 0.85, eval_offset=100)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v17_sniper(surface)
+    assert dec.action == "TRADE"
+    assert dec.direction == "UP"
+
+
+# ── v18 recal ─────────────────────────────────────────────────────────
+
+
+def test_v18_recal_flag_off_old_band_admits_180s(monkeypatch):
+    """Flag off: old rem_max=220. eval_offset=180 → remaining=180 → in-band, p=0.95 TRADE."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "false")
+    surface = _surface("probability_tickformer_v18", 0.95, eval_offset=180)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_t180(surface)
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+
+
+def test_v18_recal_flag_on_new_band_excludes_180s(monkeypatch):
+    """Flag on: new rem_max=119. eval_offset=180 → remaining=180 > 119 → outside band."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    # eval_offset=180 → remaining=180, outside new band [60, 119] — the 40% WR trap
+    surface = _surface("probability_tickformer_v18", 0.92, eval_offset=180)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_t180(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+
+
+def test_v18_recal_flag_on_sniper_pocket_fires(monkeypatch):
+    """Flag on: new rem_max=119, up_threshold=0.86. p=0.92, eval_offset=90 → TRADE."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    # eval_offset=90 → remaining=90, inside new band [60, 119]; p=0.92 >= 0.86
+    surface = _surface("probability_tickformer_v18", 0.92, eval_offset=90)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_t180(surface)
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+
+
+def test_v18_recal_flag_on_below_new_threshold_skips(monkeypatch):
+    """Flag on: p=0.82 < new threshold 0.86 → conviction_below_threshold."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    surface = _surface("probability_tickformer_v18", 0.82, eval_offset=90)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_t180(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "conviction_below_threshold"
+
+
+# ── v20 recal ─────────────────────────────────────────────────────────
+
+
+def test_v20_recal_flag_off_old_threshold_0_90(monkeypatch):
+    """Flag off: old up_threshold=0.90. p=0.87 below threshold → conviction_below."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "false")
+    surface = _surface("probability_tickformer_v20", 0.87, eval_offset=200)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "conviction_below_threshold"
+
+
+def test_v20_recal_flag_on_new_threshold_0_85(monkeypatch):
+    """Flag on: new up_threshold=0.85. p=0.87 passes threshold → TRADE."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    # eval_offset=200 → remaining=200, inside new band [60, 280]
+    surface = _surface("probability_tickformer_v20", 0.87, eval_offset=200)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+
+
+def test_v20_recal_mode_stays_shadow(monkeypatch):
+    """v20 stays in SHADOW mode — shadow_only=1 (default) enforced."""
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    surface = _surface("probability_tickformer_v20", 0.87, eval_offset=200)
+    # No gate_params override → default shadow_only=1
+    dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade"
+    assert dec.metadata.get("would_trade") is True
+    assert dec.metadata.get("would_direction") == "UP"
+
+
+# ── tickformer_v18_golden (new strategy) ─────────────────────────────
+
+
+def test_v18_golden_missing_probability_skips_not_available():
+    """v18_golden missing prob → tickformer_v18_not_available SKIP."""
+    surface = _surface("probability_tickformer_v18", None)
+    dec = evaluate_tickformer_v18_golden(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "tickformer_v18_not_available"
+
+
+def test_v18_golden_in_pocket_fires_when_shadow_off():
+    """Golden pocket: p=0.83, eval_offset=150 → remaining=150 in [120,179] → TRADE."""
+    surface = _surface(
+        "probability_tickformer_v18",
+        0.83,
+        eval_offset=150,
+        trade_signal=None,
+    )
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_golden(surface)
+    assert dec.action == "TRADE", f"expected TRADE, got SKIP({dec.skip_reason})"
+    assert dec.direction == "UP"
+    assert dec.strategy_id == "tickformer_v18_golden"
+    assert dec.entry_reason == "tickformer_v18_golden_pass"
+
+
+def test_v18_golden_below_threshold_skips():
+    """p=0.75 < up_threshold=0.80 → conviction_below_threshold."""
+    surface = _surface("probability_tickformer_v18", 0.75, eval_offset=150)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_golden(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "conviction_below_threshold"
+
+
+def test_v18_golden_outside_band_skips():
+    """eval_offset=90 → remaining=90 < rem_min=120 → outside_eval_offset_remaining_band."""
+    surface = _surface("probability_tickformer_v18", 0.83, eval_offset=90)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_golden(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    assert dec.metadata["eval_offset_remaining"] == 90
+
+
+def test_v18_golden_outside_band_too_early_skips():
+    """eval_offset=200 → remaining=200 > rem_max=179 → outside_eval_offset_remaining_band."""
+    surface = _surface("probability_tickformer_v18", 0.83, eval_offset=200)
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v18_golden(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    assert dec.metadata["eval_offset_remaining"] == 200
+
+
+def test_v18_golden_shadow_only_default_returns_skip_with_record():
+    """SHADOW kill switch: shadow_only=1 (default) → SKIP with would_trade record."""
+    surface = _surface("probability_tickformer_v18", 0.83, eval_offset=150)
+    dec = evaluate_tickformer_v18_golden(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason == "shadow_only_no_trade"
+    assert dec.metadata["would_trade"] is True
+    assert dec.metadata["would_direction"] == "UP"
+
+
+def test_v18_golden_does_not_overlap_with_v18_t180_sniper_band_when_recal_on(monkeypatch):
+    """After RECAL: v18_t180 covers [60,119]; v18_golden covers [120,179]. No overlap.
+
+    A tick at eval_offset=90 (remaining=90s) should fire on v18_t180 (recal on)
+    but NOT on v18_golden (below rem_min=120). Conversely eval_offset=150
+    should fire on v18_golden but NOT on v18_t180 (above rem_max=119).
+    """
+    monkeypatch.setenv("TICKFORMER_RECAL_2026_05_28", "true")
+    prob = 0.92  # above both thresholds
+
+    # eval_offset=90 (remaining=90) → v18_t180 fires, v18_golden skips (outside band)
+    surface_90 = _surface("probability_tickformer_v18", prob, eval_offset=90)
+    with _gp_active({"shadow_only": 0}):
+        dec_t180 = evaluate_tickformer_v18_t180(surface_90)
+        dec_golden = evaluate_tickformer_v18_golden(surface_90)
+    assert dec_t180.action == "TRADE", f"t180 should fire at rem=90, got {dec_t180.skip_reason}"
+    assert dec_golden.action == "SKIP"
+    assert dec_golden.skip_reason == "outside_eval_offset_remaining_band"
+
+    # eval_offset=150 (remaining=150) → v18_golden fires, v18_t180 skips (outside band)
+    surface_150 = _surface("probability_tickformer_v18", 0.83, eval_offset=150)
+    with _gp_active({"shadow_only": 0}):
+        dec_t180_b = evaluate_tickformer_v18_t180(surface_150)
+        dec_golden_b = evaluate_tickformer_v18_golden(surface_150)
+    assert dec_t180_b.action == "SKIP"
+    assert dec_t180_b.skip_reason == "outside_eval_offset_remaining_band"
+    assert dec_golden_b.action == "TRADE", f"golden should fire at rem=150, got {dec_golden_b.skip_reason}"

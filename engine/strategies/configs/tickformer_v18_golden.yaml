@@ -1,0 +1,89 @@
+name: tickformer_v18_golden
+strategy_id: tickformer_v18_golden
+version: "1.0.0"
+# tickformer_v18_golden — 2026-05-29 (SHADOW, Billy promotes manually)
+#
+# NEW strategy: TickFormer v18 mid-conviction early-window SHADOW strategy.
+# Added by fix/tickformer-threshold-recal-2026-05-28.
+#
+# After tightening tickformer_v18_t180's band to 60-119s (the sniper
+# pocket), this strategy covers the live mid-conviction early-window
+# pocket that v18_t180 no longer captures post-recal:
+#
+# Live 7d BTC 5m sweep (189 resolved windows, hub notes #728/#729):
+#   prob 0.80-0.85 × eval_offset_remaining 120-179s → n=13, WR 100%
+#
+# This is a separate, additive live pocket. v18_golden and v18_t180 are
+# designed to be complementary — v18_golden covers mid-conviction
+# early-window; v18_t180 covers high-conviction late-window (sniper).
+#
+# Reads probability_tickformer_v18 (NOT v20 — this is the v18 mid-pocket).
+#
+# DOWN SIDE: symmetric. down_threshold = 1 - up_threshold = 0.20.
+#
+# SHADOW KILL SWITCH:
+#   gate_params.shadow_only=1 (default) forces SKIP-with-decision-record
+#   behaviour even if mode=LIVE in YAML. Flip to 0 only at promotion time.
+#
+# ROLLOUT PLAN:
+#   1. SHADOW (this PR). shadow_only=1. Operator flips to GHOST after
+#      soak confirms live WR holds (recommended: 20+ shadow fires at WR >= 90%).
+#   2. Billy promotes to GHOST manually per feedback_no_auto_promote.md.
+#   3. After GHOST soak (50+ fires at WR >= 90%), operator promotes to LIVE.
+#
+# GATE STATE:
+#   - chainlink_freshness only.
+#   - mutex_group: tickformer (cross-strategy guardrail — PR #619 FIX 2).
+#
+# DEPENDENCY:
+#   probability_tickformer_v18 column must exist on signal_evaluations
+#   (already added by add_tickformer_v17_v18_strategies.sql migration).
+#   No new column needed — this strategy re-uses the v18 probability.
+#
+# MIGRATION:
+#   add_tickformer_v18_golden.sql — seeds strategy_configs row.
+#
+# References:
+#   Sibling strategies: tickformer_v18_t180 (sniper pocket, 0.86+ × 60-119s)
+#   hub notes #728/#729 — 7d live sweep data backing this pocket
+#
+status: SHADOW
+description: |
+  TickFormer v18 mid-conviction early-window SHADOW strategy. Reads
+  probability_tickformer_v18 (NUMERIC) emitted by timesfm-service.
+  Targets the live golden pocket: prob 0.80-0.85 × eval_offset_remaining
+  120-179s (100% WR, n=13, hub note #728). Complements v18_t180 (sniper
+  pocket 0.86+ × 60-119s post-RECAL 2026-05-28). shadow_only=1 forces
+  SKIP-with-record. Symmetric DOWN side at p <= 0.20.
+mode: SHADOW
+asset: ANY
+timescale: 5m
+
+hooks_file: tickformer_v18_golden.py
+pre_gate_hook: evaluate_tickformer_v18_golden
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
+  up_threshold: 0.80                   # golden mid-conviction pocket (WR 100% n=13 at 0.80-0.85)
+  down_threshold: 0.20                 # symmetric: 1 - 0.80 = 0.20
+  eval_offset_remaining_min: 120       # early-window floor (seconds remaining)
+  eval_offset_remaining_max: 179       # early-window ceiling — before late-window sniper band
+  min_consecutive_pass_ticks: 1
+  entry_cap: 0.93
+  entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90                 # skip DOWN fires if fill > 0.90
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5                  # SHADOW — no real fire while shadow_only=1
+  max_daily_loss_usd: 20

@@ -65,10 +65,11 @@ status: SHADOW
 description: |
   TickFormer v16 "magic model" SHADOW strategy. Reads
   probability_tickformer_v16 (NUMERIC) and tickformer_trade_signal
-  (UP/DOWN/HOLD) emitted by timesfm-service (sister PR). Tier C
-  defaults: thr 0.85, eval_offset_remaining [60, 240]. shadow_only=1
-  forces SKIP-with-record even if mode flips. Symmetric DOWN side at
-  p <= 0.15. Trade-signal cross-check blocks only on explicit opposite.
+  (UP/DOWN/HOLD) emitted by timesfm-service (sister PR). RECAL
+  2026-05-28: thr lowered 0.85→0.65 (live max 0.831; was unreachable;
+  best pocket 0.65-0.69 × 180-220s = 88.9% WR, n=27). eval_offset
+  [60, 240] preserved. Preferred tier: Tier D band at promotion.
+  shadow_only=1 forces SKIP-with-record. Symmetric DOWN side p<=0.35.
 mode: SHADOW
 asset: ANY
 timescale: 5m
@@ -87,10 +88,19 @@ gates:
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE (live go-live switch)
   mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2) — highest conviction wins, losers SKIP=mutex_group_lost
-  up_threshold: 0.85                   # Tier C default; raise to 0.90 for Tier A/B (~96% WR pocket)
-  down_threshold: 0.15                 # symmetric to up_threshold
+  # ── RECAL 2026-05-28 (fix/tickformer-threshold-recal-2026-05-28) ──────
+  # Live 7d BTC 5m sweep (189 resolved windows, hub notes #728/#729):
+  #   prob 0.65-0.69 × eval_offset_remaining 180-220s → n=27, WR 88.9%
+  #   prob 0.70-0.74 × eval_offset_remaining 120-179s → n=14, WR 100%
+  # Previous threshold 0.85 was unreachable in live data (max 0.831 in 24h).
+  # Env flag TICKFORMER_RECAL_2026_05_28=true enables the new values below;
+  # false (default) falls back to the original defaults in _tickformer_base.py.
+  up_threshold: 0.65                   # RECAL: was 0.85; live pocket starts at 0.65 (88.9% WR @ 180-220s)
+  down_threshold: 0.35                 # symmetric: 1 - 0.65 = 0.35
   eval_offset_remaining_min: 60        # seconds remaining in 5m window
   eval_offset_remaining_max: 240       # admit Tier D dream zone; tighten to 60 for Tier A/B
+  # Preferred pocket: eval_offset_remaining 180-220s (89% WR pocket per hub #728).
+  # Use tier=TIER_D at promotion time to pin that band via tickformer_tiers.yaml.
   min_consecutive_pass_ticks: 1
   entry_cap: 0.93
   entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)

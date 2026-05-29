@@ -67,10 +67,10 @@ status: SHADOW
 description: |
   TickFormer v18 balanced t-180 SHADOW strategy. Reads
   probability_tickformer_v18 (NUMERIC) emitted by timesfm-service.
-  Recommended defaults: thr 0.90, eval_offset_remaining [60, 220] for
-  ~92% WR / ~16 trades/day. shadow_only=1 forces SKIP-with-record even
-  if mode flips. Symmetric DOWN side at p <= 0.10. Trade-signal
-  cross-check blocks only on explicit opposite.
+  RECAL 2026-05-28: KEEP thr 0.86 (reachable; live max 0.923).
+  TIGHTEN band to 60-119s (100% WR n=6). Excludes 180-220s trap
+  (40% WR n=5 at high conviction — window-open timing degrades v18).
+  shadow_only=1 forces SKIP-with-record. Symmetric DOWN side p<=0.14.
 mode: SHADOW
 asset: ANY
 timescale: 5m
@@ -89,10 +89,19 @@ gates:
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
   mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
-  up_threshold: 0.90                   # recommended — 92% WR broad band
-  down_threshold: 0.10                 # symmetric to up_threshold
+  # ── RECAL 2026-05-28 (fix/tickformer-threshold-recal-2026-05-28) ──────
+  # Live 7d BTC 5m sweep (189 resolved windows, hub notes #728/#729):
+  #   prob 0.86+ × eval_offset_remaining 60-119s  → n=6,  WR 100%  ← TARGET
+  #   prob 0.86+ × eval_offset_remaining 180-220s → n=5,  WR  40%  ← AVOID (trap)
+  # v18 threshold 0.86 IS reachable (max 0.923 in 24h). Tightening eval_offset
+  # to 60-119s locks the 100% WR pocket and actively excludes the 40% WR
+  # window-open trap (180-220s at high conviction is counterintuitively WORSE).
+  # Env flag TICKFORMER_RECAL_2026_05_28=true enables the new values below.
+  up_threshold: 0.86                   # KEEP: sniper-grade pocket confirmed reachable (max 0.923 live)
+  down_threshold: 0.14                 # symmetric: 1 - 0.86 = 0.14 (was 0.10; corrected)
   eval_offset_remaining_min: 60        # seconds remaining in 5m window
-  eval_offset_remaining_max: 220       # full broad band; narrow to 120 for tighter WR
+  eval_offset_remaining_max: 119       # RECAL: was 220; tightened to 60-119s (100% WR pocket)
+  # WARNING: 180-220s at prob 0.86+ has 40% WR (hub #728) — actively excluded.
   min_consecutive_pass_ticks: 1
   entry_cap: 0.93
   entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
