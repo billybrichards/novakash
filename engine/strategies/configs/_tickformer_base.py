@@ -610,6 +610,10 @@ def evaluate_tickformer_strategy(
         )
 
     # Direction-aware fill-band gate (RDS note #664).
+    # UP and DOWN are distinct CLOB tokens with independent order books.
+    # Use the actual leg price for each direction's cap/floor — not the UP
+    # price as a proxy for both. (Bug fixed 2026-05-29: prior version checked
+    # UP price against DOWN cap, allowing NO buys at >$0.90 when UP was cheap.)
     fill_price = getattr(surface, "fill_price", None)
     if fill_price is None:
         fill_price = getattr(surface, "clob_implied_up", None)
@@ -618,6 +622,15 @@ def evaluate_tickformer_strategy(
             fill_price = float(fill_price)
         except (TypeError, ValueError):
             fill_price = None
+    down_fill_price = getattr(surface, "clob_down_ask", None)
+    if down_fill_price is not None:
+        try:
+            down_fill_price = float(down_fill_price)
+        except (TypeError, ValueError):
+            down_fill_price = None
+    if down_fill_price is None and fill_price is not None:
+        # Fallback: synthesize NO price from UP leg (UP+DOWN ≈ 1.00 via arb).
+        down_fill_price = 1.0 - fill_price
     if fill_price is not None:
         entry_floor_up = float(
             _gp.get_float("entry_floor_up", None, _DEFAULT_ENTRY_FLOOR_UP)
@@ -626,6 +639,7 @@ def evaluate_tickformer_strategy(
             _gp.get_float("entry_cap_down", None, _DEFAULT_ENTRY_CAP_DOWN)
         )
         meta["fill_price"] = fill_price
+        meta["down_fill_price"] = down_fill_price
         meta["entry_floor_up"] = entry_floor_up
         meta["entry_cap_down"] = entry_cap_down
         if direction == "UP" and fill_price < entry_floor_up:
@@ -635,9 +649,13 @@ def evaluate_tickformer_strategy(
                 strategy_id=strategy_id,
                 version=version,
             )
-        if direction == "DOWN" and fill_price > entry_cap_down:
+        if (
+            direction == "DOWN"
+            and down_fill_price is not None
+            and down_fill_price > entry_cap_down
+        ):
             return _skip(
-                f"fill_above_down_cap:{fill_price:.3f}>{entry_cap_down:.3f}",
+                f"fill_above_down_cap:{down_fill_price:.3f}>{entry_cap_down:.3f}",
                 meta,
                 strategy_id=strategy_id,
                 version=version,

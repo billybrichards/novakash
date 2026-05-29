@@ -2572,7 +2572,7 @@ class EngineRuntime:
                 "tickformer_eval_per_write.fired",
                 asset=asset,
                 window_ts=getattr(window, "window_ts", None),
-                eval_offset=remaining,
+                eval_offset=_fresh_remaining,
             )
         except Exception as exc:
             log.warning(
