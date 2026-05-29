@@ -368,6 +368,42 @@ class TelegramAlerter:
                 "ensemble_config": decision_metadata.get("ensemble_config"),
             }
 
+        # Tickformer family extras (PR feat/tickformer-telegram-notifs).
+        # When a tickformer_v* strategy fires, surface the probability column
+        # (e.g. probability_tickformer_v17), the up_threshold it cleared,
+        # the active tier (if any) and the eval_offset_remaining so the
+        # operator can tell tickformer trades apart from LGB ones in TG.
+        # Strategy-agnostic detection: any decision_metadata key starting
+        # with "probability_tickformer_" is treated as a tickformer trade.
+        if decision_metadata and strategy_id.startswith("tickformer_"):
+            tickformer_prob_key = next(
+                (
+                    k for k in decision_metadata
+                    if k.startswith("probability_tickformer_")
+                ),
+                None,
+            )
+            if tickformer_prob_key is not None:
+                if extras is None:
+                    extras = {}
+                extras["tickformer_prob_column"] = tickformer_prob_key
+                extras["tickformer_probability"] = decision_metadata.get(
+                    tickformer_prob_key
+                )
+                extras["tickformer_up_threshold"] = decision_metadata.get(
+                    "up_threshold"
+                )
+                extras["tickformer_down_threshold"] = decision_metadata.get(
+                    "down_threshold"
+                )
+                extras["tickformer_eval_offset_remaining"] = (
+                    decision_metadata.get("eval_offset_remaining")
+                )
+                extras["tickformer_tier"] = decision_metadata.get("tier")
+                extras["tickformer_trade_signal"] = decision_metadata.get(
+                    "tickformer_trade_signal"
+                )
+
         inp = BuildTradeAlertInput(
             timeframe=timeframe or "5m",
             strategy_id=strategy_id,
