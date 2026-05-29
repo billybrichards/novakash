@@ -1104,6 +1104,21 @@ class PgTradeRepository:
         every TTL/marker mechanism that failed during the 2026-05-20 ETH
         incident (window 1779312000, v9_2_eth_raw_lgb fired DOWN 3x in 40s).
 
+        Two-clause check (2026-05-29 tickformer double-fire fix):
+          Clause A — window_ts in metadata: the canonical path used by v9.x
+            and other strategies that set metadata['window_ts'] explicitly.
+          Clause B — dedup_key match: fallback for strategies (e.g. tickformer
+            family) that set metadata['dedup_key'] but historically omitted
+            metadata['window_ts']. The dedup_key encodes the same triplet as
+            (strategy_id, window_ts, direction) so a match means the same
+            logical order already exists. Added as belt-and-braces so even if
+            a future strategy omits window_ts again, the dedup_key catches it.
+
+        Incident: tickformer_v16_pure, 2026-05-29 21:58 UTC, window
+        1780091700 — Clause A returned False (window_ts absent in metadata)
+        allowing a second concurrent evaluate_all to fire a second FAK,
+        producing trades 9442 + 9443 (-$10 instead of -$5).
+
         FAIL-CLOSED on any error: return True (block the trade).
         """
         if not self._pool:
@@ -1114,6 +1129,9 @@ class PgTradeRepository:
                 direction=direction,
             )
             return True
+        # Build the dedup_key in the same format as trade_recorder.py and
+        # _tickformer_base.py: "{strategy_id}:{window_ts}:{direction}"
+        dedup_key = f"{strategy_id}:{int(window_ts)}:{direction}"
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
@@ -1121,12 +1139,24 @@ class PgTradeRepository:
                     SELECT 1
                     FROM trades
                     WHERE strategy_id = $1
-                      AND direction = $2
-                      AND COALESCE(metadata->>'window_ts', '')::text = $3::text
-                      AND COALESCE(metadata->>'asset', 'BTC') = $4
-                      AND COALESCE(metadata->>'timeframe', '5m') = $5
                       AND is_live = $6
                       AND status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')
+                      AND (
+                        -- Clause A: canonical window_ts path (v9.x and any
+                        -- strategy that populates metadata['window_ts'])
+                        (
+                          direction = $2
+                          AND COALESCE(metadata->>'window_ts', '')::text = $3::text
+                          AND COALESCE(metadata->>'asset', 'BTC') = $4
+                          AND COALESCE(metadata->>'timeframe', '5m') = $5
+                        )
+                        OR
+                        -- Clause B: dedup_key path — catches strategies like
+                        -- tickformer that set dedup_key but may lack window_ts.
+                        -- dedup_key encodes the same (strategy, window, direction)
+                        -- triplet, so a match is equivalent to Clause A.
+                        metadata->>'dedup_key' = $7
+                      )
                     LIMIT 1
                     """,
                     strategy_id,
@@ -1135,6 +1165,7 @@ class PgTradeRepository:
                     asset,
                     timeframe,
                     bool(is_live),
+                    dedup_key,
                 )
                 return row is not None
         except Exception as exc:
