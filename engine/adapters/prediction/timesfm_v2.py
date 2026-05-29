@@ -53,12 +53,35 @@ _DEFAULT_URL = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
 # 12s gives headroom without masking genuine hangs.
 _DEFAULT_TIMEOUT = float(os.environ.get("TIMESFM_V2_TIMEOUT", "12.0"))
 
-# Retry policy for transient transport failures (timeout, connection reset).
-# Applied to both GET and POST paths. Only retries on network-layer errors —
-# HTTP status codes (4xx/5xx) still propagate immediately so real outages
-# are not masked. Default: 1 retry with 0.25s backoff (total up to 2 attempts).
-_DEFAULT_RETRIES = int(os.environ.get("TIMESFM_V2_RETRIES", "1"))
-_DEFAULT_RETRY_BACKOFF = float(os.environ.get("TIMESFM_V2_RETRY_BACKOFF", "0.25"))
+# ── Retry policy (Fix E) ─────────────────────────────────────────────────────
+# Fix E (PR fix/engine-v2-probability-client-hardening): extend retry to
+# cover 5xx responses as well as transport-layer failures, and add a second
+# retry attempt with a longer backoff.
+#
+# Policy:
+#   Attempt 1 : original call (no delay)
+#   Attempt 2 : 100ms backoff — retry on timeout, connection error, OR 5xx
+#   Attempt 3 : 250ms backoff — same conditions
+#   Final failure: propagate (GET → raise; POST → raise)
+#
+# 4xx responses are intentionally NOT retried. A 422 from /v2/probability
+# is a hard schema error (caller bug) that a retry will not fix. A 4xx
+# retry would also mask real problems such as a wrong endpoint URL.
+#
+# Guard flag: ENGINE_V2_PROBABILITY_RETRY=false disables all retries so
+# callers can opt out for latency-sensitive paths. Default true.
+#
+# The old single-retry 0.25s-backoff constants are superseded but env-var
+# names are unchanged for backwards compat.
+_RETRY_ENABLED: bool = os.environ.get(
+    "ENGINE_V2_PROBABILITY_RETRY", "true"
+).strip().lower() in ("1", "true", "yes", "on")
+
+_DEFAULT_RETRIES = int(os.environ.get("TIMESFM_V2_RETRIES", "2"))
+_DEFAULT_RETRY_BACKOFF = float(os.environ.get("TIMESFM_V2_RETRY_BACKOFF", "0.1"))
+# Backoff schedule: attempt 1 uses _DEFAULT_RETRY_BACKOFF (0.1s),
+# attempt 2 uses _RETRY_BACKOFF_2 (0.25s). Configurable independently.
+_RETRY_BACKOFF_2 = float(os.environ.get("TIMESFM_V2_RETRY_BACKOFF_2", "0.25"))
 
 
 def _use_calibrated_enabled() -> bool:
@@ -123,11 +146,13 @@ class TimesFMV2Client:
         timeout: float = _DEFAULT_TIMEOUT,
         retries: int = _DEFAULT_RETRIES,
         retry_backoff: float = _DEFAULT_RETRY_BACKOFF,
+        retry_backoff_2: float = _RETRY_BACKOFF_2,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = aiohttp.ClientTimeout(total=timeout)
-        self._retries = max(0, retries)
+        self._retries = max(0, retries) if _RETRY_ENABLED else 0
         self._retry_backoff = max(0.0, retry_backoff)
+        self._retry_backoff_2 = max(0.0, retry_backoff_2)
         self._session: Optional[aiohttp.ClientSession] = None
         self._last_health: Optional[dict] = None
         # Sticky fallback flag: flipped to True the first time a POST
@@ -146,6 +171,17 @@ class TimesFMV2Client:
         if model in ("cedar", "dune"):
             return f"{self._base_url}/v2/probability/cedar"
         return f"{self._base_url}/v2/probability"
+
+    def _backoff_for_attempt(self, attempt: int) -> float:
+        """Return the sleep duration (seconds) for a given retry attempt number.
+
+        attempt=1 → _retry_backoff (default 100ms)
+        attempt=2 → _retry_backoff_2 (default 250ms)
+        attempt≥3 → _retry_backoff_2 (capped at 250ms)
+        """
+        if attempt <= 1:
+            return self._retry_backoff
+        return self._retry_backoff_2
 
     async def get_probability(
         self, asset: str, seconds_to_close: int, model: str = "oak",
@@ -171,6 +207,13 @@ class TimesFMV2Client:
                 P(UP) call. Present only when the scorer ships the fix.
                 Prefer `confidence_from_result()` which handles fallback.)
             timestamp: float
+
+        Retry policy (Fix E): up to self._retries retry attempts on:
+          - asyncio.TimeoutError
+          - aiohttp.ClientError (connection reset, DNS, etc.)
+          - 5xx HTTP responses (transient server errors)
+        4xx responses are NOT retried — they indicate a caller-side bug
+        that a retry cannot fix, and they should surface immediately.
         """
         session = await self._get_session()
         url = self._probability_url(model)
@@ -180,24 +223,48 @@ class TimesFMV2Client:
         while True:
             try:
                 async with session.get(url, params=params) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        logger.warning("v2.probability.error", status=resp.status, body=body[:100])
-                        raise RuntimeError(f"v2 API returned {resp.status}: {body[:100]}")
-                    return _apply_calibrated_choice(await resp.json())
+                    if resp.status == 200:
+                        return _apply_calibrated_choice(await resp.json())
+                    # 5xx: transient server error — eligible for retry.
+                    # 4xx: schema/auth error — raise immediately, no retry.
+                    body = await resp.text()
+                    is_5xx = resp.status >= 500
+                    logger.warning(
+                        "v2.probability.error",
+                        status=resp.status,
+                        body=body[:100],
+                        retryable=is_5xx,
+                    )
+                    if is_5xx and attempt < self._retries:
+                        _backoff = self._backoff_for_attempt(attempt + 1)
+                        logger.warning(
+                            "v2.probability.retry",
+                            asset=asset,
+                            stc=seconds_to_close,
+                            attempt=attempt + 1,
+                            cause=f"5xx_{resp.status}",
+                            backoff_s=_backoff,
+                        )
+                        attempt += 1
+                        if _backoff:
+                            await asyncio.sleep(_backoff)
+                        continue
+                    raise RuntimeError(f"v2 API returned {resp.status}: {body[:100]}")
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 is_timeout = isinstance(exc, asyncio.TimeoutError)
                 if attempt < self._retries:
+                    _backoff = self._backoff_for_attempt(attempt + 1)
                     logger.warning(
                         "v2.probability.retry",
                         asset=asset,
                         stc=seconds_to_close,
                         attempt=attempt + 1,
                         cause="timeout" if is_timeout else "connection_error",
+                        backoff_s=_backoff,
                     )
                     attempt += 1
-                    if self._retry_backoff:
-                        await asyncio.sleep(self._retry_backoff * attempt)
+                    if _backoff:
+                        await asyncio.sleep(_backoff)
                     continue
                 if is_timeout:
                     logger.warning("v2.probability.timeout", asset=asset, stc=seconds_to_close)
@@ -228,9 +295,9 @@ class TimesFMV2Client:
             flips `_push_mode_supported = False`, and immediately
             retries as a GET to the same URL. All subsequent calls in
             the session go straight to GET without trying POST again.
-          - Any other error (5xx, timeout, network failure) propagates.
-            We do NOT silently fall back from a real outage — that
-            would mask production problems.
+          - Any other error (5xx, timeout, network failure) is eligible
+            for retry per Fix E's policy (up to self._retries attempts).
+            We do NOT silently fall back from a real outage on exhaustion.
 
         Even in fallback mode, the engine-side feature body is still
         useful: call sites can log `features.coverage()` to detect
@@ -245,6 +312,12 @@ class TimesFMV2Client:
             model: "oak" (production) or "cedar"/"dune" (staging).
 
         Returns: same dict shape as `get_probability()`.
+
+        Retry policy (Fix E): up to self._retries retry attempts on:
+          - asyncio.TimeoutError
+          - aiohttp.ClientError (connection reset, DNS, etc.)
+          - 5xx HTTP responses (transient server errors)
+        4xx responses are NOT retried (schema errors won't fix themselves).
         """
         session = await self._get_session()
         url = self._probability_url(model)
@@ -270,6 +343,7 @@ class TimesFMV2Client:
                 # HTTP call on the same session risks connection starvation
                 # under load.
                 should_fallback = False
+                retry_5xx = False
                 async with session.post(url, json=body) as resp:
                     status = resp.status
                     if status == 200:
@@ -298,9 +372,23 @@ class TimesFMV2Client:
                             )
                             self._push_mode_supported = False
                         should_fallback = True
+                    elif status >= 500:
+                        # 5xx: transient server-side error. Eligible for retry.
+                        # Drain body so connection can be reused.
+                        text_body = await resp.text()
+                        logger.warning(
+                            "v2.probability.push_5xx",
+                            status=status,
+                            body=text_body[:120],
+                            attempt=attempt + 1,
+                            retries_remaining=self._retries - attempt,
+                        )
+                        retry_5xx = True
+                        _text_for_exc = text_body
                     else:
-                        # Any other non-200: propagate. Do NOT downgrade on
-                        # 5xx — that would mask real outages.
+                        # 4xx (not in _POST_UNSUPPORTED_STATUSES): caller
+                        # schema/auth error. Propagate immediately — a retry
+                        # will not fix a 422 Unprocessable Entity.
                         text_body = await resp.text()
                         logger.warning(
                             "v2.probability.push_error",
@@ -312,23 +400,44 @@ class TimesFMV2Client:
                         )
 
                 # `async with` is closed — connection released. Safe to
-                # issue the fallback GET now.
+                # branch here.
                 if should_fallback:
                     return await self.get_probability(asset, seconds_to_close, model)
+                if retry_5xx:
+                    if attempt < self._retries:
+                        _backoff = self._backoff_for_attempt(attempt + 1)
+                        logger.warning(
+                            "v2.probability.push_retry",
+                            asset=asset,
+                            stc=seconds_to_close,
+                            attempt=attempt + 1,
+                            cause=f"5xx_{status}",
+                            backoff_s=_backoff,
+                        )
+                        attempt += 1
+                        if _backoff:
+                            await asyncio.sleep(_backoff)
+                        continue
+                    raise RuntimeError(
+                        f"v2 push API returned {status} after {attempt} retries: "
+                        f"{_text_for_exc[:120]}"
+                    )
                 return None  # unreachable — path handled above
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 is_timeout = isinstance(exc, asyncio.TimeoutError)
                 if attempt < self._retries:
+                    _backoff = self._backoff_for_attempt(attempt + 1)
                     logger.warning(
                         "v2.probability.push_retry",
                         asset=asset,
                         stc=seconds_to_close,
                         attempt=attempt + 1,
                         cause="timeout" if is_timeout else "connection_error",
+                        backoff_s=_backoff,
                     )
                     attempt += 1
-                    if self._retry_backoff:
-                        await asyncio.sleep(self._retry_backoff * attempt)
+                    if _backoff:
+                        await asyncio.sleep(_backoff)
                     continue
                 if is_timeout:
                     logger.warning(

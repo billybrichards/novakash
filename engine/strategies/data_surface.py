@@ -1156,7 +1156,15 @@ class DataSurfaceManager:
             return
         asset_key = asset.upper()
         url = self._cedar_url
-        params = {"asset": asset_key}
+        # Fix C (PR fix/engine-v2-probability-client-hardening): the cedar
+        # GET endpoint requires `seconds_to_close` as a required query param
+        # (FastAPI Pydantic validation). Previously we sent only `asset`,
+        # which produced 422 "Field required" on every call. Compute from
+        # the current 5m window — same pattern as the engine's main loop.
+        _now = time.time()
+        _window_close_ts = (int(_now // 300) + 1) * 300
+        _seconds_to_close = max(1, int(_window_close_ts - _now))
+        params = {"asset": asset_key, "seconds_to_close": _seconds_to_close}
         try:
             async with self._session.get(url, params=params) as resp:
                 if resp.status in (404, 405, 501):
