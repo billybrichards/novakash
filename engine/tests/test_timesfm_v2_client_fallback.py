@@ -145,12 +145,24 @@ async def test_post_success_flips_push_mode_to_true():
         assert client._push_mode_supported is True
         assert rec.post_count == 1
         assert rec.get_count == 0
-        # Verify the wire-level body actually contains the 25-field feature dict
+        # Verify the wire-level body contains the required fields per the
+        # V2ProbabilityRequest Pydantic schema: asset, seconds_to_close, features.
+        # The features dict size grows as new fields are added to V5FeatureBody;
+        # pin the MINIMUM set (all keys present, not a specific count) so this
+        # test stays green across V5FeatureBody schema bumps.
         assert rec.last_post_body is not None
         assert rec.last_post_body["asset"] == "BTC"
         assert rec.last_post_body["seconds_to_close"] == 60
         assert "features" in rec.last_post_body
-        assert len(rec.last_post_body["features"]) == 25
+        # All V5FeatureBody keys must be present (even if their values are None).
+        # This guards against regression where a field is silently omitted and
+        # the scorer receives a 422 for a missing required key.
+        from signals.v2_feature_body import V5FeatureBody
+        import dataclasses
+        expected_keys = {f.name for f in dataclasses.fields(V5FeatureBody)}
+        actual_keys = set(rec.last_post_body["features"].keys())
+        missing = expected_keys - actual_keys
+        assert not missing, f"POST body missing feature keys: {sorted(missing)}"
 
         await client.close()
     finally:
@@ -216,24 +228,31 @@ async def test_fallback_is_sticky_for_session():
 
 @pytest.mark.parametrize("status", [500, 502, 503, 504])
 @pytest.mark.asyncio
-async def test_5xx_does_not_trigger_silent_fallback(status):
-    """Server-side errors MUST propagate — masking outages is dangerous."""
+async def test_5xx_retries_then_exhausts_raises(status):
+    """Fix E: 5xx responses are now retried, NOT immediately fatal.
+
+    With retries=2 and a server that always returns 5xx, the client should
+    attempt 3 times total (original + 2 retries) and then raise RuntimeError.
+    Critically, it must NOT fall back to GET — 5xx is retried on the same
+    endpoint, not silently downgraded to GET (which would mask the outage).
+    """
     server, rec = await _start_server(post_status=status)
     try:
-        client = await _make_client(server)
+        # retries=2 → 3 total attempts
+        base = f"http://{server.host}:{server.port}"
+        client = TimesFMV2Client(base_url=base, timeout=5.0, retries=2, retry_backoff=0.0)
         features = build_v5_feature_body(eval_offset=60)
 
-        with pytest.raises(RuntimeError, match=f"{status}"):
+        with pytest.raises(RuntimeError, match=str(status)):
             await client.score_with_features(
                 asset="BTC", seconds_to_close=60, features=features,
             )
 
-        # The client saw the 5xx, raised, and did NOT try GET.
-        assert rec.post_count == 1
+        # 3 POST attempts, 0 GET fallbacks — retry on same endpoint, not downgrade.
+        assert rec.post_count == 3
         assert rec.get_count == 0
-        # Critically, push_mode_supported stays None — we didn't lock
-        # in ANY mode because the server is flaking, not declaring its
-        # capabilities.
+        # push_mode_supported stays None — we couldn't confirm push mode
+        # because the server is flaking.
         assert client._push_mode_supported is None
 
         await client.close()
@@ -264,9 +283,20 @@ async def test_legacy_get_probability_never_uses_push_state():
 
 
 @pytest.mark.asyncio
-async def test_post_body_contains_all_25_feature_keys():
-    """Wire-level verification that the JSON body always has exactly
-    the 25 fields the scorer will expect."""
+async def test_post_body_contains_all_feature_keys():
+    """Wire-level verification: POST body has every V5FeatureBody field present.
+
+    Fix C body-shape contract: POST /v2/probability must include `asset`,
+    `seconds_to_close`, and `features` (Pydantic V2ProbabilityRequest). The
+    features dict must contain ALL keys from V5FeatureBody — even if their
+    values are None — so the scorer's parity check passes and no 422 is
+    produced by a missing required feature key.
+
+    Note: the feature count grows with V5FeatureBody schema bumps. We assert
+    presence of all keys by name rather than a fixed count so the test stays
+    green without editing when new features are added.
+    """
+    import dataclasses
     server, rec = await _start_server(post_status=200)
     try:
         client = await _make_client(server)
@@ -278,8 +308,13 @@ async def test_post_body_contains_all_25_feature_keys():
 
         assert rec.last_post_body is not None
         feature_dict = rec.last_post_body["features"]
-        assert len(feature_dict) == 25
-        # Populated fields
+
+        # Every V5FeatureBody field must appear in the JSON body.
+        expected_keys = {f.name for f in dataclasses.fields(V5FeatureBody)}
+        missing = expected_keys - set(feature_dict.keys())
+        assert not missing, f"Feature keys missing from POST body: {sorted(missing)}"
+
+        # Populated fields have their values.
         assert feature_dict["eval_offset"] == 60.0
         assert feature_dict["vpin"] == 0.5
         # Unpopulated fields should be JSON null (→ Python None in the
@@ -334,8 +369,7 @@ async def test_post_retries_on_transient_connection_reset():
 @pytest.mark.asyncio
 async def test_post_retries_exhausted_raises():
     """If transport keeps failing, the client gives up after `retries+1`
-    total attempts and propagates. 5xx with a valid HTTP response is NOT
-    a transport failure — that still propagates immediately without retry."""
+    total attempts and propagates the last error."""
     call_count = {"n": 0}
 
     async def handle_post(request: web.Request) -> web.Response:
@@ -355,8 +389,88 @@ async def test_post_retries_exhausted_raises():
             await client.score_with_features(
                 asset="BTC", seconds_to_close=60, features=features,
             )
-        # retries=1 => total 2 attempts.
+        # retries=1 => total 2 attempts (transport closes => ClientError path).
         assert call_count["n"] == 2
+        await client.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_5xx_response_retries_then_succeeds():
+    """Fix E: 5xx HTTP responses are now retried (not immediately fatal).
+
+    Scenario: attempt 1 returns 503 (transient server overload), attempt 2
+    returns 200. Expect: success, 2 total calls, model_version from the
+    successful response.
+    """
+    call_count = {"n": 0}
+
+    async def handle_post(request: web.Request) -> web.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return web.Response(
+                status=503,
+                body=json.dumps({"detail": "service overloaded"}),
+                content_type="application/json",
+            )
+        return web.Response(
+            status=200,
+            body=json.dumps(_make_success_response("retry-5xx-sha")),
+            content_type="application/json",
+        )
+
+    app = web.Application()
+    app.router.add_post("/v2/probability", handle_post)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        base = f"http://{server.host}:{server.port}"
+        client = TimesFMV2Client(base_url=base, timeout=2.0, retries=2, retry_backoff=0.01)
+        features = build_v5_feature_body(eval_offset=60)
+        result = await client.score_with_features(
+            asset="BTC", seconds_to_close=60, features=features,
+        )
+        assert result["model_version"] == "retry-5xx-sha"
+        assert call_count["n"] == 2
+        await client.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_4xx_response_does_not_retry():
+    """Fix E: 4xx responses are NOT retried — they're caller schema errors.
+
+    A 422 Unprocessable Entity is a hard signal that the request body is
+    wrong. Retrying it will never produce a different result, so we propagate
+    immediately. This test pins the no-retry behaviour so a refactor doesn't
+    accidentally add 4xx retry that would mask real body-construction bugs.
+    """
+    call_count = {"n": 0}
+
+    async def handle_post(request: web.Request) -> web.Response:
+        call_count["n"] += 1
+        return web.Response(
+            status=422,
+            body=json.dumps({"detail": [{"type": "missing", "loc": ["body", "seconds_to_close"]}]}),
+            content_type="application/json",
+        )
+
+    app = web.Application()
+    app.router.add_post("/v2/probability", handle_post)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        base = f"http://{server.host}:{server.port}"
+        client = TimesFMV2Client(base_url=base, timeout=2.0, retries=2, retry_backoff=0.01)
+        features = build_v5_feature_body(eval_offset=60)
+        with pytest.raises(RuntimeError, match="422"):
+            await client.score_with_features(
+                asset="BTC", seconds_to_close=60, features=features,
+            )
+        # Must have hit the server exactly once — no retries on 4xx.
+        assert call_count["n"] == 1
         await client.close()
     finally:
         await server.close()
