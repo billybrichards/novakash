@@ -68,12 +68,17 @@ def test_tier_a_narrow_band_skips_outside_band():
 
     With the corrected formula remaining=eval_offset=120, which exceeds
     TIER_A's rem_max=60.
+
+    After plan #760 the band check is direction-aware: p=0.95 ≥ tier_up=0.85
+    resolves direction=UP first, then remaining=120 > band_max=60 emits
+    outside_band_UP (60-60).
     """
     surface = _surface("probability_tickformer_v18", 0.95, eval_offset=120)
     with _gp_active({"tier": "TIER_A", "shadow_only": 0}):
         dec = evaluate_tickformer_v18_t180(surface)
     assert dec.action == "SKIP"
-    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    # Direction resolved before band check; skip_reason encodes direction + limits.
+    assert "outside_band_UP" in dec.skip_reason, dec.skip_reason
     assert dec.metadata["eval_offset_remaining_max"] == 60
     assert dec.metadata["up_threshold"] == 0.85
     assert dec.metadata["tier"] == "TIER_A"

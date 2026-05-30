@@ -116,6 +116,30 @@ def _bump_and_check(
     return count
 
 
+def _resolve_band_for_direction(
+    direction: str, *, sym_min: int, sym_max: int
+) -> tuple[int, int]:
+    """Return ``(band_min, band_max)`` for ``direction`` using the waterfall:
+
+    For each direction X ∈ {'up', 'down'}:
+      1. ``eval_offset_remaining_{min,max}_X`` in active gate-params bag
+         (runtime override or YAML direction-specific key — highest
+         precedence).
+      2. Else ``sym_min`` / ``sym_max`` — the already-resolved symmetric
+         band (from runtime override bare key → YAML bare key → default).
+
+    Back-compat guarantee: when neither ``eval_offset_remaining_max_up``
+    nor ``eval_offset_remaining_max_down`` is present in the active params
+    bag, ``sym_min`` / ``sym_max`` are returned unchanged, preserving the
+    existing symmetric-band behaviour for all existing strategies and
+    runtime overrides.
+    """
+    suffix = direction.lower()  # 'up' or 'down'
+    band_min = _gp.get_int(f"eval_offset_remaining_min_{suffix}", None, sym_min)
+    band_max = _gp.get_int(f"eval_offset_remaining_max_{suffix}", None, sym_max)
+    return (band_min, band_max)
+
+
 def _eval_offset_remaining(surface: "FullDataSurface") -> Optional[int]:
     """Return seconds-remaining in the 5m window.
 
@@ -518,7 +542,8 @@ def evaluate_tickformer_strategy(
         if mutex_group:
             meta["mutex_group"] = mutex_group
 
-        if remaining is None or remaining < rem_min or remaining > rem_max:
+        # Guard: no remaining value at all → can't evaluate any band.
+        if remaining is None:
             return _skip(
                 "outside_eval_offset_remaining_band",
                 meta,
@@ -526,9 +551,18 @@ def evaluate_tickformer_strategy(
                 version=version,
             )
 
+        # NOTE: the symmetric band check (remaining < rem_min or remaining > rem_max)
+        # has been moved AFTER direction resolution so that per-direction bands
+        # (eval_offset_remaining_{min,max}_{up,down}) can be applied.  See
+        # _resolve_band_for_direction().  Back-compat: when no direction-specific
+        # keys are present in the active params bag, rem_min/rem_max are used
+        # unchanged for both directions.
         direction = None  # resolved below after the gate-cond check
         up_threshold = up_threshold  # already set above
         down_threshold = down_threshold
+        # Carry symmetric band forward for _resolve_band_for_direction().
+        _sym_min = rem_min
+        _sym_max = rem_max
 
     # ── Gate-cond readiness check (PR-B, fix/tickformer-gate-cond-ready-gate) ──
     # The K=6 multi-step inference loop needs ≥69 ticks of lookback warmup
@@ -576,6 +610,27 @@ def evaluate_tickformer_strategy(
         else:
             return _skip(
                 "conviction_below_threshold",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
+
+        # ── Direction-aware band check (plan #760) ───────────────────
+        # Now that direction is known, resolve the per-direction band and
+        # check whether ``remaining`` falls inside it.  _resolve_band_for_direction
+        # applies the waterfall:
+        #   1. eval_offset_remaining_{min,max}_{up,down} from active params bag
+        #   2. Symmetric eval_offset_remaining_{min,max} (_sym_min/_sym_max)
+        # When no direction-specific keys are present, _sym_min/_sym_max are
+        # returned unchanged — identical to the previous symmetric check.
+        band_min, band_max = _resolve_band_for_direction(
+            direction, sym_min=_sym_min, sym_max=_sym_max
+        )
+        meta["band_min"] = band_min
+        meta["band_max"] = band_max
+        if remaining < band_min or remaining > band_max:
+            return _skip(
+                f"outside_band_{direction} ({band_min}-{band_max})",
                 meta,
                 strategy_id=strategy_id,
                 version=version,
