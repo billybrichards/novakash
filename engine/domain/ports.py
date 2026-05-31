@@ -738,7 +738,12 @@ class TradeRepository(abc.ABC):
 
         Implementation MUST:
         - Filter status NOT IN ('CANCELLED', 'SKIPPED', 'FAILED_EXECUTION')
-        - Match metadata->>'window_ts'/asset/timeframe with appropriate defaults
+        - Match via EITHER:
+            Clause A: metadata->>'window_ts'/asset/timeframe canonical path
+            Clause B: metadata->>'dedup_key' = '{strategy_id}:{window_ts}:{direction}'
+          Clause B catches strategies that set dedup_key but historically omit
+          window_ts (e.g. tickformer family). Incident: tickformer_v16_pure
+          double-fire 2026-05-29 21:58 UTC (trades 9442 + 9443).
         - Match is_live so paper and live are separate domains
         - Be FAIL-CLOSED on any DB exception — better to skip ONE legitimate
           fire than repeat a multi-fire loss.

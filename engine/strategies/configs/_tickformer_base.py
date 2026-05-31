@@ -366,6 +366,10 @@ def evaluate_tickformer_strategy(
     trade_signal = getattr(surface, "tickformer_trade_signal", None)
     eval_offset = getattr(surface, "eval_offset", None)
     asset = getattr(surface, "asset", None)
+    # window_ts is needed for meta['window_ts'] — required by
+    # has_fill_for_strategy_window_direction to detect existing trades.
+    # Moved before the if/else paths so it's available in both meta dicts.
+    window_ts = getattr(surface, "window_ts", None)
 
     if p is None:
         return _skip(
@@ -409,6 +413,15 @@ def evaluate_tickformer_strategy(
             "pockets": valid_pockets,
             "asset": asset,
             "shadow_only": shadow_only,
+            # window_ts is required by has_fill_for_strategy_window_direction
+            # (pg_trade_repo.py) which queries COALESCE(metadata->>'window_ts',
+            # '') against the window epoch. Without it the query always returns
+            # False (empty-string != epoch integer), so the hard lock at
+            # ExecuteTradeUseCase Step -0.5 cannot detect an existing trade and
+            # a concurrent/retry evaluate_all fires a duplicate order.
+            # Incident: tickformer_v16_pure double-fire 2026-05-29 21:58 UTC
+            # (trades 9442 + 9443, -$10 instead of -$5).
+            "window_ts": window_ts,
         }
         if mutex_group:
             meta["mutex_group"] = mutex_group
@@ -512,6 +525,9 @@ def evaluate_tickformer_strategy(
             "eval_offset_remaining_max": rem_max,
             "asset": asset,
             "shadow_only": shadow_only,
+            # window_ts: required for has_fill_for_strategy_window_direction.
+            # See multi-pocket path comment above for full incident context.
+            "window_ts": window_ts,
         }
         if tier_key:
             meta["tier"] = tier_key
@@ -594,7 +610,6 @@ def evaluate_tickformer_strategy(
 
     meta["direction"] = direction
 
-    window_ts = getattr(surface, "window_ts", None)
     min_consec = _gp.get_int(
         "min_consecutive_pass_ticks", None, _DEFAULT_MIN_CONSEC_TICKS
     )
