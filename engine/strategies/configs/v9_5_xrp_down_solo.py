@@ -198,6 +198,11 @@ def evaluate_v9_5_xrp_down_solo(surface: "FullDataSurface") -> StrategyDecision:
     # DOWN (NO): skip if fill > entry_cap_down (default 0.85).
     # UP  (YES): entry_floor_up is present in YAML for parity but UNUSED here
     #            (there are no UP fires in this DOWN-only strategy).
+    # Note: unlike the tickformer + LGB peers which derive
+    # `down_fill_proxy = 1 - fill_price` (because their `fill_price` is the YES
+    # leg), this strategy's `fill_price` is ALREADY the NO leg (sourced from
+    # `clob_down_ask` directly). The entry_cap_down / entry_floor_down checks
+    # below therefore compare `fill_price` raw — no inversion needed. See PR #637.
     fill_price = getattr(surface, "fill_price", None)
     if fill_price is None:
         # For DOWN we look at clob_down_ask as the NO fill proxy.
