@@ -1,0 +1,101 @@
+name: v9_5_xrp_pure_lgb
+strategy_id: v9_5_xrp_pure_lgb
+version: "1.0.0"
+# v9_5_xrp_pure_lgb — 2026-05-31 (GHOST, Billy promotes manually)
+#
+# Bidirectional XRP 5m strategy reading probability_lgb_v9_5_xrp_pure —
+# the dedicated PURE column for the v9.5 XRP LGB+isotonic calibrator.
+# Distinct from the blended probability_lgb_v9_5_xrp used by the _blend /
+# _up_solo / _down_solo family.
+#
+# Bidirectional:
+#   UP   p >= 0.92 → conservative starting point, tune via sro
+#   DOWN p <= 0.06 → LCL 91.2% n=241 ~44 fires/day (RDS notes #788, #790)
+#
+# MOTIVATION:
+#   v9_5_xrp_down_solo reads the blend column at thr 0.44 — LCL 85.5% n=389.
+#   The PURE column at thr 0.06 yields LCL 91.2% n=241 (~44/day) — a stronger
+#   DOWN signal. This strategy unifies PURE-column access for BOTH sides;
+#   operator can promote UP/DOWN independently via strategy_runtime_overrides
+#   without code changes.
+#
+# EVAL_OFFSET BAND:
+#   [60, 180] — canonical RDS #684 band, mirrors v9_5_xrp_down_solo /
+#   v9_5_xrp_up_solo. Operator can widen to [60, 210] via sro if sweep
+#   supports it.
+#
+# CONSECUTIVE TICK CONFIRMATION:
+#   min_consecutive_pass_ticks=2 — conservative 2-tick gate for a new
+#   operating point on the PURE column. Same default as v9_5_xrp_down_solo.
+#
+# FILL-BAND GATES:
+#   entry_cap_down: 0.85 — skip DOWN/NO fires where NO fill > 0.85
+#                          (high-fill NO = YES < 0.15, likely resolution-locked
+#                          or ghost market). Mirrors v9_5_xrp_down_solo.
+#   entry_cap_up:   0.92 — skip UP/YES fires where YES fill > 0.92.
+#   entry_cap:      0.90 — hard fallback cap (StrategyDecision.entry_cap).
+#
+# RISK / SHADOW SOAK PLAN:
+#   max_position_usd=5 to start — shadow soak until 20+ GHOST fires per side.
+#   If DOWN GHOST WR >= 90% on 20+ fires, promote DOWN to LIVE at $5.
+#   If UP GHOST WR >= 90% on 20+ fires, promote UP to LIVE at $5.
+#   After 30 LIVE fires per side, consider raising to $10-15.
+#
+# DEFAULTS GHOST per feedback_no_auto_promote.md (post-2026-04-17 rule —
+# Billy promotes manually).
+#
+# COLUMN DEPENDENCY:
+#   probability_lgb_v9_5_xrp_pure must be populated by the timesfm service
+#   v4/snapshot.timescales.5m with the XRP PURE emission flag ON. Field
+#   present in data_surface.py line 385. Signal writer in registry.py ~line 2084.
+#
+# References:
+#   RDS notes #788, #790 — XRP PURE column sweep findings (2026-05-31)
+#   RDS note #684 — canonical eval-offset band methodology
+#   data_surface.py line 385 — probability_lgb_v9_5_xrp_pure field
+#   Sibling: v9_5_eth_pure_lgb (ETH PURE bidirectional template)
+#   Siblings: v9_5_xrp_blend, v9_5_xrp_down_solo, v9_5_xrp_up_solo
+#   Engine precedent: PR #604 (v9_2_eth_solo), PR #606 (v9_5_xrp_up_solo)
+#
+status: GHOST
+description: |
+  PURE LGB+iso v9.5 XRP 5m bidirectional strategy. Reads
+  probability_lgb_v9_5_xrp_pure (dedicated PURE column, distinct from the
+  blended probability_lgb_v9_5_xrp used by the _blend/_solo family). UP at
+  p >= 0.92 (conservative start), DOWN at p <= 0.06 (RDS #788/#790: LCL
+  91.2% n=241 ~44/day — stronger than v9_5_xrp_down_solo blend-col LCL
+  85.5% n=389). eval_offset [60, 180] (canonical RDS #684 band).
+  min_consecutive_pass_ticks=2 (conservative 2-tick gate). Fill gates:
+  DOWN NO cap 0.85, UP YES cap 0.92. GHOST mode, $5 max_position_usd.
+  Billy promotes UP/DOWN sides independently via strategy_runtime_overrides.
+mode: GHOST
+asset: XRP
+timescale: 5m
+
+hooks_file: v9_5_xrp_pure_lgb.py
+pre_gate_hook: evaluate_v9_5_xrp_pure_lgb
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  up_threshold: 0.92            # conservative UP start — tune via sro after ghost soak
+  down_threshold: 0.06          # DOWN LCL 91.2% n=241 ~44/day (RDS #788/#790)
+  eval_offset_min: 60
+  eval_offset_max: 180
+  min_consecutive_pass_ticks: 2  # conservative 2-tick gate for new PURE op point
+  expected_asset: XRP
+  entry_cap: 0.90               # hard fallback cap (StrategyDecision.entry_cap)
+  entry_cap_up: 0.92            # skip UP/YES fills > 0.92
+  entry_cap_down: 0.85          # skip DOWN/NO fills > 0.85 (ghost market guard)
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5           # START LOW — shadow soak before any promotion
+  max_daily_loss_usd: 20
