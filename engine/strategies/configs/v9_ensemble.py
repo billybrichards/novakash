@@ -1660,6 +1660,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         ),
         skip_reason=None,
         metadata={
+            "window_ts": getattr(surface, "window_ts", None),
             "gate_results": gates,
             "poly_direction": direction,
             "poly_confidence_distance": (
