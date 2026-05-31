@@ -210,8 +210,11 @@ def evaluate_v9_5_xrp_up_solo(surface: "FullDataSurface") -> StrategyDecision:
     if fill_price is not None:
         fill_price = float(fill_price)
         entry_floor_up = float(_gp.get_float("entry_floor_up", None, _DEFAULT_ENTRY_FLOOR_UP))
+        _efd_raw = _gp._lookup("entry_floor_down", None, None)
+        entry_floor_down = float(_efd_raw) if _efd_raw is not None else None
         meta["fill_price"] = fill_price
         meta["entry_floor_up"] = entry_floor_up
+        meta["entry_floor_down"] = entry_floor_down  # UNUSED — no DOWN fires in this UP-only strategy
         if direction in ("UP", "YES") and fill_price < entry_floor_up:
             return _skip(
                 f"fill_below_up_floor:{fill_price:.3f}<{entry_floor_up:.3f}",
