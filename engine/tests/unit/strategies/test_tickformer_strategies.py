@@ -144,17 +144,20 @@ def test_v17_opposite_trade_signal_blocks_up():
 
 
 def test_v17_outside_eval_offset_remaining_band_skips():
-    """Default v17 band is rem_min=60, rem_max=140. eval_offset=10 → remaining=10 < 60."""
+    """Default v17 band is rem_min=60, rem_max=140. eval_offset=10 → remaining=10 < 60.
+
+    After plan #760 the skip reason is direction-aware: p=0.95 ≥ up_threshold=0.85
+    resolves direction=UP first, then the band check emits outside_band_UP.
+    """
     # eval_offset=10 means 10 seconds remain → below rem_min=60.
-    # (Note: old formula gave remaining=290, new formula gives remaining=10 —
-    # both land outside the [60,140] band, just from different sides.)
     surface = _surface(
         "probability_tickformer_v17", 0.95, eval_offset=10
     )
     with _gp_active({"shadow_only": 0}):
         dec = evaluate_tickformer_v17_sniper(surface)
     assert dec.action == "SKIP"
-    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    # Direction is resolved before the band check; skip_reason encodes direction.
+    assert "outside_band_UP" in dec.skip_reason, dec.skip_reason
 
 
 # ── v18 cases ─────────────────────────────────────────────────────────
@@ -267,7 +270,11 @@ def test_v17_in_band_fires_after_formula_fix():
 
 
 def test_v17_low_eval_offset_outside_band_skips():
-    """eval_offset=20 → remaining=20 < rem_min=60 → outside_eval_offset_remaining_band."""
+    """eval_offset=20 → remaining=20 < rem_min=60.
+
+    After plan #760 the skip reason is direction-aware: p=0.92 ≥ up_threshold=0.85
+    resolves direction=UP first, then the band check emits outside_band_UP.
+    """
     surface = _surface(
         "probability_tickformer_v17",
         0.92,
@@ -276,7 +283,8 @@ def test_v17_low_eval_offset_outside_band_skips():
     with _gp_active({"shadow_only": 0}):
         dec = evaluate_tickformer_v17_sniper(surface)
     assert dec.action == "SKIP"
-    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    # Direction resolved before band check; skip_reason encodes direction + limits.
+    assert "outside_band_UP" in dec.skip_reason, dec.skip_reason
     # Remaining should be 20, below rem_min=60.
     assert dec.metadata["eval_offset_remaining"] == 20
 

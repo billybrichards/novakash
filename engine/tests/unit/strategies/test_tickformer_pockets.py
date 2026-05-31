@@ -112,12 +112,17 @@ def test_legacy_single_pocket_below_threshold_skips():
 
 
 def test_legacy_single_pocket_outside_band_skips():
-    """Legacy path: remaining < rem_min → outside_eval_offset_remaining_band."""
+    """Legacy path: remaining < rem_min → direction-aware outside_band skip.
+
+    After plan #760 the band check happens after direction resolution.
+    p=0.92 ≥ up_threshold=0.80 → direction=UP, then remaining=10 < rem_min=60
+    → outside_band_UP (60-140).
+    """
     surface = _surface("probability_tickformer_v17", 0.92, eval_offset=10)
     with _gp_active({"shadow_only": 0, "up_threshold": 0.80, "eval_offset_remaining_min": 60, "eval_offset_remaining_max": 140}):
         dec = evaluate_tickformer_v17_sniper(surface)
     assert dec.action == "SKIP"
-    assert dec.skip_reason == "outside_eval_offset_remaining_band"
+    assert "outside_band_UP" in dec.skip_reason, dec.skip_reason
 
 
 # ── 2. pockets=[] falls back to legacy path ──────────────────────────────────
