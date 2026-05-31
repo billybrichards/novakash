@@ -836,7 +836,11 @@ class DataSurfaceManager:
         # still being well below the 45s stale-alert threshold, so
         # genuine TimesFM outages still fire the alert loudly.
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=15)
+            connector=aiohttp.TCPConnector(
+                force_close=True,
+                enable_cleanup_closed=True,
+            ),
+            timeout=aiohttp.ClientTimeout(connect=5, sock_read=14),
         )
 
         # Prime the snapshot cache before the registry starts evaluating.
