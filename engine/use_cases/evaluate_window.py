@@ -464,6 +464,26 @@ class EvaluateWindowUseCase:
             return None
         from signals.v2_feature_body import build_v5_feature_body
 
+        # Fetch CLOB prices once for the entire v10 pipeline execution so
+        # both the TRADE and SKIP write_signal_evaluation paths can persist
+        # them.  Closes the DB observability gap left after PR #641 (which
+        # fixed runtime gating but left signal_evaluations.clob_* NULL on
+        # this code path under ENGINE_USE_CLEAN_EVALUATE_WINDOW=true).
+        _clob_up_bid = None
+        _clob_up_ask = None
+        _clob_down_bid = None
+        _clob_down_ask = None
+        if self._db:
+            try:
+                _clob = await self._db.get_latest_clob_prices(window.asset)
+                if _clob:
+                    _clob_up_bid = _clob.get("clob_up_bid")
+                    _clob_up_ask = _clob.get("clob_up_ask")
+                    _clob_down_bid = _clob.get("clob_down_bid")
+                    _clob_down_ask = _clob.get("clob_down_ask")
+            except Exception:
+                pass
+
         _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
         _twap_d = twap_result.twap_delta_pct if twap_result is not None else None
         # Polymarket canonical priceToBeat — populated when WindowInfo.open_price
@@ -573,6 +593,11 @@ class EvaluateWindowUseCase:
                             "gate_failed": None,
                             "v2_probability_up": ctx.dune_probability_up,
                             "v2_direction": direction,
+                            # CLOB prices — fetched once above (closes DB gap from PR #641)
+                            "clob_up_bid": _clob_up_bid,
+                            "clob_up_ask": _clob_up_ask,
+                            "clob_down_bid": _clob_down_bid,
+                            "clob_down_ask": _clob_down_ask,
                         }
                     )
                 except Exception:
@@ -618,6 +643,11 @@ class EvaluateWindowUseCase:
                             "gate_passed": False,
                             "gate_failed": pr.failed_gate or "unknown",
                             "v2_probability_up": ctx.dune_probability_up,
+                            # CLOB prices — fetched once above (closes DB gap from PR #641)
+                            "clob_up_bid": _clob_up_bid,
+                            "clob_up_ask": _clob_up_ask,
+                            "clob_down_bid": _clob_down_bid,
+                            "clob_down_ask": _clob_down_ask,
                         }
                     )
                 except Exception:
