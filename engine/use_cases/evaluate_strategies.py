@@ -389,6 +389,14 @@ class EvaluateStrategiesUseCase:
                 "vpin": ctx.vpin,
                 "regime": ctx.regime if hasattr(ctx, "regime") else None,
 
+                # CLOB prices (Polymarket order book) — closes DB persistence gap
+                # from PR #641 which fixed runtime gating but left these NULL on
+                # the clean evaluate path (ENGINE_USE_CLEAN_EVALUATE_WINDOW=true).
+                "clob_up_bid": getattr(ctx, "clob_up_bid", None),
+                "clob_up_ask": getattr(ctx, "clob_up_ask", None),
+                "clob_down_bid": getattr(ctx, "clob_down_bid", None),
+                "clob_down_ask": getattr(ctx, "clob_down_ask", None),
+
                 # CoinGlass snapshot fields (audit #337 — previously always NULL)
                 "cg_oi_delta_pct": getattr(cg, "oi_delta_pct_1m", None),
                 "cg_liq_long_usd": getattr(cg, "liq_long_usd_1m", None),
