@@ -199,9 +199,10 @@ def evaluate_v9_5_xrp_pure_lgb(surface: "FullDataSurface") -> StrategyDecision:
     confidence_score = float(abs(p_xrp_pure - 0.5) * 2.0)
     confidence = "HIGH" if confidence_score >= 0.40 else "MODERATE"
 
-    # Direction-aware entry caps (mirrors v9_5_xrp_down_solo).
-    # DOWN (NO): skip if NO fill > entry_cap_down (ghost / resolution-locked).
-    # UP  (YES): skip if YES fill > entry_cap_up.
+    # Direction-aware fill-band gate (RDS note #664, 2026-05-25).
+    # Caps: skip if fill is too HIGH (entry_cap_up / entry_cap_down).
+    # Floors: skip if fill is too LOW (entry_floor_up / entry_floor_down).
+    # Defaults are permissive — strats NOT setting floor fields are unaffected.
     fill_price = getattr(surface, "fill_price", None)
     if direction == "DOWN" and fill_price is None:
         fill_price = getattr(surface, "clob_down_ask", None)
@@ -220,6 +221,16 @@ def evaluate_v9_5_xrp_pure_lgb(surface: "FullDataSurface") -> StrategyDecision:
                     f"fill_above_down_cap:{fill_price:.3f}>{entry_cap_down:.3f}",
                     meta,
                 )
+            # Floor gate for DOWN: reject if NO fill is too low (CLOB price-improvement).
+            _efd_raw = _gp._lookup("entry_floor_down", None, None)
+            entry_floor_down = float(_efd_raw) if _efd_raw is not None else None
+            meta["entry_floor_down"] = entry_floor_down
+            # fill_price here is the NO-leg price directly (clob_down_ask / fill_price).
+            if entry_floor_down is not None and fill_price < entry_floor_down:
+                return _skip(
+                    f"fill_below_down_floor:{fill_price:.3f}<{entry_floor_down:.3f}",
+                    meta,
+                )
         elif direction == "UP":
             entry_cap_up = float(
                 _gp.get_float("entry_cap_up", None, _DEFAULT_ENTRY_CAP_UP)
@@ -228,6 +239,14 @@ def evaluate_v9_5_xrp_pure_lgb(surface: "FullDataSurface") -> StrategyDecision:
             if fill_price > entry_cap_up:
                 return _skip(
                     f"fill_above_up_cap:{fill_price:.3f}>{entry_cap_up:.3f}",
+                    meta,
+                )
+            # Floor gate for UP: reject if YES fill is too low (CLOB price-improvement).
+            entry_floor_up = float(_gp.get_float("entry_floor_up", None, 0.0))
+            meta["entry_floor_up"] = entry_floor_up
+            if fill_price < entry_floor_up:
+                return _skip(
+                    f"fill_below_up_floor:{fill_price:.3f}<{entry_floor_up:.3f}",
                     meta,
                 )
 
