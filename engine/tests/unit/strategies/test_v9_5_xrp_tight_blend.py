@@ -148,14 +148,14 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_above_max_skips(self):
         surface = _make_surface(eval_offset=250, probability_lgb_v9_5_xrp=0.96)
         with _params():
             d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_at_min_120_fires(self):
         surface = _make_surface(eval_offset=120, probability_lgb_v9_5_xrp=0.96)
@@ -181,7 +181,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_xrp_tight_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 class TestThresholds:

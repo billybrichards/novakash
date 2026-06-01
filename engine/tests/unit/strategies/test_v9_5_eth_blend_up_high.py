@@ -144,14 +144,14 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_blend_up_high(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_above_max_skips(self):
         surface = _make_surface(eval_offset=241)
         with _params():
             d = evaluate_v9_5_eth_blend_up_high(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_at_min_60_fires(self):
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_eth=0.90)
@@ -172,7 +172,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_blend_up_high(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 class TestUpBand:
@@ -271,7 +271,7 @@ class TestRuntimeOverride:
         with _params(eval_offset_min=120):
             d = evaluate_v9_5_eth_blend_up_high(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 class TestMetadataShape:
@@ -361,7 +361,7 @@ class TestCrossStrategyIndependence:
 
     def test_consec_state_isolated_from_v9_5_eth_raw_lgb(self):
         from strategies.configs import v9_5_eth_blend_up_high as up_high
-        from strategies.configs import v9_5_eth_raw_lgb as raw_lgb
+        from strategies.configs import v9_5_eth_blend as raw_lgb
 
         up_high._consec_state.clear()
         raw_lgb._consec_state.clear()
