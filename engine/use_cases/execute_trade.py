@@ -1492,6 +1492,70 @@ class ExecuteTradeUseCase:
                 )
                 return result
 
+            # ── Post-fill floor enforcement (RDS #664 CLOB price-improvement gap) ──
+            # The FAK executor submits a limit-buy at entry_cap. Polymarket's CLOB
+            # can give price improvement — fills arrive BELOW the limit by matching
+            # cheap resting asks. entry_cap is a structural FAK ceiling (can't fill
+            # above); entry_floor has no structural CLOB equivalent, so we enforce
+            # it here after the fill comes back.
+            #
+            # UP/YES: reject if fill_price < entry_floor_up (e.g. 0.01 < 0.60).
+            # DOWN/NO: reject if fill_price < entry_floor_down (NO leg proxy).
+            #
+            # IMPORTANT — reservation leaks: at this point try_claim_fill_slot has
+            # succeeded but committed is still False and _pm_stake may be reserved.
+            # We must release both before returning so the next eval tick starts
+            # with a clean slate. The claim is released via _release_claim() which
+            # also handles _release_pm_stake() internally.
+            _pf_floor_up = meta.get("entry_floor_up")
+            _pf_floor_down = meta.get("entry_floor_down")
+            if result.fill_price is not None:
+                _fp = float(result.fill_price)
+                if direction == "UP" and _pf_floor_up is not None:
+                    _floor_up = float(_pf_floor_up)
+                    if _fp < _floor_up:
+                        log.warning(
+                            "execute_trade.post_fill_floor_rejected",
+                            strategy=sid,
+                            direction=direction,
+                            fill_price=_fp,
+                            entry_floor_up=_floor_up,
+                            order_id=result.order_id,
+                            failure_reason=f"fill_slipped_below_floor:{_fp:.3f}<{_floor_up:.3f}",
+                        )
+                        await _release_fill_slot("fill_slipped_below_floor")
+                        await _release_claim("fill_slipped_below_floor")
+                        return _failed(
+                            f"fill_slipped_below_floor:{_fp:.3f}<{_floor_up:.3f}",
+                            strategy_id=sid,
+                            direction=direction,
+                            stake_usd=stake.adjusted_stake,
+                            token_id=token_id,
+                        )
+                elif direction == "DOWN" and _pf_floor_down is not None:
+                    _floor_down = float(_pf_floor_down)
+                    # For DOWN/NO, fill_price is the NO-leg price; floor check is
+                    # symmetric — reject if NO fill is below the floor.
+                    if _fp < _floor_down:
+                        log.warning(
+                            "execute_trade.post_fill_floor_rejected",
+                            strategy=sid,
+                            direction=direction,
+                            fill_price=_fp,
+                            entry_floor_down=_floor_down,
+                            order_id=result.order_id,
+                            failure_reason=f"fill_slipped_below_floor_down:{_fp:.3f}<{_floor_down:.3f}",
+                        )
+                        await _release_fill_slot("fill_slipped_below_floor_down")
+                        await _release_claim("fill_slipped_below_floor_down")
+                        return _failed(
+                            f"fill_slipped_below_floor_down:{_fp:.3f}<{_floor_down:.3f}",
+                            strategy_id=sid,
+                            direction=direction,
+                            stake_usd=stake.adjusted_stake,
+                            token_id=token_id,
+                        )
+
             # ── Commit the fill_slot placeholder NOW ───────────────────────
             # Audit 2026-04-26 (smoking gun window 1777245000):
             # Setting ``committed = True`` only AFTER mark_traded leaves a
