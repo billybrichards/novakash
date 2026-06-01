@@ -1456,9 +1456,21 @@ class DataSurfaceManager:
                 delta_coinglass = None
 
         # CLOB from feed in-memory cache
+        # Per-asset fix (bug: BTC-only writer gap, 2026-06-01):
+        # Prefer `latest_clob_by_asset[asset]` which is populated for all
+        # enabled assets (BTC, ETH, SOL, XRP) since PR #583.  Fall back to
+        # the legacy `latest_clob` flat dict which only carries BTC data —
+        # kept for callers/tests that pre-date the multi-asset feed but NOT
+        # used for non-BTC windows going forward.
         clob_data = {}
         if self._clob:
-            clob_data = getattr(self._clob, "latest_clob", {})
+            _by_asset = getattr(self._clob, "latest_clob_by_asset", {})
+            if _by_asset and asset.upper() in _by_asset:
+                clob_data = _by_asset[asset.upper()]
+            else:
+                # Backward-compat: BTC callers and unit tests that only wire
+                # the flat `latest_clob` dict still work correctly here.
+                clob_data = getattr(self._clob, "latest_clob", {})
         # Cold-start warmup fallback: CLOB orderbook poller cycles every
         # 10s, so a fresh restart leaves clob_data empty for the first
         # tick or two. Backfill from the warmup row if no live data yet.
