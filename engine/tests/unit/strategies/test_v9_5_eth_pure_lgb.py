@@ -209,7 +209,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_above_max_skips(self):
         """eval_offset=211 is above the band max of 210 (drops weak Δ=240s tail)."""
@@ -217,7 +217,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_at_min_60_fires(self):
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_eth_pure=0.95)
@@ -239,14 +239,14 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_none_eval_offset_skips(self):
         surface = _make_surface(eval_offset=None)
         with _params():
             d = evaluate_v9_5_eth_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 # ── UP threshold gating ────────────────────────────────────────────────────
@@ -352,7 +352,7 @@ class TestRuntimeOverride:
         with _params(eval_offset_max=120):
             d = evaluate_v9_5_eth_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 # ── Metadata shape ─────────────────────────────────────────────────────────

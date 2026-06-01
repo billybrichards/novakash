@@ -36,6 +36,17 @@ GHOST mode by default — Billy promotes manually
 (per feedback_no_auto_promote.md). $5 max_position_usd for the initial shadow
 window; raise once GHOST soak confirms the sweep numbers.
 
+Per-direction eval-band support (feat/v9_5-direction-split-bands, plan #806):
+  The symmetric band can be split per direction using:
+    eval_offset_min_up  / eval_offset_max_up   — UP-specific band
+    eval_offset_min_down / eval_offset_max_down — DOWN-specific band
+  Back-compat waterfall: direction key → symmetric key → YAML default.
+  Sweep analysis (RDS note #806): UP optimal at band 90-180, DOWN optimal
+  at 30-90 (DISJOINT — impossible to serve both with one symmetric band).
+  Example SRO to unlock both directions independently:
+    eval_offset_min_up=90,   eval_offset_max_up=180
+    eval_offset_min_down=30, eval_offset_max_down=90
+
 References:
   - RDS notes #788, #790 — XRP PURE column sweep findings (2026-05-31).
   - Sibling strategies: v9_5_eth_pure_lgb (ETH PURE bidirectional template),
@@ -44,6 +55,7 @@ References:
                         v9_5_xrp_up_solo (blend col, UP-only).
   - data_surface.py line 385 — probability_lgb_v9_5_xrp_pure field.
   - Engine precedent: PR #604 (v9_2_eth_solo), PR #606 (v9_5_xrp_up_solo).
+  - Direction-split reference: configs/_tickformer_base._resolve_band_for_direction (PR #635).
 """
 
 from __future__ import annotations
@@ -131,6 +143,30 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
+def _resolve_eval_band(direction: str, *, sym_min: int, sym_max: int) -> tuple[int, int]:
+    """Return ``(band_min, band_max)`` for ``direction`` using the waterfall:
+
+    For each direction X ∈ {'up', 'down'}:
+      1. ``eval_offset_min_X`` / ``eval_offset_max_X`` in active gate-params bag
+         (runtime override or YAML direction-specific key — highest precedence).
+      2. Else ``sym_min`` / ``sym_max`` — the already-resolved symmetric band
+         (from runtime override bare key → YAML bare key → default).
+
+    Back-compat guarantee: when neither ``eval_offset_max_up`` nor
+    ``eval_offset_max_down`` is present in the active params bag, ``sym_min``
+    / ``sym_max`` are returned unchanged, preserving identical behaviour for
+    all existing strategies and runtime overrides that lack the new keys.
+
+    Mirrors _tickformer_base._resolve_band_for_direction but uses the
+    ``eval_offset_min/max`` key prefix (not ``eval_offset_remaining_min/max``)
+    to match the existing v9.5 key naming convention.
+    """
+    suffix = direction.lower()  # 'up' or 'down'
+    band_min = _gp.get_int(f"eval_offset_min_{suffix}", None, sym_min)
+    band_max = _gp.get_int(f"eval_offset_max_{suffix}", None, sym_max)
+    return (band_min, band_max)
+
+
 def evaluate_v9_5_xrp_pure_lgb(surface: "FullDataSurface") -> StrategyDecision:
     p_xrp_pure = getattr(surface, "probability_lgb_v9_5_xrp_pure", None)
     eval_offset = getattr(surface, "eval_offset", None)
@@ -157,29 +193,43 @@ def evaluate_v9_5_xrp_pure_lgb(surface: "FullDataSurface") -> StrategyDecision:
 
     up_threshold = _gp.get_float("up_threshold", None, _DEFAULT_UP_THRESHOLD)
     down_threshold = _gp.get_float("down_threshold", None, _DEFAULT_DOWN_THRESHOLD)
-    eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
-    eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
+    # Resolve symmetric band first (used as fallback in the direction-split waterfall).
+    sym_eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
+    sym_eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
 
     meta = {
         "probability_lgb_v9_5_xrp_pure": p_xrp_pure,
         "eval_offset": eval_offset,
         "up_threshold": up_threshold,
         "down_threshold": down_threshold,
-        "eval_offset_min": eval_min,
-        "eval_offset_max": eval_max,
+        "eval_offset_min": sym_eval_min,
+        "eval_offset_max": sym_eval_max,
         "asset": asset,
         "window_ts": window_ts,
     }
 
-    if eval_offset is None or eval_offset < eval_min or eval_offset > eval_max:
+    # Guard: eval_offset absent → can't evaluate any band.
+    if eval_offset is None:
         return _skip("outside_eval_band", meta)
 
+    # Direction resolution first — needed to select the per-direction band.
     if p_xrp_pure >= up_threshold:
         direction = "UP"
     elif p_xrp_pure <= down_threshold:
         direction = "DOWN"
     else:
         return _skip("conviction_below_threshold", meta)
+
+    # Direction-aware band check (feat/v9_5-direction-split-bands, plan #806).
+    # Waterfall: eval_offset_min/max_{up,down} → sym eval_offset_min/max → default.
+    # Back-compat: when no direction-specific key is set, sym values are used unchanged.
+    eval_min, eval_max = _resolve_eval_band(
+        direction, sym_min=sym_eval_min, sym_max=sym_eval_max
+    )
+    meta["eval_offset_min_resolved"] = eval_min
+    meta["eval_offset_max_resolved"] = eval_max
+    if eval_offset < eval_min or eval_offset > eval_max:
+        return _skip(f"outside_eval_band_{direction} ({eval_min}-{eval_max})", meta)
 
     # N-consecutive-tick confirmation gate (runtime-tunable via
     # gate_params.min_consecutive_pass_ticks). Default=2 for conservative

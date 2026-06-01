@@ -187,7 +187,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_above_max_skips(self):
         """eval_offset=250 is above the band max of 240."""
@@ -195,7 +195,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_at_min_60_fires(self):
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_eth=0.97)
@@ -216,7 +216,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 # ── Threshold gating ───────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ class TestRuntimeOverride:
         with _params(eval_offset_min=120):
             d = evaluate_v9_5_eth_blend(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 # ── Metadata shape ─────────────────────────────────────────────────────────

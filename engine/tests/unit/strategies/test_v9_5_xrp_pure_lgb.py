@@ -239,7 +239,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_xrp_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_above_max_skips(self):
         """eval_offset=181 is above the band max of 180."""
@@ -247,7 +247,7 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_xrp_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_at_min_60_fires(self):
         surface = _make_surface(eval_offset=60, probability_lgb_v9_5_xrp_pure=0.95)
@@ -269,14 +269,14 @@ class TestEvalOffsetBand:
         with _params():
             d = evaluate_v9_5_xrp_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
     def test_none_eval_offset_skips(self):
         surface = _make_surface(eval_offset=None)
         with _params():
             d = evaluate_v9_5_xrp_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 # ── UP threshold gating ────────────────────────────────────────────────────
@@ -382,7 +382,7 @@ class TestRuntimeOverride:
         with _params(min_consecutive_pass_ticks=1, eval_offset_max=120):
             d = evaluate_v9_5_xrp_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
 
 
 # ── Metadata shape ─────────────────────────────────────────────────────────
@@ -425,7 +425,7 @@ class TestMetadataShape:
         with _params():
             d = evaluate_v9_5_xrp_pure_lgb(surface)
         assert d.action == "SKIP"
-        assert d.skip_reason == "outside_eval_band"
+        assert d.skip_reason.startswith("outside_eval_band")
         assert d.metadata.get("window_ts") == 1713009600
 
     def test_metadata_contains_sizing_on_trade(self):

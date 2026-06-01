@@ -108,6 +108,23 @@ def _skip(reason: str, metadata: dict) -> StrategyDecision:
     )
 
 
+def _resolve_eval_band(direction: str, *, sym_min: int, sym_max: int) -> tuple[int, int]:
+    """Return ``(band_min, band_max)`` for ``direction`` using the waterfall:
+
+    For each direction X ∈ {'up', 'down'}:
+      1. ``eval_offset_min_X`` / ``eval_offset_max_X`` in active gate-params bag.
+      2. Else ``sym_min`` / ``sym_max`` — the already-resolved symmetric band.
+
+    Back-compat: when no direction-specific key is present, sym values are returned
+    unchanged — identical to the previous symmetric-band behaviour.
+    Mirrors _tickformer_base._resolve_band_for_direction (PR #635).
+    """
+    suffix = direction.lower()  # 'up' or 'down'
+    band_min = _gp.get_int(f"eval_offset_min_{suffix}", None, sym_min)
+    band_max = _gp.get_int(f"eval_offset_max_{suffix}", None, sym_max)
+    return (band_min, band_max)
+
+
 def evaluate_v9_5_eth_blend(surface: "FullDataSurface") -> StrategyDecision:
     p_eth = getattr(surface, "probability_lgb_v9_5_eth", None)
     eval_offset = getattr(surface, "eval_offset", None)
@@ -133,20 +150,20 @@ def evaluate_v9_5_eth_blend(surface: "FullDataSurface") -> StrategyDecision:
 
     up_threshold = _gp.get_float("up_threshold", None, _DEFAULT_UP_THRESHOLD)
     down_threshold = _gp.get_float("down_threshold", None, _DEFAULT_DOWN_THRESHOLD)
-    eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
-    eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
+    sym_eval_min = _gp.get_int("eval_offset_min", None, _DEFAULT_EVAL_OFFSET_MIN)
+    sym_eval_max = _gp.get_int("eval_offset_max", None, _DEFAULT_EVAL_OFFSET_MAX)
 
     meta = {
         "probability_lgb_v9_5_eth": p_eth,
         "eval_offset": eval_offset,
         "up_threshold": up_threshold,
         "down_threshold": down_threshold,
-        "eval_offset_min": eval_min,
-        "eval_offset_max": eval_max,
+        "eval_offset_min": sym_eval_min,
+        "eval_offset_max": sym_eval_max,
         "asset": asset,
     }
 
-    if eval_offset is None or eval_offset < eval_min or eval_offset > eval_max:
+    if eval_offset is None:
         return _skip("outside_eval_band", meta)
 
     if p_eth >= up_threshold:
@@ -155,6 +172,14 @@ def evaluate_v9_5_eth_blend(surface: "FullDataSurface") -> StrategyDecision:
         direction = "DOWN"
     else:
         return _skip("conviction_below_threshold", meta)
+
+    eval_min, eval_max = _resolve_eval_band(
+        direction, sym_min=sym_eval_min, sym_max=sym_eval_max
+    )
+    meta["eval_offset_min_resolved"] = eval_min
+    meta["eval_offset_max_resolved"] = eval_max
+    if eval_offset < eval_min or eval_offset > eval_max:
+        return _skip(f"outside_eval_band_{direction} ({eval_min}-{eval_max})", meta)
 
     # N-consecutive-tick confirmation gate (runtime-tunable via
     # gate_params.min_consecutive_pass_ticks). Mirrors v9_2_eth_raw_lgb.
