@@ -1036,6 +1036,22 @@ class DataSurfaceManager:
                     "probability_tickformer_v20",
                     "tickformer_gate_cond",
                     "tickformer_trade_signal", "signal",
+                    # Per-asset ETH/XRP heads (RDS note #833,
+                    # fix/eth-xrp-tickformer-column-pipeline).
+                    # Added so the subcache carries them for ETH/XRP
+                    # windows that read ts_data from _cached_v4 — the
+                    # poly guard never blocks non-BTC assets so these
+                    # hit the main cache path, but having them here
+                    # also ensures any future poly-guard-like block
+                    # on non-BTC does not silently drop the values.
+                    "probability_tickformer_v16_eth",
+                    "probability_tickformer_v17_eth",
+                    "probability_tickformer_v18_eth",
+                    "probability_tickformer_v20_eth",
+                    "probability_tickformer_v16_xrp",
+                    "probability_tickformer_v17_xrp",
+                    "probability_tickformer_v18_xrp",
+                    "probability_tickformer_v20_xrp",
                 )
                 for _k in _TF_KEYS:
                     _v = _tf_ts5.get(_k)
@@ -1869,41 +1885,108 @@ class DataSurfaceManager:
                 )
                 else None
             ),
-            # V4 ETH/XRP per-asset tickformer heads (RDS hub note #823).
-            # Read from ts_data only — classifier-gpu sister PR emits these
-            # nested under timescales.5m. No v4-top-level or _tf_subcache
-            # fallback yet (added if needed once emission is observed live).
+            # V4 ETH/XRP per-asset tickformer heads (RDS note #833,
+            # fix/eth-xrp-tickformer-column-pipeline).
+            # Read from ts_data (main cache 5m block) with _tf_subcache
+            # fallback — mirrors the v20 pattern. For non-BTC the poly
+            # guard never fires so ts_data is always populated when the
+            # main cache is fresh; the subcache fallback is an extra
+            # safety net for any future guard introduced on non-BTC.
             probability_tickformer_v16_eth=(
-                float(ts_data["probability_tickformer_v16_eth"])
-                if ts_data.get("probability_tickformer_v16_eth") is not None else None
+                float(
+                    ts_data["probability_tickformer_v16_eth"]
+                    if ts_data.get("probability_tickformer_v16_eth") is not None
+                    else _tf_subcache["probability_tickformer_v16_eth"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v16_eth") is not None
+                    or _tf_subcache.get("probability_tickformer_v16_eth") is not None
+                )
+                else None
             ),
             probability_tickformer_v17_eth=(
-                float(ts_data["probability_tickformer_v17_eth"])
-                if ts_data.get("probability_tickformer_v17_eth") is not None else None
+                float(
+                    ts_data["probability_tickformer_v17_eth"]
+                    if ts_data.get("probability_tickformer_v17_eth") is not None
+                    else _tf_subcache["probability_tickformer_v17_eth"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v17_eth") is not None
+                    or _tf_subcache.get("probability_tickformer_v17_eth") is not None
+                )
+                else None
             ),
             probability_tickformer_v18_eth=(
-                float(ts_data["probability_tickformer_v18_eth"])
-                if ts_data.get("probability_tickformer_v18_eth") is not None else None
+                float(
+                    ts_data["probability_tickformer_v18_eth"]
+                    if ts_data.get("probability_tickformer_v18_eth") is not None
+                    else _tf_subcache["probability_tickformer_v18_eth"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v18_eth") is not None
+                    or _tf_subcache.get("probability_tickformer_v18_eth") is not None
+                )
+                else None
             ),
             probability_tickformer_v20_eth=(
-                float(ts_data["probability_tickformer_v20_eth"])
-                if ts_data.get("probability_tickformer_v20_eth") is not None else None
+                float(
+                    ts_data["probability_tickformer_v20_eth"]
+                    if ts_data.get("probability_tickformer_v20_eth") is not None
+                    else _tf_subcache["probability_tickformer_v20_eth"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v20_eth") is not None
+                    or _tf_subcache.get("probability_tickformer_v20_eth") is not None
+                )
+                else None
             ),
             probability_tickformer_v16_xrp=(
-                float(ts_data["probability_tickformer_v16_xrp"])
-                if ts_data.get("probability_tickformer_v16_xrp") is not None else None
+                float(
+                    ts_data["probability_tickformer_v16_xrp"]
+                    if ts_data.get("probability_tickformer_v16_xrp") is not None
+                    else _tf_subcache["probability_tickformer_v16_xrp"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v16_xrp") is not None
+                    or _tf_subcache.get("probability_tickformer_v16_xrp") is not None
+                )
+                else None
             ),
             probability_tickformer_v17_xrp=(
-                float(ts_data["probability_tickformer_v17_xrp"])
-                if ts_data.get("probability_tickformer_v17_xrp") is not None else None
+                float(
+                    ts_data["probability_tickformer_v17_xrp"]
+                    if ts_data.get("probability_tickformer_v17_xrp") is not None
+                    else _tf_subcache["probability_tickformer_v17_xrp"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v17_xrp") is not None
+                    or _tf_subcache.get("probability_tickformer_v17_xrp") is not None
+                )
+                else None
             ),
             probability_tickformer_v18_xrp=(
-                float(ts_data["probability_tickformer_v18_xrp"])
-                if ts_data.get("probability_tickformer_v18_xrp") is not None else None
+                float(
+                    ts_data["probability_tickformer_v18_xrp"]
+                    if ts_data.get("probability_tickformer_v18_xrp") is not None
+                    else _tf_subcache["probability_tickformer_v18_xrp"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v18_xrp") is not None
+                    or _tf_subcache.get("probability_tickformer_v18_xrp") is not None
+                )
+                else None
             ),
             probability_tickformer_v20_xrp=(
-                float(ts_data["probability_tickformer_v20_xrp"])
-                if ts_data.get("probability_tickformer_v20_xrp") is not None else None
+                float(
+                    ts_data["probability_tickformer_v20_xrp"]
+                    if ts_data.get("probability_tickformer_v20_xrp") is not None
+                    else _tf_subcache["probability_tickformer_v20_xrp"]
+                )
+                if (
+                    ts_data.get("probability_tickformer_v20_xrp") is not None
+                    or _tf_subcache.get("probability_tickformer_v20_xrp") is not None
+                )
+                else None
             ),
             tickformer_gate_cond=(
                 float(
