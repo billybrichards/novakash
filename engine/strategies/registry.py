@@ -2160,6 +2160,125 @@ class StrategyRegistry:
                 )
             )
 
+        # fix/#807 — populate full feature columns for ETH/SOL/XRP rows.
+        #
+        # Problem: the sidecar writers above (update_signal_evaluations_lgb_*)
+        # INSERT rows with only (window_ts, asset, timeframe, eval_offset,
+        # probability_X).  For BTC the legacy five_min_vpin._evaluate_window or
+        # EvaluateStrategiesUseCase._write_signal_evaluation subsequently UPSERTs
+        # the rich columns (CLOB, vpin, delta_*, cg_*, v2 prob etc.).  ETH/SOL/XRP
+        # never reach those BTC-only paths, so their rows stay NULL on every feature
+        # column — making ghost-replay sweep analysis impossible (cannot filter on
+        # clob_down_ask, delta_pct, regime, etc.).
+        #
+        # Fix: for non-BTC assets call write_signal_evaluation once per evaluate_all
+        # tick with the full surface.  BTC is deliberately excluded: its rich-column
+        # write is handled by EvaluateStrategiesUseCase._write_signal_evaluation (and
+        # the legacy five_min_vpin path), and those paths fire AFTER strategy
+        # evaluation so they carry the real decision (TRADE/SKIP).  Writing here for
+        # BTC would risk a race-condition where this trace-time "SKIP" sentinel
+        # overwrites the strategy's "TRADE" when tasks resolve out of order.
+        #
+        # ETH/SOL/XRP have no strategy-level write_signal_evaluation path; this is
+        # the one and only rich-column write for those assets.  decision="SKIP" is
+        # accurate (no trade fires for ETH/XRP via this path) and is overwriteable
+        # if a future strategy-level writer is added for those assets.
+        if (
+            self._db is not None
+            and hasattr(self._db, "write_signal_evaluation")
+            and surface.asset != "BTC"
+        ):
+            _clob_spread = (
+                (surface.clob_up_ask - surface.clob_up_bid)
+                if surface.clob_up_ask is not None and surface.clob_up_bid is not None
+                else None
+            )
+            _clob_mid = (
+                ((surface.clob_up_bid + surface.clob_up_ask) / 2)
+                if surface.clob_up_bid is not None and surface.clob_up_ask is not None
+                else None
+            )
+            _v2_high_conf = (
+                surface.v2_probability_up is not None
+                and (
+                    surface.v2_probability_up > 0.65
+                    or surface.v2_probability_up < 0.35
+                )
+            )
+            _rich_task = asyncio.create_task(
+                self._db.write_signal_evaluation(
+                    {
+                        # Window identity
+                        "window_ts": surface.window_ts,
+                        "asset": surface.asset,
+                        "timeframe": surface.timescale,
+                        "eval_offset": surface.eval_offset,
+                        # Price sources.
+                        # The surface stores Binance current + open price and the
+                        # three delta fields.  Absolute chainlink_price / tiingo_close
+                        # are not present on FullDataSurface (only deltas are); use
+                        # None so the DB column stays NULL rather than crashing.
+                        "binance_price": surface.current_price,
+                        "chainlink_price": None,  # not on FullDataSurface
+                        "tiingo_open": surface.open_price,
+                        "tiingo_close": None,  # not on FullDataSurface
+                        # Deltas
+                        "delta_pct": surface.delta_pct,
+                        "delta_binance": surface.delta_binance,
+                        "delta_tiingo": surface.delta_tiingo,
+                        "delta_chainlink": surface.delta_chainlink,
+                        "delta_source": getattr(surface, "delta_source", None),
+                        # Market microstructure
+                        "vpin": surface.vpin,
+                        "regime": surface.regime,
+                        # CLOB prices (all four sides + derived)
+                        "clob_up_bid": surface.clob_up_bid,
+                        "clob_up_ask": surface.clob_up_ask,
+                        "clob_down_bid": surface.clob_down_bid,
+                        "clob_down_ask": surface.clob_down_ask,
+                        "clob_spread": _clob_spread,
+                        "clob_mid": _clob_mid,
+                        # CoinGlass snapshot fields.
+                        # cg_oi_delta_pct is not on the surface (only raw cg_oi_usd
+                        # is available); leave NULL — mirrors the evaluate_strategies
+                        # path when cg_snapshot does not expose oi_delta_pct_1m.
+                        "cg_oi_delta_pct": None,
+                        "cg_liq_long_usd": surface.cg_liq_long,
+                        "cg_liq_short_usd": surface.cg_liq_short,
+                        "cg_taker_buy_usd": surface.cg_taker_buy_vol,
+                        "cg_taker_sell_usd": surface.cg_taker_sell_vol,
+                        "cg_funding_rate": surface.cg_funding_rate,
+                        # V2/SequoiaV5 probability surface
+                        "v2_probability_up": surface.v2_probability_up,
+                        "v2_direction": (
+                            "UP"
+                            if surface.v2_probability_up is not None
+                            and surface.v2_probability_up >= 0.5
+                            else "DOWN"
+                            if surface.v2_probability_up is not None
+                            else None
+                        ),
+                        "v2_agrees": None,  # direction agreement not computable at trace time
+                        "v2_high_conf": (
+                            _v2_high_conf
+                            if surface.v2_probability_up is not None
+                            else None
+                        ),
+                        "v2_model_version": None,  # not on FullDataSurface
+                        # decision is SKIP at trace time; accurate for ETH/SOL/XRP since
+                        # no strategy-level write_signal_evaluation fires for those assets.
+                        "decision": "SKIP",
+                        "gate_passed": False,
+                        "gate_failed": None,
+                    }
+                )
+            )
+            _rich_task.add_done_callback(
+                self._log_async_write_error(
+                    "registry.signal_eval_full_features_write_error"
+                )
+            )
+
     def _stamp_v9_2_gate_fired(
         self,
         surface: FullDataSurface,
