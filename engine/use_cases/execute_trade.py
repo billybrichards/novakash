@@ -1556,6 +1556,67 @@ class ExecuteTradeUseCase:
                             token_id=token_id,
                         )
 
+            # ── Post-fill cap enforcement (RDS notes #820, #824) ──
+            # Symmetric mirror of the floor block above. The decision-time
+            # gate in _tickformer_base / v9_5_xrp_pure_lgb / v9_3_btc_pure_up
+            # already rejects on the cached CLOB estimate, but real fills can
+            # arrive at a different price (CLOB updates between decision and
+            # execution, partial-ladder steps). Re-check the actual fill_price
+            # here so a high-fill that snuck past the gate still gets blocked.
+            #
+            # UP/YES: reject if fill_price > entry_cap_up (e.g. 0.93 > 0.85).
+            # DOWN/NO: reject if fill_price > entry_cap_down (NO leg).
+            #
+            # Reservation-leak handling identical to the floor path: release
+            # fill-slot and claim before returning _failed.
+            _pf_cap_up = meta.get("entry_cap_up")
+            _pf_cap_down = meta.get("entry_cap_down")
+            if result.fill_price is not None:
+                _fp = float(result.fill_price)
+                if direction == "UP" and _pf_cap_up is not None:
+                    _cap_up = float(_pf_cap_up)
+                    if _fp > _cap_up:
+                        log.warning(
+                            "execute_trade.post_fill_cap_rejected",
+                            strategy=sid,
+                            direction=direction,
+                            fill_price=_fp,
+                            entry_cap_up=_cap_up,
+                            order_id=result.order_id,
+                            failure_reason=f"fill_above_up_cap:{_fp:.3f}>{_cap_up:.3f}",
+                        )
+                        await _release_fill_slot("fill_above_up_cap")
+                        await _release_claim("fill_above_up_cap")
+                        return _failed(
+                            f"fill_above_up_cap:{_fp:.3f}>{_cap_up:.3f}",
+                            strategy_id=sid,
+                            direction=direction,
+                            stake_usd=stake.adjusted_stake,
+                            token_id=token_id,
+                        )
+                elif direction == "DOWN" and _pf_cap_down is not None:
+                    _cap_down = float(_pf_cap_down)
+                    # For DOWN/NO, fill_price is the NO-leg price (down_fill_price).
+                    if _fp > _cap_down:
+                        log.warning(
+                            "execute_trade.post_fill_cap_rejected",
+                            strategy=sid,
+                            direction=direction,
+                            fill_price=_fp,
+                            entry_cap_down=_cap_down,
+                            order_id=result.order_id,
+                            failure_reason=f"fill_above_down_cap:{_fp:.3f}>{_cap_down:.3f}",
+                        )
+                        await _release_fill_slot("fill_above_down_cap")
+                        await _release_claim("fill_above_down_cap")
+                        return _failed(
+                            f"fill_above_down_cap:{_fp:.3f}>{_cap_down:.3f}",
+                            strategy_id=sid,
+                            direction=direction,
+                            stake_usd=stake.adjusted_stake,
+                            token_id=token_id,
+                        )
+
             # ── Commit the fill_slot placeholder NOW ───────────────────────
             # Audit 2026-04-26 (smoking gun window 1777245000):
             # Setting ``committed = True`` only AFTER mark_traded leaves a

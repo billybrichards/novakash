@@ -79,6 +79,13 @@ if TYPE_CHECKING:
 _DEFAULT_ENTRY_CAP = 0.93
 _DEFAULT_ENTRY_FLOOR_UP = 0.60
 _DEFAULT_ENTRY_CAP_DOWN = 0.90
+# entry_cap_up: max YES/UP fill price (reject UP fires whose YES fill is
+# above this). Default 1.0 = permissive — strategies that don't set the
+# field in their SRO are unaffected. Mirror of entry_cap_down for the UP
+# side. Added 2026-06-02 per RDS note #824: SRO row carried
+# entry_cap_up=0.85 since #820 but no enforcement code existed → param
+# was silently inert (zero fill_above_up_cap rejections in 9h).
+_DEFAULT_ENTRY_CAP_UP = 1.0
 _DEFAULT_COLLATERAL_PCT = 0.025
 _DEFAULT_GTC_CAP = 0.96
 _DEFAULT_MIN_CONSEC_TICKS = 1
@@ -708,16 +715,31 @@ def evaluate_tickformer_strategy(
         entry_cap_down = float(
             _gp.get_float("entry_cap_down", None, _DEFAULT_ENTRY_CAP_DOWN)
         )
+        entry_cap_up = float(
+            _gp.get_float("entry_cap_up", None, _DEFAULT_ENTRY_CAP_UP)
+        )
         _efd_raw = _gp._lookup("entry_floor_down", None, None)
         entry_floor_down = float(_efd_raw) if _efd_raw is not None else None
         meta["fill_price"] = fill_price
         meta["down_fill_price"] = down_fill_price
         meta["entry_floor_up"] = entry_floor_up
+        meta["entry_cap_up"] = entry_cap_up
         meta["entry_cap_down"] = entry_cap_down
         meta["entry_floor_down"] = entry_floor_down
         if direction == "UP" and fill_price < entry_floor_up:
             return _skip(
                 f"fill_below_up_floor:{fill_price:.3f}<{entry_floor_up:.3f}",
+                meta,
+                strategy_id=strategy_id,
+                version=version,
+            )
+        # entry_cap_up gate (RDS notes #820, #824): symmetric mirror of
+        # entry_cap_down. Reject UP fires whose YES fill is above the cap to
+        # block negative-EV high-fill UP losses (e.g. v20 trades 9608/9612).
+        # Format string mirrors the cap_down line exactly.
+        if direction == "UP" and fill_price > entry_cap_up:
+            return _skip(
+                f"fill_above_up_cap:{fill_price:.3f}>{entry_cap_up:.3f}",
                 meta,
                 strategy_id=strategy_id,
                 version=version,

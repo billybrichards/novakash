@@ -445,3 +445,91 @@ def test_gate_cond_applies_to_v17_and_v18_too(monkeypatch):
     with _gp_active({"shadow_only": 0}):
         dec_v18 = evaluate_tickformer_v18_t180(surface_v18)
     assert dec_v18.skip_reason == "gate_cond_not_settled"
+
+
+# ── entry_cap_up decision-time gate (RDS notes #820 / #824) ──────────
+
+
+def test_v20_up_fire_above_cap_up_is_rejected():
+    """UP fire at fill above entry_cap_up → SKIP fill_above_up_cap.
+
+    Mirror of the existing fill_above_down_cap test (v18 DOWN @ fill 0.20
+    passes when cap is 0.90). Note #824 verified that prior to this PR the
+    SRO row carried entry_cap_up=0.85 for v20 but zero rejections appeared
+    in 9h of decisions because the gate code didn't read the param.
+    """
+    surface = _surface(
+        "probability_tickformer_v20",
+        0.95,
+        eval_offset=120,
+        trade_signal=None,
+        fill_price=0.90,  # > entry_cap_up=0.85 → reject
+    )
+    with _gp_active({"shadow_only": 0, "entry_cap_up": 0.85}):
+        dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "SKIP"
+    assert dec.skip_reason is not None
+    assert "fill_above_up_cap" in dec.skip_reason
+    # Format mirrors fill_above_down_cap exactly: "fill_above_up_cap:F>C".
+    assert dec.skip_reason == "fill_above_up_cap:0.900>0.850"
+    # Meta records the cap so post-fill enforcement in execute_trade can
+    # read it without re-resolving from gate_params.
+    assert dec.metadata.get("entry_cap_up") == pytest.approx(0.85)
+
+
+def test_v20_up_fire_at_or_below_cap_up_passes():
+    """UP fire at fill == entry_cap_up passes; at fill < cap also passes."""
+    # Boundary: fill exactly at cap → strict-> check (>) → pass.
+    surface = _surface(
+        "probability_tickformer_v20",
+        0.95,
+        eval_offset=120,
+        trade_signal=None,
+        fill_price=0.85,
+    )
+    with _gp_active({"shadow_only": 0, "entry_cap_up": 0.85}):
+        dec = evaluate_tickformer_v20_adaptive_early(surface)
+    assert dec.action == "TRADE", dec.skip_reason
+
+    # Below cap → pass.
+    surface_below = _surface(
+        "probability_tickformer_v20",
+        0.95,
+        eval_offset=120,
+        trade_signal=None,
+        fill_price=0.80,
+    )
+    with _gp_active({"shadow_only": 0, "entry_cap_up": 0.85}):
+        dec_below = evaluate_tickformer_v20_adaptive_early(surface_below)
+    assert dec_below.action == "TRADE", dec_below.skip_reason
+
+
+def test_default_entry_cap_up_is_permissive():
+    """Strategies that do NOT set entry_cap_up are unaffected (default 1.0)."""
+    surface = _surface(
+        "probability_tickformer_v17",
+        0.95,
+        eval_offset=120,
+        trade_signal=None,
+        fill_price=0.97,  # very high; would be blocked by 0.85 cap
+    )
+    # No entry_cap_up override — defaults to _DEFAULT_ENTRY_CAP_UP=1.0.
+    with _gp_active({"shadow_only": 0}):
+        dec = evaluate_tickformer_v17_sniper(surface)
+    assert dec.action == "TRADE", dec.skip_reason
+
+
+def test_entry_cap_up_does_not_affect_down_direction():
+    """A DOWN fire must NOT be blocked by entry_cap_up (cap_up is UP-only)."""
+    # DOWN fires at p ≤ 0.10 for v18; fill_price below cap_down=0.90.
+    surface = _surface(
+        "probability_tickformer_v18",
+        0.05,
+        eval_offset=180,
+        trade_signal=None,
+        fill_price=0.20,  # under cap_down; the DOWN-leg price proxy
+    )
+    with _gp_active({"shadow_only": 0, "entry_cap_up": 0.85}):
+        dec = evaluate_tickformer_v18_t180(surface)
+    assert dec.action == "TRADE", dec.skip_reason
+    assert dec.direction == "DOWN"
