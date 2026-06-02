@@ -4474,7 +4474,7 @@ class DBClient:
                     float(data["clob_down_ask"])
                     if data.get("clob_down_ask") is not None
                     else None,
-                    float(data["binance_price"])
+                    str(data["binance_price"])
                     if data.get("binance_price") is not None
                     else None,
                     float(data["tiingo_open"])

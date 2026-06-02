@@ -135,7 +135,7 @@ class PgSignalRepository(SignalRepository):
                     float(data["clob_up_ask"]) if data.get("clob_up_ask") is not None else None,
                     float(data["clob_down_bid"]) if data.get("clob_down_bid") is not None else None,
                     float(data["clob_down_ask"]) if data.get("clob_down_ask") is not None else None,
-                    float(data["binance_price"]) if data.get("binance_price") is not None else None,
+                    str(data["binance_price"]) if data.get("binance_price") is not None else None,
                     float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
                     float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
                     float(data["chainlink_price"]) if data.get("chainlink_price") is not None else None,
