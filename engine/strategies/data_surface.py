@@ -425,6 +425,20 @@ class FullDataSurface:
     # strategy. Falls back to v18 in the exit monitor until this column is live.
     # (fix/tickformer-strategies-actually-fire — v20 scaffold)
     probability_tickformer_v20: Optional[float] = None
+    # V4 ETH/XRP per-asset tickformer heads (RDS hub note #823).
+    # Emitted by the classifier-gpu sister PR (feat/v4-eth-xrp-emit) into
+    # /v4/snapshot.timescales.5m as 8 new fields. Asset-suffixed names avoid
+    # polluting the BTC column (probability_tickformer_v{N}) which cross-asset
+    # BTC strats with asset:ANY still read. Defaults None — forward-compatible.
+    # Cross-repo contract keys — do NOT rename without coordinated PR.
+    probability_tickformer_v16_eth: Optional[float] = None
+    probability_tickformer_v17_eth: Optional[float] = None
+    probability_tickformer_v18_eth: Optional[float] = None
+    probability_tickformer_v20_eth: Optional[float] = None
+    probability_tickformer_v16_xrp: Optional[float] = None
+    probability_tickformer_v17_xrp: Optional[float] = None
+    probability_tickformer_v18_xrp: Optional[float] = None
+    probability_tickformer_v20_xrp: Optional[float] = None
     # Gate-condition score emitted by timesfm-service alongside the trade
     # signal (PR #622 missed persisting this). NUMERIC, None when absent.
     # (fix/tickformer-strategies-actually-fire — Bug B)
@@ -1854,6 +1868,42 @@ class DataSurfaceManager:
                     or _tf_subcache.get("probability_tickformer_v20") is not None
                 )
                 else None
+            ),
+            # V4 ETH/XRP per-asset tickformer heads (RDS hub note #823).
+            # Read from ts_data only — classifier-gpu sister PR emits these
+            # nested under timescales.5m. No v4-top-level or _tf_subcache
+            # fallback yet (added if needed once emission is observed live).
+            probability_tickformer_v16_eth=(
+                float(ts_data["probability_tickformer_v16_eth"])
+                if ts_data.get("probability_tickformer_v16_eth") is not None else None
+            ),
+            probability_tickformer_v17_eth=(
+                float(ts_data["probability_tickformer_v17_eth"])
+                if ts_data.get("probability_tickformer_v17_eth") is not None else None
+            ),
+            probability_tickformer_v18_eth=(
+                float(ts_data["probability_tickformer_v18_eth"])
+                if ts_data.get("probability_tickformer_v18_eth") is not None else None
+            ),
+            probability_tickformer_v20_eth=(
+                float(ts_data["probability_tickformer_v20_eth"])
+                if ts_data.get("probability_tickformer_v20_eth") is not None else None
+            ),
+            probability_tickformer_v16_xrp=(
+                float(ts_data["probability_tickformer_v16_xrp"])
+                if ts_data.get("probability_tickformer_v16_xrp") is not None else None
+            ),
+            probability_tickformer_v17_xrp=(
+                float(ts_data["probability_tickformer_v17_xrp"])
+                if ts_data.get("probability_tickformer_v17_xrp") is not None else None
+            ),
+            probability_tickformer_v18_xrp=(
+                float(ts_data["probability_tickformer_v18_xrp"])
+                if ts_data.get("probability_tickformer_v18_xrp") is not None else None
+            ),
+            probability_tickformer_v20_xrp=(
+                float(ts_data["probability_tickformer_v20_xrp"])
+                if ts_data.get("probability_tickformer_v20_xrp") is not None else None
             ),
             tickformer_gate_cond=(
                 float(

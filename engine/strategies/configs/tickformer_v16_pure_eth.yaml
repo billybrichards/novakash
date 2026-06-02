@@ -1,0 +1,107 @@
+# V4 ETH/XRP variant generated 2026-06-02 from BTC template (hub note #823).
+# Defaults from tf_v4_pocket_sweep.json top-pocket per asset.
+# Companion strats: BTC v16_pure, sibling asset xrp.
+# All shadow_only=1 (GHOST soak). Per feedback_no_auto_promote — Billy promotes by hand.
+# Reads probability_tickformer_v16_eth emitted by classifier-gpu sister PR.
+name: tickformer_v16_pure_eth
+strategy_id: tickformer_v16_pure_eth
+version: "1.0.0"
+# tickformer_v16_pure — 2026-05-28 (SHADOW, Billy promotes manually)
+#
+# TickFormer v16 "magic model" SHADOW strategy. Reads two NEW columns
+# emitted by timesfm-service (sister PR on the magic-model repo):
+#   probability_tickformer_v16 (NUMERIC)
+#   tickformer_trade_signal     (UP/DOWN/HOLD)
+# plus the new GET /v5/probability + GET /v5/trade_signal endpoints.
+#
+# THE MAGIC MODEL:
+#   Hybrid transformer combining per-tick attention with a multi-step
+#   autoregressive inference loop. Internally referred to as the "magic
+#   model" because the multi-step loop reconstructs the residual price
+#   trajectory rather than predicting a single scalar — surfacing
+#   high-WR pockets that single-step LGB heads miss.
+#
+# HEADLINE CONVICTION TIERS (offline backtest, v16 spec):
+#   Tier A — thr 0.85, eval_offset_remaining 60s   -> ~95% WR
+#   Tier B — thr 0.90, eval_offset_remaining 60s   -> ~96% WR
+#   Tier C — thr 0.85, eval_offset_remaining 180s  -> ~94% WR
+#   Tier D — thr 0.85, eval_offset_remaining 220s  -> ~88% WR (dream)
+#
+# Defaults below = Tier C (thr 0.85, remaining 60-240). Operator picks
+# the live tier in gate_params at promotion time.
+#
+# DOWN SIDE: symmetric. down_threshold defaults to 1 - up_threshold.
+#   tickformer_trade_signal must agree with chosen direction when present
+#   (UP/DOWN); HOLD or None does NOT block — only an explicit opposite
+#   label blocks the fire.
+#
+# SHADOW KILL SWITCH:
+#   gate_params.shadow_only=1 (default) forces SKIP-with-decision-record
+#   behaviour even if mode=LIVE in YAML. Must be flipped to 0 in YAML
+#   before any real fire emits. This is the single explicit go-live gate.
+#
+# GATE STATE:
+#   - chainlink_freshness only — final-mile execution filter (gate_passed
+#     must be True before the strategy's TRADE result is honoured).
+#   - No cohort gates, no sister-pair veto, no v9_ensemble base delegation.
+#     The magic-model edge is independent of the LGB stack; we want clean
+#     shadow telemetry before stacking gates.
+#
+# ROLLOUT PLAN:
+#   1. SHADOW (this PR). Tier C defaults, shadow_only=1.
+#   2. After 50+ shadow fires with WR >= 90% across both directions,
+#      flip shadow_only=0 and promote to GHOST (still no real money;
+#      the registry mode separately controls live execution).
+#   3. After 100+ GHOST fires sustaining 90%+ WR, promote to LIVE with
+#      max_position_usd=5 and Tier A or B parameters per Billy's call.
+#
+# DEPENDENCY:
+#   timesfm sister PR adds probability_tickformer_v16 +
+#   tickformer_trade_signal columns to signal_evaluations + emits them
+#   on /v4/snapshot.timescales.5m. This engine PR is forward-compatible:
+#   probability_tickformer_v16=None short-circuits to a clean SKIP
+#   (tickformer_v16_not_available) until the timesfm-side flag flips.
+#
+# References:
+#   docs/STRATEGY_tickformer_v16_pure.md — design doc + tier table
+#   Sibling engine strategy: v9_5_xrp_up_solo (SHADOW pattern precedent)
+#
+status: SHADOW
+description: |
+  TickFormer v16 "magic model" SHADOW strategy. Reads
+  probability_tickformer_v16 (NUMERIC) and tickformer_trade_signal
+  (UP/DOWN/HOLD) emitted by timesfm-service (sister PR). Tier C
+  defaults: thr 0.85, eval_offset_remaining [60, 240]. shadow_only=1
+  forces SKIP-with-record even if mode flips. Symmetric DOWN side at
+  p <= 0.15. Trade-signal cross-check blocks only on explicit opposite.
+mode: SHADOW
+asset: ETH
+timescale: 5m
+
+hooks_file: tickformer_v16_pure_eth.py
+pre_gate_hook: evaluate_tickformer_v16_pure_eth
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
+
+gates:
+  - type: chainlink_freshness
+
+gate_params:
+  shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE (live go-live switch)
+  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2) — highest conviction wins, losers SKIP=mutex_group_lost
+  up_threshold: 0.84                   # v4 sweep top pocket (hub note #823)
+  down_threshold: 0.16                 # symmetric to up_threshold per reference_tickformer_bidirectional
+  eval_offset_remaining_min: 60
+  eval_offset_remaining_max: 240
+  min_consecutive_pass_ticks: 1
+  entry_cap: 0.93
+  entry_floor_up: 0.60                 # skip UP fires if fill < 0.60 (RDS #664)
+  entry_cap_down: 0.90                 # skip DOWN fires if fill > 0.90
+  collateral_pct: 0.025
+  gtc_cap: 0.96
+
+risk:
+  max_position_usd: 5                  # SHADOW — no real fire while shadow_only=1
+  max_daily_loss_usd: 20
