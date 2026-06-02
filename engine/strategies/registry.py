@@ -2160,6 +2160,52 @@ class StrategyRegistry:
                 )
             )
 
+        # PR #651 follow-up — wire the per-asset ETH/XRP tickformer sidecar
+        # writer.  Function was added in #651 (db_client.py:3167 +
+        # pg_signal_repo.py:2008) but the call site was missing — columns
+        # remained 100% NULL post-deploy.  We pass the 8 _eth/_xrp fields
+        # whose asset matches the surface; the writer COALESCEs nulls so
+        # passing all 8 (with 4 None) is fine.
+        _tf_v16_eth = getattr(surface, "probability_tickformer_v16_eth", None)
+        _tf_v17_eth = getattr(surface, "probability_tickformer_v17_eth", None)
+        _tf_v18_eth = getattr(surface, "probability_tickformer_v18_eth", None)
+        _tf_v20_eth = getattr(surface, "probability_tickformer_v20_eth", None)
+        _tf_v16_xrp = getattr(surface, "probability_tickformer_v16_xrp", None)
+        _tf_v17_xrp = getattr(surface, "probability_tickformer_v17_xrp", None)
+        _tf_v18_xrp = getattr(surface, "probability_tickformer_v18_xrp", None)
+        _tf_v20_xrp = getattr(surface, "probability_tickformer_v20_xrp", None)
+        _any_tf_eth_xrp = any(
+            v is not None
+            for v in (
+                _tf_v16_eth, _tf_v17_eth, _tf_v18_eth, _tf_v20_eth,
+                _tf_v16_xrp, _tf_v17_xrp, _tf_v18_xrp, _tf_v20_xrp,
+            )
+        )
+        if _any_tf_eth_xrp and self._db is not None and hasattr(
+            self._db, "update_signal_evaluations_tickformer_eth_xrp"
+        ):
+            tf_eth_xrp_task = asyncio.create_task(
+                self._db.update_signal_evaluations_tickformer_eth_xrp(
+                    window_ts=surface.window_ts,
+                    asset=surface.asset,
+                    timeframe=surface.timescale,
+                    eval_offset=surface.eval_offset,
+                    probability_tickformer_v16_eth=_tf_v16_eth,
+                    probability_tickformer_v17_eth=_tf_v17_eth,
+                    probability_tickformer_v18_eth=_tf_v18_eth,
+                    probability_tickformer_v20_eth=_tf_v20_eth,
+                    probability_tickformer_v16_xrp=_tf_v16_xrp,
+                    probability_tickformer_v17_xrp=_tf_v17_xrp,
+                    probability_tickformer_v18_xrp=_tf_v18_xrp,
+                    probability_tickformer_v20_xrp=_tf_v20_xrp,
+                )
+            )
+            tf_eth_xrp_task.add_done_callback(
+                self._log_async_write_error(
+                    "registry.signal_eval_tickformer_eth_xrp_write_error"
+                )
+            )
+
         # fix/#807 — populate full feature columns for ETH/SOL/XRP rows.
         #
         # Problem: the sidecar writers above (update_signal_evaluations_lgb_*)
