@@ -163,7 +163,21 @@ class TimesFMV2Client:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=self._timeout)
+            # Pool hardening — mirrors PR #638 (data_surface.py:838 v4/snapshot
+            # client). RDS notes #780 / #824 flagged that the persistent
+            # ClientSession here was never hardened: a default TCPConnector
+            # returns timed-out sockets to the pool in a wedged keepalive
+            # state, so subsequent requests reuse them and time out 1:1 with
+            # wallclock under sustained upstream slowness. Forcing close after
+            # every request + enabling cleanup of orphaned sockets is the
+            # same fix PR #638 applied for /v4/snapshot.
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    force_close=True,
+                    enable_cleanup_closed=True,
+                ),
+                timeout=self._timeout,
+            )
         return self._session
 
     def _probability_url(self, model: str) -> str:
