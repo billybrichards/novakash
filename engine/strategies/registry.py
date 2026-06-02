@@ -2218,7 +2218,13 @@ class StrategyRegistry:
                         # three delta fields.  Absolute chainlink_price / tiingo_close
                         # are not present on FullDataSurface (only deltas are); use
                         # None so the DB column stays NULL rather than crashing.
-                        "binance_price": surface.current_price,
+                        # signal_evaluations.binance_price is TEXT (not DOUBLE PRECISION)
+                        # in the production DB schema.  asyncpg resolves column types
+                        # from the DB and raises DataError when a Python float is passed
+                        # for a TEXT column.  All prior callers avoided this by passing
+                        # None, which is valid for any type.  This is the first call that
+                        # passes a non-None price; cast to str to match the column type.
+                        "binance_price": str(surface.current_price) if surface.current_price is not None else None,
                         "chainlink_price": None,  # not on FullDataSurface
                         "tiingo_open": surface.open_price,
                         "tiingo_close": None,  # not on FullDataSurface

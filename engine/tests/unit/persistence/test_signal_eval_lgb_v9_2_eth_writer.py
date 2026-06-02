@@ -301,6 +301,41 @@ class _FullSurfaceStub:
         self.probability_lgb = None
         self.probability_classifier = None
         self.ensemble_config = None
+        # Fields required by _write_window_trace non-BTC rich-column writer
+        # (added by PR #649 — stub must carry these or the trace block crashes
+        # when asset != BTC and write_signal_evaluation is dispatched)
+        self.current_price = None
+        self.open_price = None
+        self.delta_pct = None
+        self.delta_binance = None
+        self.delta_tiingo = None
+        self.delta_chainlink = None
+        self.delta_source = None
+        self.vpin = None
+        self.clob_up_bid = None
+        self.clob_up_ask = None
+        self.clob_down_bid = None
+        self.clob_down_ask = None
+        self.cg_liq_long = None
+        self.cg_liq_short = None
+        self.cg_taker_buy_vol = None
+        self.cg_taker_sell_vol = None
+        self.cg_funding_rate = None
+        # Tickformer / sidecar probability fields
+        self.probability_lgb_v9_3_btc = None
+        self.probability_lgb_v9_3_btc_pure = None
+        self.probability_lgb_v9_2_pure = None
+        self.probability_lgb_v12_pure = None
+        self.probability_lgb_v9_5_eth = None
+        self.probability_lgb_v9_5_eth_pure = None
+        self.probability_lgb_v9_5_xrp = None
+        self.probability_lgb_v9_5_xrp_pure = None
+        self.probability_tickformer_v16 = None
+        self.probability_tickformer_v17 = None
+        self.probability_tickformer_v18 = None
+        self.probability_tickformer_v20 = None
+        self.tickformer_gate_cond = None
+        self.tickformer_trade_signal = None
 
 
 def _stub_registry(db: AsyncMock) -> Any:
