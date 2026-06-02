@@ -2005,6 +2005,132 @@ class PgSignalRepository(SignalRepository):
             )
             return 0
 
+    async def update_signal_evaluations_tickformer_eth_xrp(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_tickformer_v16_eth: Optional[float] = None,
+        probability_tickformer_v17_eth: Optional[float] = None,
+        probability_tickformer_v18_eth: Optional[float] = None,
+        probability_tickformer_v20_eth: Optional[float] = None,
+        probability_tickformer_v16_xrp: Optional[float] = None,
+        probability_tickformer_v17_xrp: Optional[float] = None,
+        probability_tickformer_v18_xrp: Optional[float] = None,
+        probability_tickformer_v20_xrp: Optional[float] = None,
+    ) -> int:
+        """Upsert the 8 per-asset ETH/XRP TickFormer probability columns.
+
+        Mirror of DBClient.update_signal_evaluations_tickformer_eth_xrp for parity.
+        These columns were added to signal_evaluations by
+        migrations/add_tickformer_eth_xrp_columns.sql (RDS note #833).
+        (fix/eth-xrp-tickformer-column-pipeline — Part A)
+        """
+        if not self._pool:
+            return 0
+        if eval_offset is None:
+            return 0
+        if all(
+            v is None
+            for v in (
+                probability_tickformer_v16_eth,
+                probability_tickformer_v17_eth,
+                probability_tickformer_v18_eth,
+                probability_tickformer_v20_eth,
+                probability_tickformer_v16_xrp,
+                probability_tickformer_v17_xrp,
+                probability_tickformer_v18_xrp,
+                probability_tickformer_v20_xrp,
+            )
+        ):
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        probability_tickformer_v16_eth,
+                        probability_tickformer_v17_eth,
+                        probability_tickformer_v18_eth,
+                        probability_tickformer_v20_eth,
+                        probability_tickformer_v16_xrp,
+                        probability_tickformer_v17_xrp,
+                        probability_tickformer_v18_xrp,
+                        probability_tickformer_v20_xrp,
+                        evaluated_at
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $6, $7, $8, $9, $10, $11, $12,
+                        NOW()
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        probability_tickformer_v16_eth = COALESCE(
+                            signal_evaluations.probability_tickformer_v16_eth,
+                            EXCLUDED.probability_tickformer_v16_eth
+                        ),
+                        probability_tickformer_v17_eth = COALESCE(
+                            signal_evaluations.probability_tickformer_v17_eth,
+                            EXCLUDED.probability_tickformer_v17_eth
+                        ),
+                        probability_tickformer_v18_eth = COALESCE(
+                            signal_evaluations.probability_tickformer_v18_eth,
+                            EXCLUDED.probability_tickformer_v18_eth
+                        ),
+                        probability_tickformer_v20_eth = COALESCE(
+                            signal_evaluations.probability_tickformer_v20_eth,
+                            EXCLUDED.probability_tickformer_v20_eth
+                        ),
+                        probability_tickformer_v16_xrp = COALESCE(
+                            signal_evaluations.probability_tickformer_v16_xrp,
+                            EXCLUDED.probability_tickformer_v16_xrp
+                        ),
+                        probability_tickformer_v17_xrp = COALESCE(
+                            signal_evaluations.probability_tickformer_v17_xrp,
+                            EXCLUDED.probability_tickformer_v17_xrp
+                        ),
+                        probability_tickformer_v18_xrp = COALESCE(
+                            signal_evaluations.probability_tickformer_v18_xrp,
+                            EXCLUDED.probability_tickformer_v18_xrp
+                        ),
+                        probability_tickformer_v20_xrp = COALESCE(
+                            signal_evaluations.probability_tickformer_v20_xrp,
+                            EXCLUDED.probability_tickformer_v20_xrp
+                        )
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    float(probability_tickformer_v16_eth) if probability_tickformer_v16_eth is not None else None,
+                    float(probability_tickformer_v17_eth) if probability_tickformer_v17_eth is not None else None,
+                    float(probability_tickformer_v18_eth) if probability_tickformer_v18_eth is not None else None,
+                    float(probability_tickformer_v20_eth) if probability_tickformer_v20_eth is not None else None,
+                    float(probability_tickformer_v16_xrp) if probability_tickformer_v16_xrp is not None else None,
+                    float(probability_tickformer_v17_xrp) if probability_tickformer_v17_xrp is not None else None,
+                    float(probability_tickformer_v18_xrp) if probability_tickformer_v18_xrp is not None else None,
+                    float(probability_tickformer_v20_xrp) if probability_tickformer_v20_xrp is not None else None,
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_tickformer_eth_xrp_upserted",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_tickformer_eth_xrp_failed",
+                asset=asset,
+                window_ts=window_ts,
+                **exc_log_fields(exc, max_len=160),
+            )
+            return 0
+
     # -- Additional signal-related methods (not on port yet) ---------------
     # These are included here because they belong to the signal aggregate
     # even though the port interface uses placeholder VOs today.  Phase 1
