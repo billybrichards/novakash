@@ -9,8 +9,7 @@
   - `tickformer_v{16,17,18,20}_{pure,sniper,t180,adaptive_early}_eth`
   - `tickformer_v{16,17,18,20}_{pure,sniper,t180,adaptive_early}_xrp`
 - **8 new FullDataSurface fields**: `probability_tickformer_v{16,17,18,20}_{eth,xrp}` (data_surface.py L427+)
-- **Runtime overrides SQL** (`engine/migrations/2026_06_02_v4_eth_xrp_tickformer_overrides.sql`)
-  — 49 rows, max-Wilson cell per (strategy, asset, band, direction), GHOST-soak floor (n≥20, wl≥0.70)
+- **No runtime overrides migration in this PR.** GHOST soak baseline = YAML top-pocket defaults (single threshold per strat, asset-conditional). Per-band override SQL was dropped after code review found the assumed `strategy_runtime_overrides(strategy_id, asset, eval_offset_band, direction, ...)` schema doesn't match prod (actual: `strategy_id PK, mode, params jsonb`). Adding per-band tuning requires either (a) JSONB-shaped overrides + reader change in `_tickformer_base.evaluate_tickformer_strategy()`, or (b) schema extension. Deferred to a follow-up PR once GHOST soak data confirms the YAML defaults are roughly right. RDS note #827 has the full reasoning.
 
 ## Cross-repo contract
 
