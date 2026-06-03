@@ -32,6 +32,6 @@ gate_params:
   up_min_fill_price: 0.20
   down_min_fill_price: 0.15
   blocked_utc_hours: []
-  meta_gate_threshold: 0.6
+  meta_gate_threshold: 0.70
   v9_2_up_threshold: 0.75
-  v9_2_down_threshold: 0.22
+  v9_2_down_threshold: 0.20
