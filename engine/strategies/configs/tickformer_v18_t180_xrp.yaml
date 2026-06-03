@@ -92,7 +92,7 @@ gates:
 
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
-  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
+  mutex_group: tickformer_v18_t180_xrp              # per-strat mutex (split from shared 'tickformer' group) — each strat its own singleton so multi-strat fires per window are allowed; see novakash PR for rationale.
   up_threshold: 0.9                   # v4 sweep top pocket (hub note #823)
   down_threshold: 0.1                 # symmetric to up_threshold per reference_tickformer_bidirectional
   eval_offset_remaining_min: 60
