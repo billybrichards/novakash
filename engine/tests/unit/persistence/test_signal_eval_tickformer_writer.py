@@ -231,3 +231,78 @@ async def test_tickformer_writer_v20_only():
     assert args[6] is None    # v18
     assert args[7] == 0.93    # v20
     assert "probability_tickformer_v20" in call["sql"]
+
+
+# ── Calibrated sibling columns (feat/tickformer-calibrated-writer) ──────────
+
+@pytest.mark.asyncio
+async def test_tickformer_writer_persists_calibrated_columns():
+    """Writer issues INSERT...ON CONFLICT covering all 4 calibrated_* columns."""
+    db = _stub_db("INSERT 0 1")
+    n = await db.update_signal_evaluations_tickformer(
+        window_ts=1779000000,
+        asset="BTC",
+        timeframe="5m",
+        eval_offset=120,
+        probability_tickformer_v16=0.91,
+        probability_tickformer_v18=0.93,
+        probability_tickformer_v20=0.87,
+        calibrated_probability_tickformer_v16=0.79,
+        calibrated_probability_tickformer_v18=0.81,
+        calibrated_probability_tickformer_v20=0.74,
+    )
+    assert n == 1
+    call = db._pool.conn.calls[0]
+    sql = call["sql"]
+    for col in (
+        "calibrated_probability_tickformer_v16",
+        "calibrated_probability_tickformer_v17",
+        "calibrated_probability_tickformer_v18",
+        "calibrated_probability_tickformer_v20",
+    ):
+        assert col in sql, f"column {col!r} missing from SQL"
+        assert f"signal_evaluations.{col}" in sql.replace("\n", " ").replace("  ", " "), \
+            f"COALESCE missing for {col!r}"
+
+    args = call["args"]
+    # Existing positional args (0..9) unchanged for backwards compat.
+    assert args[0] == 1779000000
+    assert args[1] == "BTC"
+    assert args[4] == 0.91  # raw v16
+    assert args[6] == 0.93  # raw v18
+    assert args[7] == 0.87  # raw v20
+    # Calibrated args (10..13).
+    assert args[10] == 0.79  # cal v16
+    assert args[11] is None  # cal v17 (no fit packaged)
+    assert args[12] == 0.81  # cal v18
+    assert args[13] == 0.74  # cal v20
+
+
+@pytest.mark.asyncio
+async def test_tickformer_writer_calibrated_only_still_fires():
+    """A row with ONLY calibrated values populated still triggers the upsert."""
+    db = _stub_db("INSERT 0 1")
+    n = await db.update_signal_evaluations_tickformer(
+        window_ts=1779000000,
+        asset="BTC",
+        timeframe="5m",
+        eval_offset=200,
+        calibrated_probability_tickformer_v18=0.82,
+    )
+    assert n == 1
+    call = db._pool.conn.calls[0]
+    args = call["args"]
+    assert args[4] is None  # raw v16
+    assert args[6] is None  # raw v18 absent
+    assert args[12] == 0.82  # cal v18 present
+
+
+@pytest.mark.asyncio
+async def test_tickformer_writer_noop_when_all_values_including_calibrated_none():
+    """No raw probs, no calibrated probs, no aux fields → no upsert."""
+    db = _stub_db("INSERT 0 1")
+    n = await db.update_signal_evaluations_tickformer(
+        window_ts=1779000000, asset="BTC", timeframe="5m", eval_offset=120,
+    )
+    assert n == 0
+    assert len(db._pool.conn.calls) == 0
