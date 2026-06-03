@@ -839,6 +839,32 @@ class StrategyRegistry:
                             current_btc_price=current_btc_price,
                             open_price=open_price,
                         )
+                        # Telemetry: persist the executor's failure_reason
+                        # back to strategy_decisions so fill-rate forensics
+                        # work from SQL alone (hub note #841, Task #55).
+                        # Without this the reason lives only in container
+                        # logs and disappears between investigations. Fire-
+                        # and-forget — never blocks the trade path. Sibling
+                        # of mark_executed which fires on success.
+                        if (
+                            not result.success
+                            and self._decision_repo is not None
+                            and getattr(result, "failure_reason", None)
+                        ):
+                            _fail_task = asyncio.create_task(
+                                self._decision_repo.mark_execution_failed(
+                                    strategy_id=name,
+                                    asset=getattr(window_market, "asset", "BTC"),
+                                    window_ts=window_ts,
+                                    direction=decision.direction or "UP",
+                                    failure_reason=str(result.failure_reason),
+                                )
+                            )
+                            _fail_task.add_done_callback(
+                                self._log_async_write_error(
+                                    "registry.mark_execution_failed_error"
+                                )
+                            )
                         # Only dedup successful executions. A failed/no-fill
                         # attempt should be allowed to retry at a later eval
                         # offset within the same window.
