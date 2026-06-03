@@ -1075,6 +1075,31 @@ class StrategyDecisionRepository(abc.ABC):
         """
         return None
 
+    async def mark_execution_failed(
+        self,
+        *,
+        strategy_id: str,
+        asset: str,
+        window_ts: int,
+        direction: str,
+        failure_reason: str,
+    ) -> None:
+        """Persist ExecuteTradeUseCase ``_failed()`` reasons into the row.
+
+        Sibling of :meth:`mark_executed`. Decision rows that hit
+        ``action='TRADE'`` then fail at the executor (rate limit, exposure
+        cap, hard lock, polymarket cap, etc.) today stay at executed=false
+        with no record of *why* — the structured log line is the only
+        audit trail, which makes fill-rate forensics impossible from SQL.
+
+        Default no-op so test/in-memory adapters inherit cleanly; the
+        Postgres adapter UPDATEs the matching row(s). Fire-and-forget at
+        the call site so the trade path is never blocked by the write.
+
+        Hub note #841 / Task #55 — BTC tickformer fill-rate investigation.
+        """
+        return None
+
 
 class WindowTraceRepository(abc.ABC):
     """Persists structured per-window/per-gate decision traces.

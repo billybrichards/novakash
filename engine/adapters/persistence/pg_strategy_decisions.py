@@ -290,3 +290,61 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
                 strategy_id=strategy_id,
                 window_ts=window_ts,
             )
+
+    async def mark_execution_failed(
+        self,
+        *,
+        strategy_id: str,
+        asset: str,
+        window_ts: int,
+        direction: str,
+        failure_reason: str,
+    ) -> None:
+        """Persist ExecuteTradeUseCase failure reasons back to RDS.
+
+        Companion to :meth:`mark_executed`. Decision rows for action='TRADE'
+        that fail in the executor (rate limit, exposure cap, hard lock,
+        polymarket cap, etc.) currently keep executed=false and have no
+        record of *why* — the structured log line is the only audit trail.
+        That makes fill-rate forensics impossible from SQL alone.
+
+        This writer updates ``execution_failure_reason`` on the row(s)
+        matching the (strategy, asset, window, direction) tuple. Fire-and-
+        forget at the call site (registry.py) so the trade path is never
+        blocked by a DB write.
+
+        Forward-only. No backfill. Requires column added by
+        migrations/add_strategy_decisions_execution_failure_reason.sql.
+
+        Hub note #841 / Task #55 — BTC tickformer fill-rate investigation.
+        """
+        pool = self._get_pool()
+        if not pool:
+            return
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategy_decisions
+                    SET execution_failure_reason = $5
+                    WHERE strategy_id = $1
+                      AND asset = $2
+                      AND window_ts = $3
+                      AND direction = $4
+                      AND action = 'TRADE'
+                      AND executed = false
+                    """,
+                    strategy_id,
+                    asset,
+                    int(window_ts),
+                    direction,
+                    failure_reason[:200],
+                )
+        except Exception as exc:
+            log.warning(
+                "pg_strategy_decisions.mark_execution_failed_error",
+                error=str(exc)[:200],
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=direction,
+            )
