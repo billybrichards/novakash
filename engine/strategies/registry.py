@@ -2133,9 +2133,22 @@ class StrategyRegistry:
         _tf_v20 = getattr(surface, "probability_tickformer_v20", None)
         _tf_gate_cond = getattr(surface, "tickformer_gate_cond", None)
         _tf_trade_signal = getattr(surface, "tickformer_trade_signal", None)
+        # Calibrated sibling columns emitted by timesfm PR #180. Forwarded
+        # untouched — v17 is always None (no packaged iso fit); the rest
+        # populate when the scorer's IsoCalibrator returns a value. Engine
+        # writer COALESCEs nulls so passing them through unconditionally is
+        # safe even when timesfm hasn't deployed the iso wheel yet.
+        _tf_cal_v16 = getattr(surface, "calibrated_probability_tickformer_v16", None)
+        _tf_cal_v17 = getattr(surface, "calibrated_probability_tickformer_v17", None)
+        _tf_cal_v18 = getattr(surface, "calibrated_probability_tickformer_v18", None)
+        _tf_cal_v20 = getattr(surface, "calibrated_probability_tickformer_v20", None)
         _any_tf = any(
             v is not None
-            for v in (_tf_v16, _tf_v17, _tf_v18, _tf_v20, _tf_gate_cond, _tf_trade_signal)
+            for v in (
+                _tf_v16, _tf_v17, _tf_v18, _tf_v20,
+                _tf_gate_cond, _tf_trade_signal,
+                _tf_cal_v16, _tf_cal_v17, _tf_cal_v18, _tf_cal_v20,
+            )
         )
         if _any_tf and self._db is not None and hasattr(
             self._db, "update_signal_evaluations_tickformer"
@@ -2152,6 +2165,10 @@ class StrategyRegistry:
                     probability_tickformer_v20=_tf_v20,
                     tickformer_gate_cond=_tf_gate_cond,
                     tickformer_trade_signal=_tf_trade_signal,
+                    calibrated_probability_tickformer_v16=_tf_cal_v16,
+                    calibrated_probability_tickformer_v17=_tf_cal_v17,
+                    calibrated_probability_tickformer_v18=_tf_cal_v18,
+                    calibrated_probability_tickformer_v20=_tf_cal_v20,
                 )
             )
             tf_task.add_done_callback(

@@ -439,6 +439,18 @@ class FullDataSurface:
     probability_tickformer_v17_xrp: Optional[float] = None
     probability_tickformer_v18_xrp: Optional[float] = None
     probability_tickformer_v20_xrp: Optional[float] = None
+    # Isotonic-calibrated sibling columns emitted by timesfm PR #180.
+    # Maps raw probability_tickformer_v{N} → empirically-calibrated prob
+    # using a packaged iso fit on the timesfm side. v17 is intentionally
+    # always None (offline 30d fit degraded its held-out Brier/ECE so we
+    # ship the column for surface symmetry only). v16/v18/v20 populate
+    # when the scorer's IsoCalibrator returns a value. Cross-repo contract
+    # keys — do NOT rename without coordinated PR. Engine persists these
+    # via update_signal_evaluations_tickformer.
+    calibrated_probability_tickformer_v16: Optional[float] = None
+    calibrated_probability_tickformer_v17: Optional[float] = None
+    calibrated_probability_tickformer_v18: Optional[float] = None
+    calibrated_probability_tickformer_v20: Optional[float] = None
     # Gate-condition score emitted by timesfm-service alongside the trade
     # signal (PR #622 missed persisting this). NUMERIC, None when absent.
     # (fix/tickformer-strategies-actually-fire — Bug B)
@@ -1052,6 +1064,12 @@ class DataSurfaceManager:
                     "probability_tickformer_v17_xrp",
                     "probability_tickformer_v18_xrp",
                     "probability_tickformer_v20_xrp",
+                    # Iso-calibrated siblings (timesfm PR #180). Carried in
+                    # the subcache so the poly guard cannot strand them.
+                    "calibrated_probability_tickformer_v16",
+                    "calibrated_probability_tickformer_v17",
+                    "calibrated_probability_tickformer_v18",
+                    "calibrated_probability_tickformer_v20",
                 )
                 for _k in _TF_KEYS:
                     _v = _tf_ts5.get(_k)
@@ -1985,6 +2003,58 @@ class DataSurfaceManager:
                 if (
                     ts_data.get("probability_tickformer_v20_xrp") is not None
                     or _tf_subcache.get("probability_tickformer_v20_xrp") is not None
+                )
+                else None
+            ),
+            # Iso-calibrated BTC sibling probabilities (timesfm PR #180).
+            # ts_data → _tf_subcache resolution mirrors the raw columns.
+            # v17 always None since timesfm packages no iso fit for it
+            # (offline analysis showed iso degraded its Brier/ECE).
+            calibrated_probability_tickformer_v16=(
+                float(
+                    ts_data["calibrated_probability_tickformer_v16"]
+                    if ts_data.get("calibrated_probability_tickformer_v16") is not None
+                    else _tf_subcache["calibrated_probability_tickformer_v16"]
+                )
+                if (
+                    ts_data.get("calibrated_probability_tickformer_v16") is not None
+                    or _tf_subcache.get("calibrated_probability_tickformer_v16") is not None
+                )
+                else None
+            ),
+            calibrated_probability_tickformer_v17=(
+                float(
+                    ts_data["calibrated_probability_tickformer_v17"]
+                    if ts_data.get("calibrated_probability_tickformer_v17") is not None
+                    else _tf_subcache["calibrated_probability_tickformer_v17"]
+                )
+                if (
+                    ts_data.get("calibrated_probability_tickformer_v17") is not None
+                    or _tf_subcache.get("calibrated_probability_tickformer_v17") is not None
+                )
+                else None
+            ),
+            calibrated_probability_tickformer_v18=(
+                float(
+                    ts_data["calibrated_probability_tickformer_v18"]
+                    if ts_data.get("calibrated_probability_tickformer_v18") is not None
+                    else _tf_subcache["calibrated_probability_tickformer_v18"]
+                )
+                if (
+                    ts_data.get("calibrated_probability_tickformer_v18") is not None
+                    or _tf_subcache.get("calibrated_probability_tickformer_v18") is not None
+                )
+                else None
+            ),
+            calibrated_probability_tickformer_v20=(
+                float(
+                    ts_data["calibrated_probability_tickformer_v20"]
+                    if ts_data.get("calibrated_probability_tickformer_v20") is not None
+                    else _tf_subcache["calibrated_probability_tickformer_v20"]
+                )
+                if (
+                    ts_data.get("calibrated_probability_tickformer_v20") is not None
+                    or _tf_subcache.get("calibrated_probability_tickformer_v20") is not None
                 )
                 else None
             ),

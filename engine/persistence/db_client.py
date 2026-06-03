@@ -3042,6 +3042,10 @@ class DBClient:
         probability_tickformer_v20: Optional[float] = None,
         tickformer_gate_cond: Optional[float] = None,
         tickformer_trade_signal: Optional[str] = None,
+        calibrated_probability_tickformer_v16: Optional[float] = None,
+        calibrated_probability_tickformer_v17: Optional[float] = None,
+        calibrated_probability_tickformer_v18: Optional[float] = None,
+        calibrated_probability_tickformer_v20: Optional[float] = None,
     ) -> int:
         """Upsert TickFormer probability columns onto the signal_evaluations row.
 
@@ -3050,6 +3054,13 @@ class DBClient:
           - tickformer_gate_cond (NUMERIC): internal gate condition score
           - tickformer_trade_signal (TEXT): coarse-grained UP/DOWN/HOLD label
 
+        Also writes the isotonic-calibrated sibling columns added by timesfm
+        PR #180: ``calibrated_probability_tickformer_v{16,17,18,20}``. These
+        are sibling NUMERIC fields emitted by the scorer when a packaged
+        iso fit exists for the variant. v17 has no packaged fit today (the
+        offline 30d fit degraded its held-out Brier/ECE) so its calibrated
+        column will remain NULL by design.
+
         PR #622 added the v16/v17/v18 probability columns to signal_evaluations
         and the timesfm-side writer, but MISSED ``tickformer_gate_cond`` and
         ``tickformer_trade_signal``. This writer closes that gap.
@@ -3057,14 +3068,18 @@ class DBClient:
         v20 column requires migrations/add_tickformer_v20_adaptive_early.sql
         to be applied first (added by fix/tickformer-strategies-actually-fire).
         The other five columns exist since add_tickformer_v16_pure_strategy.sql.
+        Calibrated columns require the timesfm-side
+        migrations/add_calibrated_probability_tickformer_columns.sql to be
+        applied (additive + idempotent — safe to run any time).
 
-        COALESCE semantics: first-write-wins on all six columns, matching
+        COALESCE semantics: first-write-wins on all ten columns, matching
         every other sibling writer in this class.
 
         Skipped entirely when eval_offset is None (no stable row key).
 
         Returns row count affected (1 = upsert ok, 0 = skipped/error).
-        (fix/tickformer-strategies-actually-fire — Bug B)
+        (fix/tickformer-strategies-actually-fire — Bug B; calibrated
+        columns added in feat/tickformer-calibrated-writer.)
         """
         if not self._pool:
             return 0
@@ -3080,6 +3095,10 @@ class DBClient:
                 probability_tickformer_v20,
                 tickformer_gate_cond,
                 tickformer_trade_signal,
+                calibrated_probability_tickformer_v16,
+                calibrated_probability_tickformer_v17,
+                calibrated_probability_tickformer_v18,
+                calibrated_probability_tickformer_v20,
             )
         ):
             return 0
@@ -3095,14 +3114,19 @@ class DBClient:
                         probability_tickformer_v20,
                         tickformer_gate_cond,
                         tickformer_trade_signal,
+                        calibrated_probability_tickformer_v16,
+                        calibrated_probability_tickformer_v17,
+                        calibrated_probability_tickformer_v18,
+                        calibrated_probability_tickformer_v20,
                         evaluated_at
                     ) VALUES (
                         $1, $2, $3, $4,
                         $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14,
                         NOW()
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
-                        -- First-write-wins (COALESCE) for all six columns.
+                        -- First-write-wins (COALESCE) for all ten columns.
                         probability_tickformer_v16 = COALESCE(
                             signal_evaluations.probability_tickformer_v16,
                             EXCLUDED.probability_tickformer_v16
@@ -3126,6 +3150,22 @@ class DBClient:
                         tickformer_trade_signal = COALESCE(
                             signal_evaluations.tickformer_trade_signal,
                             EXCLUDED.tickformer_trade_signal
+                        ),
+                        calibrated_probability_tickformer_v16 = COALESCE(
+                            signal_evaluations.calibrated_probability_tickformer_v16,
+                            EXCLUDED.calibrated_probability_tickformer_v16
+                        ),
+                        calibrated_probability_tickformer_v17 = COALESCE(
+                            signal_evaluations.calibrated_probability_tickformer_v17,
+                            EXCLUDED.calibrated_probability_tickformer_v17
+                        ),
+                        calibrated_probability_tickformer_v18 = COALESCE(
+                            signal_evaluations.calibrated_probability_tickformer_v18,
+                            EXCLUDED.calibrated_probability_tickformer_v18
+                        ),
+                        calibrated_probability_tickformer_v20 = COALESCE(
+                            signal_evaluations.calibrated_probability_tickformer_v20,
+                            EXCLUDED.calibrated_probability_tickformer_v20
                         )
                     """,
                     int(window_ts),
@@ -3138,6 +3178,10 @@ class DBClient:
                     float(probability_tickformer_v20) if probability_tickformer_v20 is not None else None,
                     float(tickformer_gate_cond) if tickformer_gate_cond is not None else None,
                     tickformer_trade_signal,
+                    float(calibrated_probability_tickformer_v16) if calibrated_probability_tickformer_v16 is not None else None,
+                    float(calibrated_probability_tickformer_v17) if calibrated_probability_tickformer_v17 is not None else None,
+                    float(calibrated_probability_tickformer_v18) if calibrated_probability_tickformer_v18 is not None else None,
+                    float(calibrated_probability_tickformer_v20) if calibrated_probability_tickformer_v20 is not None else None,
                 )
             n = int(result.split()[-1]) if result else 0
             log.debug(
@@ -3152,6 +3196,9 @@ class DBClient:
                 has_v20=probability_tickformer_v20 is not None,
                 has_gate_cond=tickformer_gate_cond is not None,
                 has_trade_signal=tickformer_trade_signal is not None,
+                has_cal_v16=calibrated_probability_tickformer_v16 is not None,
+                has_cal_v18=calibrated_probability_tickformer_v18 is not None,
+                has_cal_v20=calibrated_probability_tickformer_v20 is not None,
                 rows=n,
             )
             return n
