@@ -393,6 +393,21 @@ def evaluate_tickformer_strategy(
         not_available_reason or f"{strategy_id}_not_available"
     )
 
+    # ── gate_params.prob_column override ──────────────────────────
+    # Each strategy module hard-codes a default ``prob_column`` (e.g.
+    # ``probability_tickformer_v18``). The override below lets a YAML
+    # / runtime_overrides row swap that to a sibling surface attribute
+    # like ``calibrated_probability_tickformer_v18`` without touching
+    # the Python module — flipping raw ↔ iso becomes a single SQL
+    # UPDATE on ``strategy_runtime_overrides`` (per hub note #842).
+    #
+    # Empty string / unset → use the passed-in default (back-compat).
+    # The not_available_reason still uses the resolved column for a
+    # clear error path when the override points at a NULL surface attr.
+    prob_column_override = _gp.get_str("prob_column", None, "")
+    if prob_column_override:
+        prob_column = prob_column_override
+
     p = getattr(surface, prob_column, None)
     trade_signal = getattr(surface, "tickformer_trade_signal", None)
     eval_offset = getattr(surface, "eval_offset", None)
