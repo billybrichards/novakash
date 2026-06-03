@@ -75,7 +75,7 @@ gates:
 
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE
-  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2)
+  mutex_group: tickformer_v20_adaptive_early              # per-strat mutex (split from shared 'tickformer' group) — each strat its own singleton so multi-strat fires per window are allowed; see novakash PR for rationale.
   up_threshold: 0.90                   # early-entry default
   down_threshold: 0.10                 # symmetric to up_threshold
   eval_offset_remaining_min: 120       # seconds remaining — early band floor

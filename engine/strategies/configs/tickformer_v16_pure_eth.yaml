@@ -90,7 +90,7 @@ gates:
 
 gate_params:
   shadow_only: 1                       # 1=SKIP-with-record, 0=allow TRADE (live go-live switch)
-  mutex_group: tickformer              # cross-strategy guardrail (PR #619 FIX 2) — highest conviction wins, losers SKIP=mutex_group_lost
+  mutex_group: tickformer_v16_pure_eth              # per-strat mutex (split from shared 'tickformer' group) — each strat its own singleton so multi-strat fires per window are allowed; see novakash PR for rationale.
   up_threshold: 0.84                   # v4 sweep top pocket (hub note #823)
   down_threshold: 0.16                 # symmetric to up_threshold per reference_tickformer_bidirectional
   eval_offset_remaining_min: 60
