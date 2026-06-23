@@ -1,0 +1,162 @@
+name: v9_1_lgb_only_relaxed_dn
+version: "9.1.0-relaxed-dn"
+# v9_1_lgb_only_relaxed_dn — 2026-05-05 — DOWN-floor relaxation soak variant.
+#
+# Identical Python evaluation to v9_1_lgb_only (same v9.1 booster, same
+# v9_ensemble gate stack via the wrapper hook in v9_1_lgb_only_relaxed_dn.py).
+#
+# Two differences from v9_1_lgb_only:
+#
+#   1. YAML gate_params:
+#      - lgb_dist_min_down: 0.15  (relaxed; production runtime override 0.25)
+#      - lgb_dist_min_up:   0.20  (strict; matches production override)
+#
+#   2. CARVE-OUT enforced in v9_1_lgb_only_relaxed_dn.py wrapper hook:
+#      - DOWN trades with dist in [0.20, 0.25) are explicitly SKIPPED.
+#        The 0.20-0.25 DOWN dist sub-bucket is the WEAKEST in the entire
+#        DOWN ladder (65.5% WR n=29). User explicitly asked it be excluded
+#        so the soak yields clean evidence on the empirically-strong
+#        0.15-0.20 zones, not contaminated data from the bad mid-band.
+#
+# Net firing zones for this variant:
+#   DOWN dist 0.15-0.20  → fires (relaxed-good zone, the soak target)
+#   DOWN dist 0.20-0.25  → SKIP via wrapper carve-out (BAD ZONE excluded)
+#   DOWN dist >= 0.25    → fires (overlaps with production v9_1_lgb_only LIVE
+#                                  for co-fire baseline comparison)
+#   UP   dist >= 0.20    → fires (matches production strict floor)
+#   UP   dist <  0.20    → SKIP via parent gate floor
+#
+# Why this variant exists
+# -----------------------
+# 3-day historical conviction analysis (Hub note #342) showed v9_1 DOWN
+# direction has surprising profitability at low conviction:
+#
+#   dist 0.17-0.20 (currently blocked):  n=22, WR=86.4%, Wilson lower ≈ 67%
+#   dist 0.15-0.17 (currently blocked):  n=35, WR=85.7%, Wilson lower ≈ 73%
+#
+# Breakeven at avg fill 0.32 is ~32%, so even the conservative Wilson 95%
+# lower bound is 30-40pp above breakeven.
+#
+# UP-direction relaxation was REJECTED in the same analysis — Wilson lower
+# (54.8%) for the relaxed UP bucket is BELOW breakeven (68.2%).
+#
+# The 0.20-0.25 DOWN mid-band was REJECTED too — Wilson lower ~46% is well
+# below the 60% promotion threshold AND below the breakeven of 27.6%.
+# Carve-out enforces this exclusion in the wrapper hook (since the gate
+# stack only supports lower-bound floors, not banded exclusions).
+#
+# Promotion criteria (gate before LIVE flip)
+# ------------------------------------------
+#   - n_decisions >= 30 in the relaxed sub-zone (dist 0.15 <= x < 0.25 DOWN)
+#   - relaxed-zone WR >= 65% with Wilson 95% lower >= 60%
+#   - regime-stable: no extreme alternating-direction sequences during soak
+#   - aggregate strategy WR (across all dist) within 3pp of v9_1_lgb_only LIVE
+#
+# Promotion path
+# --------------
+# Initial GHOST → soak 24-48h → manual review of strategy_decisions for
+# this strategy_id → LIVE at HALF stake (fraction=0.125 via runtime
+# override) until n>=100 in relaxed zone → consider full stake.
+#
+# No auto-promote per post-2026-04-17 rule. Billy enables LIVE by hand via
+# Hub API (PATCH /api/strategies/v9_1_lgb_only_relaxed_dn).
+#
+# Hub note #342 — full conviction + Wilson analysis + half-stake design.
+# v9_1_lgb_only.yaml — parent config.
+
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_1_lgb_only_relaxed_dn.py
+pre_gate_hook: evaluate_v9_1_lgb_only_relaxed_dn
+
+gates: []
+
+gate_params:
+  # Match production v9_1_lgb_only runtime override (NOT the YAML defaults
+  # which are stale / pre-runtime-override).
+  min_offset_sec: 30
+  max_offset_sec: 210
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 20
+
+  # ── LGB safety floor — THE DIFFERENCE FROM v9_1_lgb_only ────────────
+  # UP: strict (matches prod runtime override). UP relaxation rejected
+  # per Wilson analysis (Hub note #342).
+  lgb_dist_min_up: 0.20
+  # DOWN: relaxed from prod runtime override (0.25 → 0.15). Opens the
+  # 0.15-0.25 DOWN dist sub-buckets that history shows are profitable
+  # but currently blocked.
+  lgb_dist_min_down: 0.15
+  lgb_dist_min_up_with_hc_agree: 0.05
+  lgb_dist_min_down_with_hc_agree: 0.05
+
+  # ── v9 ensemble params (identical to v9_1_lgb_only, classifier always None) ──
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: true
+
+  pc_weight_t_60: 0.70
+  pc_weight_t_120: 0.55
+  pc_weight_t_180: 0.40
+  pc_weight_t_200: 0.25
+
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: true
+  vhc_bypass_oracle_direction: true
+  vhc_kelly_multiplier: 2.0
+
+  # ── PL VHC bypass ───────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass ─────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.20
+
+  # Conviction tiers
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.12
+  conviction_low_dist: 0.05
+
+  # ── Delta alignment gate ────────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── 3-tick entry confirmation ───────────────────────────────────────
+  min_consecutive_pass_ticks: 3
+
+  # ── Post-fill exit monitoring (DISABLED — same as v9_1_lgb_only) ────
+  exit_monitor_enabled: false
+  exit_shadow_mode: false
+
+# Sizing block — half stake of v9_1_lgb_only production runtime override
+# (production fraction=0.25 → relaxed variant fraction=0.125). Only
+# relevant once promoted to LIVE; ignored in GHOST mode.
+sizing:
+  type: fixed_kelly
+  fraction: 0.125
+  max_collateral_pct: 0.10
