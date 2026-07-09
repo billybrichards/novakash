@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import time as _time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -513,3 +514,191 @@ class FOKLadder:
         # Enforce Polymarket minimum order size
         size = max(size, FOKLadder.POLY_MIN_SHARES)
         return size
+
+    async def epsilon_ladder(
+        self,
+        token_id: str,
+        direction: str,
+        stake_usd: float,
+        max_price: float = 0.92,
+        min_price: float = 0.30,
+        *,
+        epsilon_step: float = 0.005,
+        max_attempts: int = 4,
+        write_attempt_fn: Optional[callable] = None,
+    ) -> FOKResult:
+        """Walk rungs anchored to the live CLOB best ask (re-anchors each rung).
+
+        Rung pricing::
+
+            price_n = min(best_ask + (n-1) * epsilon_step, max_price)
+
+        Each rung re-reads best_ask from the book so the ladder tracks a
+        moving ask. On every rung the result is recorded via
+        ``write_attempt_fn`` (a coroutine accepting the same dict schema that
+        ``write_fok_ladder_attempt`` expects) when provided.
+
+        Unlike :meth:`execute`, this method does NOT use fixed ``delta``
+        deltas -- the anchor is always the current best ask.
+
+        Args:
+            epsilon_step: Step size between rungs (default: 0.005 = Polymarket tick).
+            max_attempts: Maximum number of ladder rungs (default: 4).
+            write_attempt_fn: Optional async callable(data: dict) for attempt logging.
+
+        Returns:
+            FOKResult with fill details or filled=False.
+        """
+        order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+        wait_s = float(os.environ.get("FOK_INTERVAL_S", str(RETRY_WAIT_S)))
+
+        self._log.info(
+            "epsilon_ladder.start",
+            order_type=order_type,
+            epsilon=epsilon_step,
+            max_attempts=max_attempts,
+            max_price=f"${max_price:.2f}",
+            min_price=f"${min_price:.2f}",
+            stake=f"${stake_usd:.2f}",
+        )
+
+        attempted_prices: list[float] = []
+
+        for attempt_num in range(1, max_attempts + 1):
+            attempt_start = _time.time()
+
+            # Re-read the live book for each rung (re-anchor)
+            best_ask = await self._fetch_best_ask_with_retry(token_id, order_type)
+            if isinstance(best_ask, FOKResult):
+                return best_ask
+
+            if best_ask < min_price:
+                self._log.warning("epsilon_ladder.abort_floor",
+                    best_ask=f"${best_ask:.4f}", floor=f"${min_price:.4f}")
+                return FOKResult(
+                    filled=False, fill_price=None, fill_step=None, shares=None,
+                    attempts=attempt_num - 1, order_id=None,
+                    abort_reason=f"best_ask ${best_ask:.4f} < floor ${min_price:.4f}",
+                    order_type=order_type,
+                    attempted_prices=attempted_prices,
+                )
+
+            rung_price = round(min(best_ask + (attempt_num - 1) * epsilon_step, max_price), 2)
+
+            # Skip duplicate rungs
+            if attempted_prices and rung_price == attempted_prices[-1]:
+                self._log.debug("epsilon_ladder.duplicate_rung",
+                    rung=attempt_num, price=f"${rung_price:.2f}")
+                continue
+
+            self._log.info(
+                "epsilon_ladder.rung",
+                rung=attempt_num,
+                best_ask=f"${best_ask:.4f}",
+                rung_price=f"${rung_price:.2f}",
+                epsilon_applied=(attempt_num - 1) * epsilon_step,
+            )
+
+            if attempt_num > 1:
+                self._log.info(
+                    "epsilon_ladder.retry",
+                    prev_price=f"${attempted_prices[-1]:.2f}",
+                    next_price=f"${rung_price:.2f}",
+                    rung=attempt_num,
+                    wait_s=wait_s,
+                )
+                await asyncio.sleep(wait_s)
+
+            result = await self._submit(token_id, rung_price, stake_usd, order_type, attempt=attempt_num)
+            attempted_prices.append(rung_price)
+
+            attempt_elapsed_ms = int((_time.time() - attempt_start) * 1000)
+
+            if write_attempt_fn is not None:
+                try:
+                    await write_attempt_fn({
+                        "execution_log_id": getattr(self, "_execution_log_id", None),
+                        "attempt_num": attempt_num,
+                        "attempt_price": rung_price,
+                        "attempt_size": self._calc_size(rung_price, stake_usd),
+                        "clob_best_ask": best_ask,
+                        "clob_best_bid": None,
+                        "status": "attempted",
+                        "fill_size": None,
+                        "fill_price": None,
+                        "error_message": None,
+                        "attempt_duration_ms": attempt_elapsed_ms,
+                    })
+                except Exception:
+                    self._log.debug("epsilon_ladder.write_attempt_failed", rung=attempt_num)
+
+            if result and result.get("size_matched", 0) > 0:
+                fill = result.get("size_matched", 0)
+                order_id = result.get("order_id")
+                fill_price = (
+                    result.get("making_amount", 0) / result.get("taking_amount", 0)
+                    if (result.get("making_amount", 0) > 0 and result.get("taking_amount", 0) > 0)
+                    else rung_price
+                )
+                fill_price = round(fill_price, 4) if result.get("making_amount", 0) > 0 else rung_price
+
+                if write_attempt_fn is not None:
+                    try:
+                        await write_attempt_fn({
+                            "execution_log_id": getattr(self, "_execution_log_id", None),
+                            "attempt_num": attempt_num,
+                            "attempt_price": rung_price,
+                            "attempt_size": self._calc_size(rung_price, stake_usd),
+                            "clob_best_ask": best_ask,
+                            "clob_best_bid": None,
+                            "status": "filled",
+                            "fill_size": fill,
+                            "fill_price": fill_price,
+                            "error_message": None,
+                            "attempt_duration_ms": attempt_elapsed_ms,
+                        })
+                    except Exception:
+                        self._log.debug("epsilon_ladder.write_attempt_fill_failed", rung=attempt_num)
+
+                self._log.info(
+                    "epsilon_ladder.filled",
+                    rung=attempt_num,
+                    fill_price=f"${fill_price:.4f}",
+                    shares=f"{fill:.2f}",
+                )
+                return FOKResult(
+                    filled=True, fill_price=fill_price, fill_step=attempt_num,
+                    shares=fill, attempts=attempt_num,
+                    order_id=str(order_id) if order_id else None,
+                    attempted_prices=attempted_prices,
+                    order_type=order_type,
+                )
+
+            # Log failure attempt
+            if write_attempt_fn is not None:
+                try:
+                    await write_attempt_fn({
+                        "execution_log_id": getattr(self, "_execution_log_id", None),
+                        "attempt_num": attempt_num,
+                        "attempt_price": rung_price,
+                        "attempt_size": self._calc_size(rung_price, stake_usd),
+                        "clob_best_ask": best_ask,
+                        "clob_best_bid": None,
+                        "status": "attempted",
+                        "fill_size": None,
+                        "fill_price": None,
+                        "error_message": result.get("abort_reason") if result else None,
+                        "attempt_duration_ms": attempt_elapsed_ms,
+                    })
+                except Exception:
+                    self._log.debug("epsilon_ladder.write_attempt_failed", rung=attempt_num)
+
+        self._log.warning(
+            "epsilon_ladder.exhausted",
+            prices=[f"${p:.2f}" for p in attempted_prices],
+        )
+        return FOKResult(
+            filled=False, fill_price=None, fill_step=None, shares=None,
+            attempts=len(attempted_prices), order_id=None,
+            attempted_prices=attempted_prices, order_type=order_type,
+        )

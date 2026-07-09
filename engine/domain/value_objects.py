@@ -1312,6 +1312,7 @@ class ExecutionResult:
     execution_mode: str = "none"  # "fak" | "rfq" | "gtc" | "paper" | "none"
     fak_attempts: int = 0
     fak_prices: list = field(default_factory=list)
+    execution_method: str = "fak_standard"  # "fak_standard" | "fak_epsilon"
 
     # Failure info
     failure_reason: Optional[str] = None
